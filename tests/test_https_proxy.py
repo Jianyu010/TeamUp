@@ -175,7 +175,8 @@ def wait_for_https(origin, context, child):
     wait_for(ready, child)
 
 
-def adapt_caddyfile(env):
+def adapt_caddyfile(env, drop=()):
+    inherited = {key: value for key, value in os.environ.items() if key not in drop}
     return subprocess.run(
         [
             CADDY,
@@ -185,7 +186,7 @@ def adapt_caddyfile(env):
             "--adapter",
             "caddyfile",
         ],
-        env=env,
+        env=inherited | env,
         check=False,
         capture_output=True,
         text=True,
@@ -393,7 +394,7 @@ def test_caddy_bind_fails_closed(tmp_path):
         "TEAMUP_UPSTREAM_PORT": "8765",
     }
 
-    missing = adapt_caddyfile(base)
+    missing = adapt_caddyfile(base, drop={"TEAMUP_HTTPS_BIND"})
     assert missing.returncode == 0, missing.stderr
     addresses = listen_addresses(json.loads(missing.stdout))
     assert addresses
