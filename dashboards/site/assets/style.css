@@ -1,0 +1,380 @@
+:root {
+  --bg: #f5f7fa;
+  --surface: #ffffff;
+  --surface-alt: #eef2f7;
+  --fg: #1d232b;
+  --muted: #5b6673;
+  --border: #d7dee7;
+  --accent: #2f6fed;
+  --grid: rgba(29, 35, 43, 0.12);
+  --pass: #146c43;
+  --pass-bg: #d8f3e4;
+  --fail: #b42318;
+  --fail-bg: #fde2df;
+  --error: #a45309;
+  --error-bg: #fdeccf;
+  --skip: #5b6673;
+  --skip-bg: #e6ebf1;
+  --shadow: 0 1px 2px rgba(16, 24, 40, 0.06);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #12161c;
+    --surface: #1a2028;
+    --surface-alt: #232b35;
+    --fg: #e7edf4;
+    --muted: #9aa7b6;
+    --border: #33404e;
+    --accent: #7aa2ff;
+    --grid: rgba(231, 237, 244, 0.14);
+    --pass: #7bdcab;
+    --pass-bg: #123d2b;
+    --fail: #ff9b91;
+    --fail-bg: #4a1d19;
+    --error: #ffc06b;
+    --error-bg: #442d10;
+    --skip: #a8b4c2;
+    --skip-bg: #2b333d;
+    --shadow: none;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  overflow-x: hidden;
+}
+
+body {
+  margin: 0;
+  min-width: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+    Arial, sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+a {
+  color: var(--accent);
+}
+
+.wrap {
+  width: 100%;
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 0 16px;
+}
+
+.site-header {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.header-inner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 20px;
+  min-height: 60px;
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+
+.brand {
+  color: var(--fg);
+  font-weight: 700;
+  text-decoration: none;
+  letter-spacing: 0.01em;
+}
+
+.site-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+}
+
+.site-nav a {
+  color: var(--muted);
+  text-decoration: none;
+  padding: 4px 0;
+  border-bottom: 2px solid transparent;
+}
+
+.site-nav a:hover,
+.site-nav a[aria-current="page"] {
+  color: var(--fg);
+  border-bottom-color: var(--accent);
+}
+
+main {
+  padding-top: 24px;
+  padding-bottom: 40px;
+}
+
+h1 {
+  margin: 0 0 6px;
+  font-size: clamp(1.5rem, 4vw, 2rem);
+  line-height: 1.2;
+}
+
+h2 {
+  margin: 0 0 4px;
+  font-size: 1.05rem;
+}
+
+.lede,
+.chart-note {
+  margin: 0 0 20px;
+  color: var(--muted);
+}
+
+.chart-note {
+  margin-bottom: 12px;
+  font-size: 0.85rem;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+  margin-bottom: 18px;
+  box-shadow: var(--shadow);
+  min-width: 0;
+}
+
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.tile {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px;
+  box-shadow: var(--shadow);
+  min-width: 0;
+}
+
+.tile-label {
+  display: block;
+  color: var(--muted);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.tile strong {
+  display: block;
+  margin-top: 4px;
+  font-size: 1.6rem;
+  line-height: 1.15;
+  overflow-wrap: anywhere;
+}
+
+.tile small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.chart-frame {
+  position: relative;
+  width: 100%;
+  height: 290px;
+}
+
+.chart-frame canvas {
+  max-width: 100%;
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
+  gap: 18px;
+}
+
+.metric-grid .card {
+  margin-bottom: 0;
+}
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin-bottom: 16px;
+}
+
+.controls label {
+  color: var(--muted);
+}
+
+select {
+  background: var(--surface);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font: inherit;
+}
+
+.status {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.status-pass {
+  color: var(--pass);
+  background: var(--pass-bg);
+}
+
+.status-fail {
+  color: var(--fail);
+  background: var(--fail-bg);
+}
+
+.status-error {
+  color: var(--error);
+  background: var(--error-bg);
+}
+
+.status-skip,
+.status-missing {
+  color: var(--skip);
+  background: var(--skip-bg);
+}
+
+.table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+th,
+td {
+  border-bottom: 1px solid var(--border);
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+thead th {
+  color: var(--muted);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.status-grid td,
+.status-grid th {
+  text-align: center;
+  white-space: nowrap;
+}
+
+.status-grid tbody th {
+  text-align: left;
+}
+
+.status-cell {
+  font-size: 0.78rem;
+  font-weight: 600;
+  border-radius: 4px;
+}
+
+.status-cell.status-pass {
+  background: var(--pass-bg);
+  color: var(--pass);
+}
+
+.status-cell.status-fail {
+  background: var(--fail-bg);
+  color: var(--fail);
+}
+
+.status-cell.status-error {
+  background: var(--error-bg);
+  color: var(--error);
+}
+
+.status-cell.status-skip,
+.status-cell.status-missing {
+  background: var(--skip-bg);
+  color: var(--skip);
+}
+
+.empty {
+  margin: 8px 0;
+  padding: 16px;
+  color: var(--muted);
+  background: var(--surface-alt);
+  border-radius: 8px;
+  font-size: 0.9rem;
+}
+
+.link-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 18px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.link-list a {
+  font-weight: 600;
+}
+
+.site-footer {
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 0.85rem;
+  padding: 18px 0 28px;
+}
+
+@media (max-width: 520px) {
+  .chart-frame {
+    height: 250px;
+  }
+
+  .card {
+    padding: 12px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    scroll-behavior: auto !important;
+  }
+}
+
+.note {
+  margin: -4px 0 12px;
+  color: var(--muted);
+  font-size: 0.85rem;
+}

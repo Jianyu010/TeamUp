@@ -236,6 +236,15 @@ async def run_exchange(root, port):
                         error="board_ack_required",
                         room_id=room_id,
                     )
+                    assert (await tool(agent_b, "list_rooms"))["rooms"] == [
+                        {
+                            "room_id": room_id,
+                            "name": "API compatibility",
+                            "acked_board_version": None,
+                            "current_board_version": 1,
+                            "latest_message_id": None,
+                        }
+                    ]
                     board = await tool(agent_b, "get_board", room_id=room_id)
                     assert board["rules"] == "Share test data"
                     await tool(
@@ -301,6 +310,15 @@ async def run_exchange(root, port):
                         "Frontend is ready.",
                         "Can you review the response shape?",
                     ]
+                    assert (await tool(agent_b, "list_rooms"))["rooms"] == [
+                        {
+                            "room_id": room_id,
+                            "name": "API compatibility",
+                            "acked_board_version": 1,
+                            "current_board_version": 1,
+                            "latest_message_id": live["message_id"],
+                        }
+                    ]
 
             offline = await tool(
                 agent_a,
@@ -313,6 +331,15 @@ async def run_exchange(root, port):
                     }
                 ),
             )
+            assert (await tool(agent_a, "list_rooms"))["rooms"] == [
+                {
+                    "room_id": room_id,
+                    "name": "API compatibility",
+                    "acked_board_version": 1,
+                    "current_board_version": 1,
+                    "latest_message_id": offline["message_id"],
+                }
+            ]
             with b.daemon() as bob_daemon:
                 backfill = await asyncio.to_thread(
                     b.wait_for_notice, offline["message_id"], bob_daemon

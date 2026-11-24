@@ -1,0 +1,142 @@
+# Layers 2 and 3 of TeamUp CI (docs/ci/README.md): the checks that run the PR's code.
+#
+# Every job runs on a `teamup-gate` runner on hp-laptop (GitHub-hosted runners are billing-blocked)
+# inside its bwrap sandbox. They run PR code, so they hold only the read-only workflow token and no
+# secret, and nothing here writes to the repository. An outside contributor's PR needs a maintainer
+# to approve its workflow runs first (repository setting), and the gate never dispatches the AI
+# review for one.
+#
+# The job names are the required checks in .github/ci/policy.json; keep them in step.
+# The tree comes from the API tarball (hp-laptop often reaches api.github.com while github.com
+# times out), at github.sha: for a PR, the merge commit with main, as actions/checkout would take.
+# PyPI is reachable only through the Tsinghua mirror, so the job rewrites its own copy of uv.lock.
+name: PR checks
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review, converted_to_draft]
+  push:
+    branches: [main]
+
+concurrency:
+  group: pr-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  UV_PYTHON_DOWNLOADS: never
+  UV_DEFAULT_INDEX: https://pypi.tuna.tsinghua.edu.cn/simple
+
+jobs:
+  lint:
+    name: 2 · lint
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    runs-on: [self-hosted, teamup-gate]
+    timeout-minutes: 10
+    steps:
+      - name: Fetch the tree (API tarball, no git)
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+          curl -sSfL --connect-timeout 10 --max-time 180 --retry 5 --retry-all-errors \
+            -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            -o "$RUNNER_TEMP/tree.tar.gz" "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/tarball/$GITHUB_SHA"
+          tar -xzf "$RUNNER_TEMP/tree.tar.gz" -C "$GITHUB_WORKSPACE" --strip-components=1 --no-same-owner
+          rm -f "$RUNNER_TEMP/tree.tar.gz"
+      - name: Python environment (uv, locked, through the mirror)
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          sed -i 's#https://pypi.org/simple#https://pypi.tuna.tsinghua.edu.cn/simple#g; s#https://files.pythonhosted.org/packages/#https://pypi.tuna.tsinghua.edu.cn/packages/#g' uv.lock
+          uv sync --frozen --all-packages --python 3.12 2>&1 | tail -3
+      - name: ruff check
+        run: uv run --no-sync ruff check .
+
+  architecture:
+    name: 2 · architecture
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    runs-on: [self-hosted, teamup-gate]
+    timeout-minutes: 10
+    steps:
+      - name: Fetch the tree (API tarball, no git)
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+          curl -sSfL --connect-timeout 10 --max-time 180 --retry 5 --retry-all-errors \
+            -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            -o "$RUNNER_TEMP/tree.tar.gz" "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/tarball/$GITHUB_SHA"
+          tar -xzf "$RUNNER_TEMP/tree.tar.gz" -C "$GITHUB_WORKSPACE" --strip-components=1 --no-same-owner
+          rm -f "$RUNNER_TEMP/tree.tar.gz"
+      - name: Python environment (uv, locked, through the mirror)
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          sed -i 's#https://pypi.org/simple#https://pypi.tuna.tsinghua.edu.cn/simple#g; s#https://files.pythonhosted.org/packages/#https://pypi.tuna.tsinghua.edu.cn/packages/#g' uv.lock
+          uv sync --frozen --all-packages --python 3.12 2>&1 | tail -3
+      - name: Import boundaries
+        run: uv run --no-sync pytest -q tests/test_boundaries.py
+
+  unit:
+    name: 2 · unit
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    runs-on: [self-hosted, teamup-gate]
+    timeout-minutes: 15
+    steps:
+      - name: Fetch the tree (API tarball, no git)
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+          curl -sSfL --connect-timeout 10 --max-time 180 --retry 5 --retry-all-errors \
+            -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            -o "$RUNNER_TEMP/tree.tar.gz" "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/tarball/$GITHUB_SHA"
+          tar -xzf "$RUNNER_TEMP/tree.tar.gz" -C "$GITHUB_WORKSPACE" --strip-components=1 --no-same-owner
+          rm -f "$RUNNER_TEMP/tree.tar.gz"
+      - name: Python environment (uv, locked, through the mirror)
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          sed -i 's#https://pypi.org/simple#https://pypi.tuna.tsinghua.edu.cn/simple#g; s#https://files.pythonhosted.org/packages/#https://pypi.tuna.tsinghua.edu.cn/packages/#g' uv.lock
+          uv sync --frozen --all-packages --python 3.12 2>&1 | tail -3
+      - name: Component and CI unit tests
+        run: uv run --no-sync pytest -q server/tests client/tests tests/ci
+
+  system:
+    name: 3 · system
+    needs: [lint, architecture, unit]
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    runs-on: [self-hosted, teamup-gate]
+    timeout-minutes: 20
+    steps:
+      - name: Fetch the tree (API tarball, no git)
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+          curl -sSfL --connect-timeout 10 --max-time 180 --retry 5 --retry-all-errors \
+            -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            -o "$RUNNER_TEMP/tree.tar.gz" "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/tarball/$GITHUB_SHA"
+          tar -xzf "$RUNNER_TEMP/tree.tar.gz" -C "$GITHUB_WORKSPACE" --strip-components=1 --no-same-owner
+          rm -f "$RUNNER_TEMP/tree.tar.gz"
+      - name: Python environment (uv, locked, through the mirror)
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          sed -i 's#https://pypi.org/simple#https://pypi.tuna.tsinghua.edu.cn/simple#g; s#https://files.pythonhosted.org/packages/#https://pypi.tuna.tsinghua.edu.cn/packages/#g' uv.lock
+          uv sync --frozen --all-packages --python 3.12 2>&1 | tail -3
+      - name: Cross-process tests (server, clients, MCP sessions)
+        run: >-
+          uv run --no-sync pytest -q tests
+          --ignore=tests/ci --ignore=tests/test_boundaries.py --ignore=tests/scenarios

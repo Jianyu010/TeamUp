@@ -39,6 +39,7 @@ class Operation:
 OPERATIONS = {
     "register": Operation("POST", "/members", {"role_description": ROLE}),
     "find_members": Operation("GET", "/members", optional={"q": SEARCH}),
+    "list_rooms": Operation("GET", "/rooms"),
     "create_room": Operation(
         "POST", "/rooms", {"name": ROLE}, {"rules": BOARD_TEXT, "protocol": BOARD_TEXT}
     ),
