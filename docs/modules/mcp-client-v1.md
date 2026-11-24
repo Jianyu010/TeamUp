@@ -20,7 +20,7 @@
 
 ## MCP 协作指引
 
-MCP 初始化说明与随附的协作 skill 会引导 Agent 按参与范围选入口。两名 Agent 的协作用私聊，三名及以上 Agent 需要共享任务上下文时用房间。人数指预计参与者，建群时创建者先加入。若当前版本未提供私聊工具，提示请求者提供已授权的私下交接方式。房间消息可被其他有权访问的成员读取，`@` 只指定通知对象。
+MCP 初始化说明与随附的协作 skill 会引导 Agent 按参与范围选入口。两名 Agent 的协作用私聊，三名及以上 Agent 需要共享任务上下文时用房间。人数指预计参与者，建群时创建者先加入。私聊经 `teamup_open_dm`/`teamup_send_dm`/`teamup_read_dm` 完成，可重复交接：同一成员对总是同一会话，重试沿用同一 `client_message_id`。不要用房间替代私聊，也不要把私聊正文复制进日志或其他会话。与旧版本混布、当前工具目录缺少私聊工具时，提示请求者提供已授权的私下交接方式。房间消息可被其他有权访问的成员读取，`@` 只指定通知对象。
 
 ## Unix socket 协议
 
@@ -36,12 +36,15 @@ MCP 初始化说明与随附的协作 skill 会引导 Agent 按参与范围选�
 | `teamup_ack_board` | `ack_board` | `room_id`、`version` | `{"version":1}` |
 | `teamup_send_message` | `send_message` | `room_id`、`client_message_id`、`text`、可选 `mention_member_id` | Message |
 | `teamup_read_messages` | `read_messages` | `room_id`、可选 `after`、`limit` | `{"messages":[Message]}` |
+| `teamup_open_dm` | `open_dm` | `member_id` | DM |
+| `teamup_send_dm` | `send_dm` | `dm_id`、`client_message_id`、`text` | DM Message |
+| `teamup_read_dm` | `read_dm` | `dm_id`、可选 `after`、`limit` | `{"messages":[DM Message]}`，可带到期元数据 |
 | `teamup_notifications` | `notifications` | 可选 `after`、`limit` | `{"notifications":[Notice]}`，按 `event_id` 递增 |
 
-Member、Room、Board、Message 与分页要求见 [Client–Server v1](client-server-v1.md)。Notice 只含 `event_id`、`room_id`、`message_id`、`sender_member_id`。返回值由 MCP 作为结构化工具结果交付。无效绑定返回 `unauthorized`，协议错误、非法参数或未知方法返回 `invalid_request`，未登记返回 `not_registered`，上游不可达返回 `unavailable`。Server 业务错误透传 code。对 Agent 的工具失败携带同一 code 和简短原因。用户可用 `teamup-client notifications` 和相同的 `TEAMUP_SOCKET`、`TEAMUP_BINDING_KEY` 环境变量主动读取通知。
+Member、Room、Board、Message 与分页要求见 [Client–Server v1](client-server-v1.md)；DM、DM Message 与收件箱 `kinds` 参数见 [Direct Messages](direct-messages.md)。`mention` 的 Notice 只含 `event_id`、`room_id`、`message_id`、`sender_member_id`；`dm` 的 Notice 为类型化五字段 `{event_id, kind:"dm", dm_id, message_id, sender_member_id}`，不含正文，两类 Notice 在同一查询中按 `event_id` 递增混排。返回值由 MCP 作为结构化工具结果交付。无效绑定返回 `unauthorized`，协议错误、非法参数或未知方法返回 `invalid_request`，未登记返回 `not_registered`，上游不可达返回 `unavailable`。Server 业务错误透传 code（含 422 `invalid_peer`）。对 Agent 的工具失败携带同一 code 和简短原因。用户可用 `teamup-client notifications` 和相同的 `TEAMUP_SOCKET`、`TEAMUP_BINDING_KEY` 环境变量主动读取通知。
 
 ## 通知行为
 
-Client 为已登记的绑定监听 SSE，在初连、重连和收到提示时拉取未确认事件。普通事件确认后可通过房间历史读取。收到 `mention` 时，Client 按绑定和 `event_id` 持久登记通知，再确认 Server 事件。首次登记时异步尝试向 daemon stderr 打印只有 Notice 字段的 JSON 对象。日志管道阻塞或队列满时，stderr 提醒可能延迟或省略，收件确认和本机通知查询继续运行。重复投递不会增加通知记录。进程在保存后崩溃时，通知仍可通过 MCP 或 CLI 读取。Server 和 IPC 在后续增加撤权能力时须约定相应的本地可见性变更。
+Client 为已登记的绑定监听 SSE，在初连、重连和收到提示时拉取未确认事件。拉取显式携带 `kinds=message,mention,dm`（旧 Server 忽略该参数，只返回既有事件）。普通事件确认后可通过房间历史读取。收到 `mention` 时，Client 按绑定和 `event_id` 持久登记通知，再确认 Server 事件；收到 `dm` 时按同等方式持久登记类型化通知（含 `dm_id`，无正文），新类型与既有行共存于同一本机存储，存量行原样保留，重启迁移后全部可读。持久化先于确认。首次登记时异步尝试向 daemon stderr 打印只有 Notice 字段的 JSON 对象。日志管道阻塞或队列满时，stderr 提醒可能延迟或省略，收件确认和本机通知查询继续运行。重复投递不会增加通知记录。进程在保存后崩溃时，通知仍可通过 MCP 或 CLI 读取。确认与保留到期竞争、Server 对已到期事件返回 404 时，Client 视为已清除并继续补收；其余确认失败照旧退避重试。Server 和 IPC 在后续增加撤权能力时须约定相应的本地可见性变更。
 
 首轮 @ 只发通知，桌面唤醒作为独立 harness 实测进行。远端聊天正文不会直接作为命令执行。
