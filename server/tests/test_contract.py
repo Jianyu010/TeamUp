@@ -691,6 +691,38 @@ def test_history_before_pages_backwards_without_duplicates(team):
         )
 
 
+def test_history_before_above_the_sqlite_max_is_an_unbounded_upper_edge(tmp_path):
+    db_path = tmp_path / "team.sqlite3"
+    with api(db_path) as client:
+        assert enroll(client, "sender").status_code == 200
+        room_path = room(client)
+        confirm(client, "sender", room_path)
+        lowly = send(client, room_path, "lowly", text="an ordinary id").json()
+        room_id = room_path.rsplit("/", 1)[-1]
+        sender_id = member(client, "sender")
+    with closing(sqlite3.connect(db_path)) as connection, connection:
+        connection.execute(
+            "INSERT INTO messages VALUES (?, ?, ?, 'max-id', 'the valid max id', NULL, NULL)",
+            (2**63 - 1, room_id, sender_id),
+        )
+    with api(db_path) as client:
+        maximum = {
+            **lowly,
+            "message_id": 2**63 - 1,
+            "client_message_id": "max-id",
+            "text": "the valid max id",
+            "created_at": None,
+        }
+        # A before cursor above the SQLite max pages the latest window unbounded.
+        for before in (2**63, 2**70):
+            assert get(
+                client, "sender", f"{room_path}/messages?before={before}"
+            ).json() == {"messages": [lowly, maximum]}
+        assert get(
+            client, "sender", f"{room_path}/messages?after={2**63}"
+        ).json() == {"messages": []}
+
+
 def test_search_denies_third_parties_and_unconfirmed_boards(team):
     room_path = room(team)
     confirm(team, "sender", room_path)
@@ -790,6 +822,9 @@ def test_search_matches_literals_and_bounded_snippets(team):
         "later": "a" * 300 + "needle" + "b" * 300,
         "twice": "needle" + "x" * 300 + "needle",
         "expansive": "z" * 5 + "ß" * 300,
+        "fussball": "Fußball",
+        "turkish": "ß" + "w" * 100 + "İstanbul",
+        "drift": "y" * 90 + "ß" + "z" * 300,
         "nomatch": "nothing relevant",
     }
     sent = {
@@ -808,7 +843,7 @@ def test_search_matches_literals_and_bounded_snippets(team):
         assert match["created_at"] == by_id[match["message_id"]]["created_at"]
 
     snippets = {match["message_id"]: match["snippet"] for match in found}
-    assert snippets[sent["plain"]["message_id"]] == "the needle is here"
+    assert snippets[sent["plain"]["message_id"]] == "The needle is here"
     # The window holds at most 200 characters and leads the match with context.
     assert snippets[sent["later"]["message_id"]] == "a" * 80 + "needle" + "b" * 114
     # The snippet stays around the first of two matches.
@@ -817,24 +852,39 @@ def test_search_matches_literals_and_bounded_snippets(team):
     (wide,) = find(team, "target", room_path, "n" * 200)
     assert wide["message_id"] == sent["longneedle"]["message_id"]
     assert wide["snippet"] == "n" * 200
-    # A needle that casefolds beyond 200 characters stays bounded.
+    # A needle that casefolds beyond 200 characters stays bounded in original characters.
     (folded,) = find(team, "target", room_path, "ß" * 200)
     assert folded["message_id"] == sent["expansive"]["message_id"]
-    assert folded["snippet"] == "s" * 200
-    # Case folding matches Unicode text; the snippet keeps the matched form.
+    assert folded["snippet"] == "ß" * 200
+    # Case folding matches Unicode text; the snippet quotes the original.
     (strasse,) = find(team, "target", room_path, "STRASSE")
     assert strasse["message_id"] == sent["unicode"]["message_id"]
-    assert strasse["snippet"] == "der weg führt über die strasse"
+    assert strasse["snippet"] == "Der Weg führt über die Straße"
     (cjk,) = find(team, "target", room_path, "历史")
     assert cjk["message_id"] == sent["cjk"]["message_id"]
     assert cjk["snippet"] == "会话历史记录 needle"
     # Pattern metacharacters and quotes match literally.
     (meta,) = find(team, "target", room_path, "% _ * ? ( ) [ ] ^ $ |")
     assert meta["message_id"] == sent["meta"]["message_id"]
-    assert meta["snippet"] == "needles % _ * ? ( ) [ ] ^ $ | done"
+    assert meta["snippet"] == "Needles % _ * ? ( ) [ ] ^ $ | done"
     (quoted,) = find(team, "target", room_path, "it's a \"quoted\" C:\\temp")
     assert quoted["message_id"] == sent["escaped"]["message_id"]
-    assert quoted["snippet"] == "it's a \"quoted\" c:\\temp path"
+    assert quoted["snippet"] == "it's a \"quoted\" C:\\temp path"
+    # Matches ending inside or spanning a casefold expansion keep the original characters.
+    (fussball,) = find(team, "target", room_path, "uß")
+    assert fussball["message_id"] == sent["fussball"]["message_id"]
+    assert fussball["snippet"] == "Fußball"
+    (spanned,) = find(team, "target", room_path, "ußb")
+    assert spanned["message_id"] == sent["fussball"]["message_id"]
+    assert spanned["snippet"] == "Fußball"
+    # A match starting inside an İ expansion still maps back to the original character.
+    (turkish,) = find(team, "target", room_path, "̇")
+    assert turkish["message_id"] == sent["turkish"]["message_id"]
+    assert turkish["snippet"] == "w" * 80 + "İstanbul"
+    # Expansions before the match do not shift the original-character window.
+    (drifted,) = find(team, "target", room_path, "ßz")
+    assert drifted["message_id"] == sent["drift"]["message_id"]
+    assert drifted["snippet"] == "y" * 80 + "ß" + "z" * 119
     # after and limit page matches exactly like history, empty pages are valid.
     first = find(team, "target", room_path, "needle", limit=2)
     assert [match["message_id"] for match in first] == expected[:2]

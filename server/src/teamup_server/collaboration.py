@@ -339,6 +339,35 @@ def _room_transcript(
     return rows
 
 
+def _snippet(body: str, needle: str, hit: int) -> str:
+    """A bounded window of the original body around the first folded match.
+
+    ``hit`` is the 1-based casefolded offset of ``needle``; folded offsets are
+    mapped back to whole original characters so expansions such as ``ß`` and
+    ``İ`` never split or reshape the quoted text.
+    """
+    folded_start = hit - 1
+    folded_end = folded_start + len(needle)
+    start = end = 0
+    offset = 0
+    for index, character in enumerate(body):
+        width = len(character.casefold())
+        if offset < folded_end and offset + width > folded_start:
+            if not end:
+                start = index
+            end = index + 1
+        elif end:
+            break
+        offset += width
+    length = end - start
+    if length <= _SNIPPET - _SNIPPET_LEAD:
+        lead = _SNIPPET_LEAD
+    else:
+        lead = max(_SNIPPET - length, 0)
+    window = max(start - lead, 0)
+    return body[window : window + _SNIPPET]
+
+
 class Collaboration:
     """Public operations and post-commit inbox subscriptions."""
 
@@ -858,7 +887,7 @@ class Collaboration:
                 connection,
                 room_id,
                 after=min(max(after, _transcript_floor(membership)), _SQLITE_MAX_ID),
-                before=None if before is None else min(before, _SQLITE_MAX_ID),
+                before=None if before is None or before > _SQLITE_MAX_ID else before,
                 limit=limit,
                 newest_first=before is not None,
             )
@@ -874,29 +903,27 @@ class Collaboration:
                 "teamup_casefold", 1, str.casefold, deterministic=True
             )
             needle = query.casefold()
-            lead = (
-                _SNIPPET_LEAD
-                if len(needle) <= _SNIPPET - _SNIPPET_LEAD
-                else max(_SNIPPET - len(needle), 0)
-            )
             rows = connection.execute(
                 """
-                WITH scan AS (
-                    SELECT m.message_id, m.sender_member_id, m.created_at,
-                        m.text AS body, instr(teamup_casefold(m.text), ?) AS hit
-                    FROM messages AS m
-                    WHERE m.room_id = ? AND m.message_id > ?
-                        AND instr(teamup_casefold(m.text), ?) > 0
-                    ORDER BY m.message_id
-                    LIMIT ?
-                )
-                SELECT message_id, sender_member_id, created_at,
-                    substr(teamup_casefold(body), max(1, hit - ?), ?) AS snippet
-                FROM scan
+                SELECT m.message_id, m.sender_member_id, m.created_at, m.text AS body,
+                    instr(teamup_casefold(m.text), ?) AS hit
+                FROM messages AS m
+                WHERE m.room_id = ? AND m.message_id > ?
+                    AND instr(teamup_casefold(m.text), ?) > 0
+                ORDER BY m.message_id
+                LIMIT ?
                 """,
-                (needle, room_id, cursor, needle, limit, lead, _SNIPPET),
-            )
-            return [dict(record) for record in rows]
+                (needle, room_id, cursor, needle, limit),
+            ).fetchall()
+            return [
+                {
+                    "message_id": row["message_id"],
+                    "sender_member_id": row["sender_member_id"],
+                    "created_at": row["created_at"],
+                    "snippet": _snippet(row["body"], needle, row["hit"]),
+                }
+                for row in rows
+            ]
 
     def inbox(self, token: str, after: int, limit: int) -> list[dict]:
         with self._transaction() as connection:
