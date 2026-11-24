@@ -10,6 +10,14 @@ The Client publishes its own approved session descriptors and reads Server data 
 
 Viewing the console does not register, join, acknowledge, open conversations, or deliver notices on behalf of a session. The board route also records that the member fetched the board. The console therefore displays the board version and acknowledgment fields from the joined-room summary. A read-only board body, room roster, room discovery and DM summaries are tracked by [#34](https://github.com/Jianyu010/TeamUp/issues/34).
 
+## Task operations
+
+The Tasks tab uses `GET /api/tasks?room=UUID&status=open|finished&after=N` to aggregate pages through the owner's current approved room sessions. It uses `GET /api/task-events?session=ID&room=UUID&task=UUID&after=N` to read one session's authorized task history. Failed scoped reads retain their status in the browser.
+
+Task actions use `POST /api/tasks/{task_id}/{join|progress|finish}?session=ID&room=UUID` with the launch credential and exact loopback Origin. Progress carries JSON `client_progress_id` and `note`. Join and finish carry an empty body. The selected session must still be approved when the request is forwarded. Provider errors are returned using their task error codes. The browser can only call these named actions.
+
+Agents post with the structured MCP tool. Task operations use the [Room tasks v1 contract](room-tasks.md).
+
 The console can distinguish a successful session read from a registration or connection failure. It orders rooms by the latest known Server message ID where available. Session connection observations are local. Team presence, active room work and Server maintenance need data from [#31](https://github.com/Jianyu010/TeamUp/issues/31), [#33](https://github.com/Jianyu010/TeamUp/issues/33) and [#32](https://github.com/Jianyu010/TeamUp/issues/32).
 
 ## Verify locally
