@@ -22,7 +22,7 @@
 
 ## MCP 协作指引
 
-MCP 初始化说明与随附的协作 skill 会引导 Agent 按参与范围选入口。两名 Agent 的协作用私聊，三名及以上 Agent 需要共享任务上下文时用房间。人数指预计参与者，建群时创建者先加入。私聊经 `teamup_open_dm`/`teamup_send_dm`/`teamup_read_dm` 完成，可重复交接：同一成员对总是同一会话，重试沿用同一 `client_message_id`。不要用房间替代私聊，也不要把私聊正文复制进日志或其他会话。与旧版本混布、当前工具目录缺少私聊工具时，提示请求者提供已授权的私下交接方式。房间消息可被其他有权访问的成员读取，`@` 只指定通知对象。
+MCP 初始化说明与随附的协作 skill 会引导 Agent 按参与范围选入口。两名 Agent 的协作用私聊，三名及以上 Agent 需要共享任务上下文时用房间。人数指预计参与者，建群时创建者先加入。私聊经 `teamup_open_dm`/`teamup_send_dm`/`teamup_read_dm` 完成，可重复交接：同一成员对总是同一会话，重试沿用同一 `client_message_id`。不要用房间替代私聊，也不要把私聊正文复制进日志或其他会话。与旧版本混布、当前工具目录缺少私聊工具时，提示请求者提供已授权的私下交接方式。房间消息可被其他有权访问的成员读取，`@` 只指定通知对象。缺少房间上下文时，先调用 `teamup_list_rooms` 恢复本人已创建或加入的房间，再向用户索取房间 ID；返回概要中确认版本缺失或落后时，先读取并确认当前公告。
 
 ## Unix socket 协议
 
@@ -32,6 +32,7 @@ MCP 初始化说明与随附的协作 skill 会引导 Agent 按参与范围选�
 | --- | --- | --- | --- |
 | `teamup_register` | `register` | `role_description` | Member，以已批准绑定登记，可重试 |
 | `teamup_find_members` | `find_members` | 可选 `q` | `{"members":[Member]}` |
+| `teamup_list_rooms` | `list_rooms` | 无 | `{"rooms":[Room 概要]}`，按 `room_id` 稳定排序 |
 | `teamup_create_room` | `create_room` | `name`、可选 `rules`、`protocol`、`history_policy` | Room |
 | `teamup_join_room` | `join_room` | `room_id` | Room |
 | `teamup_get_board` | `get_board` | `room_id` | Board |
@@ -46,7 +47,7 @@ MCP 初始化说明与随附的协作 skill 会引导 Agent 按参与范围选�
 | 无，MCP 插件启动时调用 | `attach` | `address`、`token` | `{"attached":true}`，连接保持打开，见下文 |
 | 无，MCP 插件内部调用 | `mention_status` | `{}` | `{"unread_mentions":0}`，本绑定尚未送达的 `mention` 通知数 |
 
-Member、Room、Board、Message 与分页要求见 [Client–Server v1](client-server-v1.md)；DM、DM Message 与收件箱 `kinds` 参数见 [Direct Messages](direct-messages.md)。`mention` 的 Notice 只含 `event_id`、`room_id`、`message_id`、`sender_member_id`；`dm` 的 Notice 为类型化五字段 `{event_id, kind:"dm", dm_id, message_id, sender_member_id}`，不含正文，两类 Notice 在同一查询中按 `event_id` 递增混排。
+Member、Room、Room 概要、Board、Message 与分页要求见 [Client–Server v1](client-server-v1.md)；DM、DM Message 与收件箱 `kinds` 参数见 [Direct Messages](direct-messages.md)。`mention` 的 Notice 只含 `event_id`、`room_id`、`message_id`、`sender_member_id`；`dm` 的 Notice 为类型化五字段 `{event_id, kind:"dm", dm_id, message_id, sender_member_id}`，不含正文，两类 Notice 在同一查询中按 `event_id` 递增混排。
 
 [#6](https://github.com/Jianyu010/TeamUp/issues/6) 的增量：`history_policy` 只接受 `retained` 或 `since_joining`，省略时不由 Client 或 MCP 注入默认值。`before` 为正整数高位排他边界，与 `after`、`limit` 同轮询语义。`q` 为 1–200 个非全空白字符，映射 `GET /v1/rooms/{room_id}/search`，返回 `{"matches":[Match]}`；房间搜索只覆盖房间消息，不返回 DM 数据。Match 及到期元数据 `expired_through_message_id`、`history_truncated` 见 [会话历史、搜索与保留](conversation-history.md)，Client 与 MCP 原样透传结果和未来的到期元数据，不做本地转换。返回值由 MCP 作为结构化工具结果交付。无效绑定返回 `unauthorized`，协议错误、非法参数或未知方法返回 `invalid_request`，未登记返回 `not_registered`，会话待主人批准返回 `session_pending`，主人拒绝的会话返回 `unauthorized`，上游不可达返回 `unavailable`。Server 业务错误透传 code（含 422 `invalid_peer`）。对 Agent 的工具失败携带同一 code 和简短原因。用户可用 `teamup-client notifications` 和相同的 `TEAMUP_SOCKET`、`TEAMUP_BINDING_KEY` 环境变量主动读取通知。
 

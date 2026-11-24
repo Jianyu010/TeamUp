@@ -639,6 +639,7 @@ def test_ipc_enforces_binding_and_maps_contract_operations():
                     ) in upstream.calls
 
                     cases = [
+                        ("list_rooms", {}, "GET", "/v1/rooms", {}, None),
                         (
                             "create_room",
                             {"name": "team"},
