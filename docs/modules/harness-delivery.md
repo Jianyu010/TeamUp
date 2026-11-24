@@ -66,7 +66,7 @@ Client 维护 **成员 → 在线会话** 的映射。一个会话对应一个 T
 | `kind` | 提交 | 已验证 | 待验证 |
 | --- | --- | --- | --- |
 | `claude-code` | 向会话 socket 写一条 `type: user` 的 JSON 行，[方法](claude-code-wake.md) | 空闲桌面会话启动 turn | socket 是否要求 `CLAUDE_CODE_MESSAGING_TOKEN`；忙碌会话；`-p` 与桌面会话的差异 |
-| `codex` | `codex_command` 加 `queue --disable daemon_auto_start --resume --thread <id> --message <正文>`，经 argv 传入，不经 shell，15 秒超时，[方法](codex-wake.md) | 直接调用 CLI：空闲、忙碌的已加载桌面 chat；CLI 对未知 thread 退出码 1 | 经 TeamUp 唤醒真实桌面 thread；未加载 thread；桌面版工具调用的 `_meta` 是否与 `codex exec` 相同 |
+| `codex` | `codex_command` 加 `queue --disable daemon_auto_start --resume --thread <id> --message <正文>`，经 argv 传入，不经 shell，15 秒超时，[方法](codex-wake.md) | 经 TeamUp 唤醒空闲的已加载桌面 thread；桌面版工具调用带 `_meta.threadId`；直接调用 CLI 时忙碌 chat 排队；CLI 对未知 thread 退出码 1 | 经 TeamUp 唤醒忙碌或未加载的 thread |
 
 写入 socket 或排队成功只说明到达 harness 边界，记为 `unknown`。harness 记录中出现带 `event_id` 标记的 turn 后才记为 `delivered`。会话关闭时不另起新进程，保持 `waiting`，下次接入后投递。
 
@@ -99,4 +99,10 @@ macOS 26.6.2，Claude Desktop `6.28899.6`，测试会话为桌面版本机 Code 
 实现见 [MCP–Client v1](mcp-client-v1.md#唤醒)：`codex_command` 默认取 ChatGPT 桌面版随附 CLI，退出码 0 记 `submitted`，非零或无法启动记 `failed`，超时终止进程记 `unknown`。thread ID 必须是 UUID，因为 `--thread` 也接受会话名称。Codex 没有长连接，thread 地址保留到被同一会话的新调用取代或 Client 重启。
 
 - **自动化。** `tests/test_codex_wake.py` 用真实 Server、`installs` 安装和一个 `teamup-mcp` 进程承载两个 thread，每次调用带 `_meta.threadId`，假 CLI 记录 argv。覆盖：两个 thread 各自待批准并成为不同成员；无许可只有桌面提醒；有许可时两次 @ 按顺序各执行一次 CLI，argv 精确，只针对被 @ 的 thread；另一 thread 无许可不执行；CLI 退出 1 记为 `failed` 且不重试；以 `wake-<event_id>` 回复两次只产生一条消息。`client/tests/test_client.py` 覆盖超时终止、非 UUID thread 不执行、命令缺失和配置校验。
-- **实机（部分）。** macOS 26.6.2，ChatGPT 桌面版随附 `codex-cli 0.171.0-alpha.13`。`queue --help` 说明 `--resume` 失败只产生警告、命令仍成功。对不存在的 thread 排队时 0.3 秒内退出码 1，报 `no rollout found for thread id`，与 `failed` 的映射一致。经 TeamUp @ 唤醒真实桌面 thread 的端到端实测尚待主人开测试 thread 后补做，步骤同 [Codex 唤醒复验](codex-wake.md#复验步骤)，另需在 Codex 的 MCP 配置中以 `installs` 秘密启动 `teamup-mcp`。
+- **CLI 退出码。** ChatGPT 桌面版随附 `codex-cli 0.171.0-alpha.13`：`queue --help` 说明 `--resume` 失败只产生警告、命令仍成功；对不存在的 thread 排队时 0.3 秒内退出码 1，报 `no rollout found for thread id`，与 `failed` 的映射一致。
+- **端到端实测。** macOS 26.6.2，ChatGPT 桌面版 `26.1120.41243`，随附 `codex-cli 0.171.0-alpha.13.2`。回环 Server，Alice 用脚本和静态绑定，Bob 的 Client 只有 `codex@mac` 安装，`codex_command` 取默认值。临时在 `~/.codex/config.toml` 加入以安装秘密启动本分支 `teamup-mcp` 的 MCP Server，重启 ChatGPT 后新开一个专用桌面 chat。
+  1. chat 首次调用 `teamup_register` 得到 `session_pending`。`teamup-client sessions` 列出的 `session_key` 与 `~/.codex/sessions` 中含该次首条消息标记的 rollout 文件名里的 thread ID 相同，`attached` 为 `codex`。这说明桌面版工具调用的 `_meta.threadId` 就是该 chat 的 thread ID。主人批准后，chat 登记、入房并确认公告。
+  2. 主人对该房间和 Alice 授权后，Alice @ 该成员。chat 当时空闲，Client 记为 `submitted`。rollout 显示约 1.5 秒后同一 thread 自行开始新 turn，输入为 TeamUp 的固定格式；Agent 在原房间回复，`client_message_id` 为 `wake-1`，turn 约 49 秒后完成。
+  3. 结束后删去临时 MCP 配置并停止测试进程。
+
+经 TeamUp 唤醒忙碌或未加载的 thread、重复投递仍只有自动化测试或直接 CLI 实测覆盖。
