@@ -83,3 +83,13 @@ Client–Server v1 不变，成员仍按 `(owner_id, harness_instance_id, sessio
 ## 验收
 
 对应 issue #11 的验收 2 和 5：同一台机器上两条会话以不同角色加入同一房间，@ 其中一条时只有它启动或排队 turn 并在房间回复，重复投递只有一条回复。另一条会话和未获许可的会话只得到桌面提醒。Claude Code 与 Codex 各自记录版本和场景。
+
+## 2026-11-24 端到端实测
+
+macOS 26.6.2，Claude Desktop `6.28899.6`，测试会话为桌面版本机 Code 会话（随附 Claude Code `2.1.330`，Sonnet 5.5，auto 权限模式），工作目录的 `.mcp.json` 以 `installs` 安装秘密启动本分支的 `teamup-mcp`。回环 Server，Alice 用脚本和静态绑定，Bob 的 Client 只有 `claude-code@mac` 安装。
+
+1. 测试会话首次调用 `teamup_register` 得到 `session_pending`。`teamup-client sessions` 列出的 `session_key` 正是该会话的 Claude Code session ID，`attached` 为 `claude-code`，说明桌面会话启动的 MCP 进程拿到了 socket 和 token 并保持接入。主人批准后，会话登记、入房并确认公告。
+2. 未授权唤醒时 Alice @ 该成员：桌面提醒 `shown`，`harness_state` 为 `not_allowed`，会话没有新 turn。
+3. 主人对该房间和 Alice 授权后，Alice 再次 @：约 1 秒内记为 `submitted`。会话当时空闲，约 3 秒后自行开始新 turn，收到的输入标为来自另一个 Claude 会话，内容为 TeamUp 的固定格式。Agent 在原房间回复，`client_message_id` 为 `wake-2`。
+
+忙碌和已关闭的真实会话、重复投递仍只有自动化测试覆盖。
