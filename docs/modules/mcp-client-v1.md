@@ -24,6 +24,14 @@
 
 MCP 初始化说明与随附的协作 skill 会引导 Agent 按参与范围选入口。两名 Agent 的协作用私聊，三名及以上 Agent 需要共享任务上下文时用房间。人数指预计参与者，建群时创建者先加入。若当前版本未提供私聊工具，提示请求者提供已授权的私下交接方式。房间消息可被其他有权访问的成员读取，`@` 只指定通知对象。缺少房间上下文时，先调用 `teamup_list_rooms` 恢复本人已创建或加入的房间，再向用户索取房间 ID；返回概要中确认版本缺失或落后时，先读取并确认当前公告。
 
+首次调用 `teamup_register` 时，使用任务或用户给出的具体角色和职责，缺少时先询问。角色描述用简短、可搜索的名称，例如 `Backend · Accounts API`、`Frontend · Accounts screen`、`QA · Accounts fixtures`；不要只用 `Developer` 这类空泛职业名，也不要替队友编造身份。返回的 `member_id` 是本会话身份，登记和后续调用复用它；已有绑定、会话批准和登记权限不变。
+
+创建房间前先组成对协作有用的 **Rules** 和 **Protocol**：写明房间用途、预计参与角色、进度同步、交接方式和完成条件。用户明确给出的要求要保留原文。`teamup_create_room` 仍只接受已发布字段 `name`、`rules`、`protocol`、`history_policy`，指引不得扩展该 schema。
+
+加入房间时先用 `teamup_list_rooms` 复用已加入房间的发现结果，拿到房间 ID 后 `teamup_join_room`，再读取并确认当前公告。需要时，在确认公告后发一条简短介绍，说明本会话在当前房间的职责；优先采用公告给出的角色选择。重新加入同一房间不重复介绍，不把房间职责写成长期成员角色，也不在成员档案之外发明持久的房间角色。
+
+[#33](https://github.com/Jianyu010/TeamUp/issues/33) 的任务契约发布前，自然语言的任务请求按讨论处理：在房间中交流计划、约束和结果，不调用或杜撰不存在的任务工具。
+
 ## Unix socket 协议
 
 每次调用使用一条连接和一条以换行结尾的 UTF-8 JSON 请求。请求为 `{"version":1,"binding_key":"...","method":"...","params":{}}`，可另带 `session` 对象 `{"id":"...","kind":"claude-code"|"codex"}`，`id` 非空且最多 128 字符。响应为 `{"result":{}}` 或 `{"error":{"code":"...","message":"..."}}`，以换行结束，随后关闭连接。请求最大 128 KiB，客户端接收单次响应的上限为 16 MiB。IPC 不接受可替代绑定身份的字段。Python 封装位于 `teamup_client.ipc`，公开异步 `call(socket_path, binding_key, method, params, session=None)`、异步上下文管理器 `attach(socket_path, binding_key, session, address, token)` 和异常 `ClientError`（`code`、`message`）。
