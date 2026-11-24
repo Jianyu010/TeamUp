@@ -74,13 +74,38 @@ jobs:
             results/nightly/scenarios.json results/nightly/perf.json
           python3 -E -s -m scripts.ci.results status results/nightly/summary.json || true
       - name: Keep the results
+        id: keep1
         if: ${{ always() }}
+        continue-on-error: true # hp-laptop's link to GitHub drops; finalize fails with ECONNRESET
         uses: actions/upload-artifact@v4
         with:
           name: nightly-${{ github.sha }}-${{ github.run_attempt }}
           path: results/
           retention-days: 90
           if-no-files-found: warn
+          overwrite: true
+      - name: Keep the results (retry 1)
+        id: keep2
+        if: ${{ always() && steps.keep1.outcome == 'failure' }}
+        continue-on-error: true # hp-laptop's link to GitHub drops; finalize fails with ECONNRESET
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-${{ github.sha }}-${{ github.run_attempt }}
+          path: results/
+          retention-days: 90
+          if-no-files-found: warn
+          overwrite: true
+      - name: Keep the results (retry 2)
+        id: keep3
+        if: ${{ always() && steps.keep2.outcome == 'failure' }}
+        continue-on-error: false # hp-laptop's link to GitHub drops; finalize fails with ECONNRESET
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-${{ github.sha }}-${{ github.run_attempt }}
+          path: results/
+          retention-days: 90
+          if-no-files-found: warn
+          overwrite: true
 
   report:
     name: 4 · nightly report and release
@@ -106,6 +131,23 @@ jobs:
             --wildcards '*/scripts/ci/*' '*/.github/ci/*' '*/dashboards/site/*'
           rm -f "$RUNNER_TEMP/tree.tar.gz"
       - name: Download the results
+        id: fetch1
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: nightly-${{ github.sha }}-${{ github.run_attempt }}
+          path: incoming/
+      - name: Download the results (retry 1)
+        id: fetch2
+        if: ${{ steps.fetch1.outcome == 'failure' }}
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: nightly-${{ github.sha }}-${{ github.run_attempt }}
+          path: incoming/
+      - name: Download the results (retry 2)
+        id: fetch3
+        if: ${{ steps.fetch2.outcome == 'failure' }}
         uses: actions/download-artifact@v4
         continue-on-error: true
         with:
