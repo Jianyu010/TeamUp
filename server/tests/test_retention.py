@@ -38,6 +38,9 @@ from test_direct_messages import dm_send, open_dm
 OLD = "2020-01-01T00:00:00Z"
 OLD_FRACTIONAL = "2020-01-01T00:00:00.123456Z"
 NAIVE = "2020-01-01T00:00:00"
+# Explicit offsets whose UTC conversion leaves the representable calendar.
+EXTREME_LOW = "0001-01-01T00:00:00+01:00"
+EXTREME_HIGH = "9999-12-31T23:59:59-01:00"
 
 
 @contextmanager
@@ -710,17 +713,26 @@ def test_expire_due_spares_naive_and_unusable_timestamps(tmp_path):
     token, room_id = _expiry_room(collaboration)
     naive = collaboration.send_message(token, room_id, "naive", "naive needle", None)
     garbage = collaboration.send_message(token, room_id, "garbage", "bad needle", None)
+    earliest = collaboration.send_message(
+        token, room_id, "earliest", "low extreme needle", None
+    )
+    latest = collaboration.send_message(
+        token, room_id, "latest", "high extreme needle", None
+    )
     aware = collaboration.send_message(token, room_id, "aware", "old needle", None)
     expire_in_sqlite(
         db_path,
         {
             naive["message_id"]: NAIVE,
             garbage["message_id"]: "not-a-timestamp",
+            earliest["message_id"]: EXTREME_LOW,
+            latest["message_id"]: EXTREME_HIGH,
             aware["message_id"]: OLD,
         },
     )
     moment = datetime(2026, 1, 1, tzinfo=UTC)
-    # Only the offset-carrying stamp expires; naive and unusable stamps stay.
+    # Only the plainly offset-carrying stamp expires; naive, unusable and
+    # offset-extreme stamps stay without aborting the scan.
     assert collaboration.expire_due(timedelta(hours=1), now=moment) == RetentionPass(
         1, 1, False
     )
@@ -728,14 +740,18 @@ def test_expire_due_spares_naive_and_unusable_timestamps(tmp_path):
     assert [message["message_id"] for message in page["messages"]] == [
         naive["message_id"],
         garbage["message_id"],
+        earliest["message_id"],
+        latest["message_id"],
     ]
     assert [message["created_at"] for message in page["messages"]] == [
         NAIVE,
         "not-a-timestamp",
+        EXTREME_LOW,
+        EXTREME_HIGH,
     ]
     assert page["expired_through_message_id"] == aware["message_id"]
     assert page["history_truncated"] is True
-    # A second pass changes nothing: neither survivor ever converts to UTC.
+    # A second pass changes nothing: no survivor ever converts to UTC.
     assert collaboration.expire_due(timedelta(hours=1), now=moment) == RetentionPass(
         0, 0, False
     )

@@ -506,11 +506,17 @@ def _expiry_micros(stamp: object) -> int | None:
     Both retention families share this SQL-side clock and the single
     parser behind it: a ``created_at`` without an explicit offset, or
     with any unusable value, never expires -- the policy fails closed.
+    That includes offset extremes whose UTC conversion overflows the
+    representable calendar: they stay unusable instead of aborting
+    the scan.
     """
     moment = _parse_timestamp(stamp)
     if moment is None:
         return None
-    return _utc_micros(moment)
+    try:
+        return _utc_micros(moment)
+    except OverflowError:
+        return None
 
 
 def _register_expiry_clock(connection: sqlite3.Connection) -> None:
