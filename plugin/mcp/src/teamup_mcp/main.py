@@ -12,10 +12,13 @@ from teamup_client.ipc import ClientError, attach, call
 ROOM = {"room_id": {"type": "string", "format": "uuid"}}
 TEXT = {"type": "string", "minLength": 1, "maxLength": 8_000}
 NAME = {"type": "string", "minLength": 1, "maxLength": 200}
+QUERY = {"type": "string", "minLength": 1, "maxLength": 200}
+HISTORY_POLICY = {"type": "string", "enum": ["retained", "since_joining"]}
 PAGE = {
     "after": {"type": "integer", "minimum": 0, "default": 0},
     "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50},
 }
+HISTORY = PAGE | {"before": {"type": "integer", "minimum": 1}}
 
 
 def tool(
@@ -58,7 +61,7 @@ TOOLS = [
         "Create and join a team-visible task room for three or more agents. "
         "The room has a required board.",
         {"name": NAME},
-        {"rules": TEXT, "protocol": TEXT},
+        {"rules": TEXT, "protocol": TEXT, "history_policy": HISTORY_POLICY},
     ),
     tool("join_room", "Join a team-visible room.", ROOM),
     tool("get_board", "Read the room's current rules, protocol and version.", ROOM),
@@ -77,7 +80,13 @@ TOOLS = [
         },
         {"mention_member_id": {"type": ["string", "null"], "format": "uuid"}},
     ),
-    tool("read_messages", "Read room messages after a message ID.", ROOM, PAGE),
+    tool("read_messages", "Read room messages after a message ID.", ROOM, HISTORY),
+    tool(
+        "search_room",
+        "Search readable room messages for a case-insensitive substring.",
+        ROOM | {"q": QUERY},
+        PAGE,
+    ),
     tool(
         "notifications",
         "List received mentions after an event ID. Open room history for their text.",

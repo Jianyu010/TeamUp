@@ -31,11 +31,27 @@ def test_stdio_passes_approved_binding_and_surfaces_ipc_error():
                 {"message_id": 1},
             ),
             ("get_board", {"room_id": "room"}, None),
+            (
+                "search_room",
+                {"room_id": "room", "q": "Hello", "after": 0, "limit": 10},
+                {
+                    "matches": [
+                        {
+                            "message_id": 1,
+                            "sender_member_id": "b",
+                            "created_at": "2026-11-24T00:00:00Z",
+                            "snippet": "Hello there",
+                        }
+                    ],
+                    "expired_through_message_id": 0,
+                    "history_truncated": True,
+                },
+            ),
             ("list_rooms", {}, {"rooms": []}),
             ("notifications", {}, {"notifications": []}),
         ]
         # Unread counts the Client reports after each successful non-notice tool.
-        unread = iter([0, 2, 0])
+        unread = iter([0, 2, 0, 0])
         seen = []
 
         async def serve(reader, writer):
@@ -96,7 +112,21 @@ def test_stdio_passes_approved_binding_and_surfaces_ipc_error():
                 "teamup_ack_board",
                 "teamup_send_message",
                 "teamup_read_messages",
+                "teamup_search_room",
                 "teamup_notifications",
+            }
+            search_schema = tools["teamup_search_room"].inputSchema
+            assert search_schema["required"] == ["room_id", "q"]
+            assert search_schema["properties"]["q"] == {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+            }
+            assert search_schema["properties"]["limit"] == {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100,
+                "default": 50,
             }
             hints = []
             for method, args, result in requests:
@@ -112,6 +142,7 @@ def test_stdio_passes_approved_binding_and_surfaces_ipc_error():
             assert hints == [
                 [],
                 ["TeamUp: 2 unread mentions. Call teamup_notifications to read them."],
+                [],
                 [],
                 [],
                 [],
@@ -132,7 +163,9 @@ def test_stdio_passes_approved_binding_and_surfaces_ipc_error():
             ipc("send_message", requests[1][1]),
             status,
             ipc("get_board", requests[2][1]),
-            ipc("list_rooms", requests[3][1]),
+            ipc("search_room", requests[3][1]),
+            status,
+            ipc("list_rooms", requests[4][1]),
             status,
             ipc("notifications", {}),
         ]

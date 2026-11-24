@@ -4,7 +4,7 @@ import asyncio
 import re
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
-from typing import Annotated
+from typing import Annotated, Literal
 from urllib.parse import unquote_to_bytes
 from uuid import UUID
 
@@ -66,7 +66,13 @@ _MemberToken = Annotated[
 ]
 _Identifier = Annotated[str, AfterValidator(_uuid)]
 _After = Annotated[int, Query(ge=0)]
+_Before = Annotated[int, Query(ge=1)]
 _Limit = Annotated[int, Query(ge=1, le=100)]
+_SearchText = Annotated[
+    str,
+    Query(min_length=1, max_length=200),
+    AfterValidator(_nonblank),
+]
 
 
 class _Body(BaseModel):
@@ -89,6 +95,7 @@ class _Room(_Body):
     name: _Name
     rules: _LongText | None = None
     protocol: _LongText | None = None
+    history_policy: Literal["retained", "since_joining"] = "since_joining"
 
     @field_validator("rules", "protocol")
     @classmethod
@@ -207,7 +214,7 @@ class Gateway:
         @app.post("/v1/rooms", dependencies=[Depends(_require_utf8)])
         def create_room(token: _Bearer, body: _Room) -> dict:
             return collaboration.create_room(
-                token, body.name, body.rules, body.protocol
+                token, body.name, body.rules, body.protocol, body.history_policy
             )
 
         @app.get("/v1/rooms")
@@ -237,9 +244,27 @@ class Gateway:
 
         @app.get("/v1/rooms/{room_id}/messages")
         def history(
-            token: _Bearer, room_id: _Identifier, after: _After = 0, limit: _Limit = 50
+            token: _Bearer,
+            room_id: _Identifier,
+            after: _After = 0,
+            limit: _Limit = 50,
+            before: _Before | None = None,
         ) -> dict:
-            return {"messages": collaboration.history(token, room_id, after, limit)}
+            return {
+                "messages": collaboration.history(token, room_id, after, limit, before)
+            }
+
+        @app.get(
+            "/v1/rooms/{room_id}/search", dependencies=[Depends(_require_query_utf8)]
+        )
+        def search_room(
+            token: _Bearer,
+            room_id: _Identifier,
+            q: _SearchText,
+            after: _After = 0,
+            limit: _Limit = 50,
+        ) -> dict:
+            return {"matches": collaboration.search(token, room_id, q, after, limit)}
 
         @app.get("/v1/inbox")
         def inbox(token: _Bearer, after: _After = 0, limit: _Limit = 50) -> dict:
