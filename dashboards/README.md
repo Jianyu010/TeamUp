@@ -19,3 +19,24 @@ gh api repos/Jianyu010/TeamUp --jq .subscribers_count
 gh api -X GET search/issues -f 'q=repo:Jianyu010/TeamUp is:pr is:open' --jq .total_count
 gh api -X GET search/issues -f 'q=repo:Jianyu010/TeamUp is:pr is:merged' --jq .total_count
 ```
+
+## CI 看板
+
+`dashboards/site/` 是静态页面，发布到 `ci-data` 分支根目录。页面用相对路径读取同分支的 `data/nightly.jsonl`、`data/weekly.jsonl`、`data/repo.jsonl` 和 `data/releases.jsonl`。文件缺失时显示空状态，不报错。
+
+| 页面 | 内容 |
+| --- | --- |
+| `index.html` | 最近 nightly/weekly 状态、提交、最新发布与仓库摘要 |
+| `repo.html` | Stars、Watchers、Forks、Issue/PR、发布下载与 14 天访问 |
+| `performance.html` | nightly 指标、最近场景与通过率 |
+| `agents.html` | weekly 指标、最近场景与场景状态历史 |
+
+仓库统计由 `scripts/ci/repo_stats.py` 生成，每个自然日一行。traffic 接口无权限时对应字段写 `null`，看板显示为空，不当作 0。
+
+本地预览使用样例数据：
+
+```sh
+dashboards/site/preview.sh
+```
+
+脚本把 `dashboards/site/sample-data/*.jsonl` 复制到临时目录的 `data/`，再用 `python3 -m http.server` 提供服务。
