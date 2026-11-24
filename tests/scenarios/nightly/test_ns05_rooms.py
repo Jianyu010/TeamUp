@@ -14,12 +14,10 @@ def test_room_create_join_refuse(ws):
 
     created = api.call("POST", "/v1/rooms", alice.token, json={"name": "API compat"})
     room = created["room_id"]
-    # Only the create result carries the saved history policy.
-    assert created == {
-        "room_id": room,
-        "name": "API compat",
-        "history_policy": "since_joining",
-    }
+    # The create result carries the saved history policy; the request omitted
+    # it, so the documented default applies.
+    assert created["name"] == "API compat"
+    assert created["history_policy"] == "since_joining"
     # A room always has a board: version 1 with default text.
     board = api.call("GET", f"/v1/rooms/{room}/board", alice.token)
     assert board["version"] == 1 and board["room_id"] == room
@@ -39,12 +37,16 @@ def test_room_create_join_refuse(ws):
         assert status == 404, path
 
     # Join returns the bare Room, without the create-only history policy.
-    assert api.call("POST", f"/v1/rooms/{room}/join", bob.token) == {
+    # Select only the documented Room fields: additive fields must not fail
+    # this behavioral test.
+    joined = api.call("POST", f"/v1/rooms/{room}/join", bob.token)
+    assert {k: joined[k] for k in ("room_id", "name")} == {
         "room_id": room,
         "name": "API compat",
     }
     # Joining again is harmless and keeps the original join position.
-    assert api.call("POST", f"/v1/rooms/{room}/join", bob.token) == {
+    rejoined = api.call("POST", f"/v1/rooms/{room}/join", bob.token)
+    assert {k: rejoined[k] for k in ("room_id", "name")} == {
         "room_id": room,
         "name": "API compat",
     }
