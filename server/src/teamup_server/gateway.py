@@ -9,7 +9,7 @@ from typing import Annotated, Literal
 from urllib.parse import unquote_to_bytes
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, Header, Path, Query, Request
+from fastapi import Depends, FastAPI, Header, Path, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import (
@@ -80,6 +80,11 @@ _MemberToken = Annotated[
 _Identifier = Annotated[str, AfterValidator(_uuid)]
 _After = Annotated[int, Query(ge=0)]
 _Limit = Annotated[int, Query(ge=1, le=100)]
+_Before = Annotated[int, Query(ge=1)]
+
+
+def _no_store(response: Response) -> None:
+    response.headers["Cache-Control"] = "no-store"
 
 
 class _Body(BaseModel):
@@ -216,8 +221,38 @@ class Gateway:
             )
 
         @app.get("/v1/console/rooms")
-        def console_rooms(token: _Bearer) -> dict:
+        def console_rooms(token: _Bearer, response: Response) -> dict:
+            _no_store(response)
             return collaboration.list_console_rooms(token)
+
+        @app.get("/v1/console/rooms/{room_id}")
+        def console_room_detail(
+            token: _Bearer, room_id: _Identifier, response: Response
+        ) -> dict:
+            _no_store(response)
+            return collaboration.console_room_detail(token, room_id)
+
+        @app.get("/v1/console/rooms/{room_id}/timeline")
+        def console_timeline(
+            token: _Bearer,
+            room_id: _Identifier,
+            response: Response,
+            after: _After = 0,
+            limit: _Limit = 50,
+        ) -> dict:
+            _no_store(response)
+            return collaboration.console_timeline(token, room_id, after, limit)
+
+        @app.get("/v1/console/rooms/{room_id}/transcript")
+        def console_transcript(
+            token: _Bearer,
+            room_id: _Identifier,
+            response: Response,
+            before: _Before | None = None,
+            limit: _Limit = 50,
+        ) -> dict:
+            _no_store(response)
+            return collaboration.console_transcript(token, room_id, before, limit)
 
         @app.get("/console/")
         def console_index() -> FileResponse:

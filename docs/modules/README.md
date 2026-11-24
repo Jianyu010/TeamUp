@@ -6,7 +6,8 @@
 | [可信团队试用](team-pilot.md) | SSH 隧道、开户与开发者安装 |
 | [v1 试跑](quickstart.md) | Server、Client、MCP 安装和两会话验收 |
 | [Client–Server v1](client-server-v1.md) | 已发布的 HTTPS、SSE、认证、收件与错误语义 |
-| [Control Console](control-console.md) | 只读控制台：操作员鉴权、授权、静态托管与后续只读路由（stage 2 草案） |
+| [Control Console](control-console.md) | 只读控制台：操作员鉴权、授权、静态托管与只读路由（rooms/roster/Timeline/Chats，stage 3） |
+| [会话历史](conversation-history.md) | 房间历史、搜索与保留的模块契约（#6，含控制台正文授权引用） |
 | [MCP–Client v1](mcp-client-v1.md) | 已发布的工具、Unix socket、绑定和通知语义 |
 | [Server API 与时序](teamup-api.md) | Gateway、Collaboration、Presence，消息投递与停用的目标时序 |
 | [Client 和本地 MCP](client-mcp.md) | 会话绑定、进程边界、工具和 skill 的装载 |

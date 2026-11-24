@@ -538,11 +538,9 @@ def test_retained_room_reads_pre_join_history_after_board_ack(team):
     error(get(team, "target", f"{room_path}/messages"), 409, "board_ack_required")
     confirm(team, "target", room_path)
     assert get(team, "target", f"{room_path}/messages").json() == {"messages": [early]}
-    assert (
-        get(team, "target", f"{room_path}/messages?after={early['message_id']}")
-        .json()
-        == {"messages": []}
-    )
+    assert get(
+        team, "target", f"{room_path}/messages?after={early['message_id']}"
+    ).json() == {"messages": []}
     later = send(team, room_path, "later").json()
     assert get(team, "target", f"{room_path}/messages").json() == {
         "messages": [early, later]
@@ -558,11 +556,9 @@ def test_created_at_is_utc_rfc3339_and_shared_across_send_retry_history_inbox(te
     sent = send(team, room_path, "once", target=target).json()
     assert_utc_timestamp(sent["created_at"])
     assert get(team, "sender", f"{room_path}/messages").json() == {"messages": [sent]}
-    assert (
-        get(team, "sender", f"{room_path}/messages?after={sent['message_id']}")
-        .json()
-        == {"messages": []}
-    )
+    assert get(
+        team, "sender", f"{room_path}/messages?after={sent['message_id']}"
+    ).json() == {"messages": []}
     assert send(team, room_path, "once", target=target).json() == sent
     target_events = get(team, "target", "/inbox").json()["events"]
     assert target_events == [

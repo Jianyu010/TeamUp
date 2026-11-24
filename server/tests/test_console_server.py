@@ -1,11 +1,13 @@
-"""Stage 2 server contract tests: console operator auth, grants, and static hosting (#5).
+"""Server contract tests for the Control Console read paths (#5).
 
-See docs/modules/control-console.md (stage 2 scope) and
-docs/modules/account-login-v1.md ("登录 purpose"). These tests cover the
-console login purpose, bidirectional scope isolation, the operator grant
-lifecycle through the local accounts CLI, the v2-to-v3 legacy session
-migration, GET /v1/console/rooms metadata, and the Gateway static hosting
-of the exact three bundled console assets.
+See docs/modules/control-console.md. Stage 2 covered console login purpose,
+bidirectional scope isolation, the operator grant lifecycle through the local
+accounts CLI, the v2 legacy session migration, GET /v1/console/rooms
+metadata, and the Gateway static hosting of the exact three bundled console
+assets. Stage 3 (this file's additions) covers the roster detail route, the
+body-free Timeline projection with backfill, the Chats transcript route with
+in-transaction audit, scoped transcript grants, revocation taking effect on
+the next page, pagination, and Cache-Control: no-store on authorized reads.
 """
 
 import sqlite3
@@ -13,6 +15,7 @@ import subprocess
 import zipfile
 from base64 import urlsafe_b64encode
 from contextlib import closing
+from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
 from secrets import token_bytes
@@ -21,7 +24,19 @@ from uuid import uuid4
 
 import pytest
 from argon2 import PasswordHasher
-from test_contract import KEYS, auth, credential, error, get, join, live_server
+from test_contract import (
+    KEYS,
+    auth,
+    confirm,
+    credential,
+    error,
+    get,
+    join,
+    live_server,
+    member,
+    post,
+    send,
+)
 from test_server_accounts import (
     NEW_PASSWORD,
     PASSWORD,
@@ -56,6 +71,77 @@ def console_token(client, username, password):
 
 def console_rooms(client, token):
     return client.get("/v1/console/rooms", headers=auth(token))
+
+
+def console_get(client, token, path):
+    return client.get(f"/v1/console{path}", headers=auth(token))
+
+
+def console_room_detail(client, token, room_id):
+    return console_get(client, token, f"/rooms/{room_id}")
+
+
+def console_timeline(client, token, room_id, *, after=0, limit=50):
+    return console_get(
+        client, token, f"/rooms/{room_id}/timeline?after={after}&limit={limit}"
+    )
+
+
+def console_transcript(client, token, room_id, *, before=None, limit=50):
+    query = f"limit={limit}"
+    if before is not None:
+        query += f"&before={before}"
+    return console_get(client, token, f"/rooms/{room_id}/transcript?{query}")
+
+
+def console_team_room(client, *, name="Console room", messages=(), prefix="key"):
+    """Create a room as bound member "sender", confirm, and return its id.
+
+    Binds member "target" as well so tests can join it into the room. Message
+    retry keys are "<prefix>-<index>" because a sender's retry key is unique
+    across rooms.
+    """
+    enrollment = login_token(client, "alice", PASSWORD)
+    for label in ("sender", "target"):
+        assert bind(client, enrollment, label).status_code == 200
+    room_id = client.post(
+        "/v1/rooms", headers=auth(credential("sender")), json={"name": name}
+    ).json()["room_id"]
+    room_path = f"/rooms/{room_id}"
+    confirm(client, "sender", room_path)
+    for index, text in enumerate(messages):
+        assert (
+            send(client, room_path, f"{prefix}-{index}", text=text).status_code == 200
+        )
+    return room_id
+
+
+def audit_rows(db_path):
+    with closing(sqlite3.connect(db_path)) as connection:
+        connection.row_factory = sqlite3.Row
+        return [
+            dict(row)
+            for row in connection.execute(
+                """
+                SELECT owner_id, room_id, action, at, page_before, page_limit
+                FROM transcript_access_audit
+                """
+            )
+        ]
+
+
+def room_activity_rows(db_path):
+    with closing(sqlite3.connect(db_path)) as connection:
+        connection.row_factory = sqlite3.Row
+        return [
+            dict(row)
+            for row in connection.execute(
+                """
+                SELECT activity_id, room_id, kind, at, actor_member_id, message_id
+                FROM room_activity ORDER BY activity_id
+                """
+            )
+        ]
 
 
 def test_console_purpose_login_and_bidirectional_scope_isolation(tmp_path):
@@ -133,19 +219,19 @@ def test_console_read_grant_lifecycle_and_rooms_metadata(tmp_path):
         admin(db_path, "grant-console", "alice")
         response = console_rooms(client, console)
         assert response.status_code == 200, response.text
+        assert response.headers["cache-control"] == "no-store"
         rooms = response.json()["rooms"]
         assert [entry["room_id"] for entry in rooms] == sorted(created)
-        assert response.json() == {
-            "rooms": [
-                {
-                    "room_id": entry["room_id"],
-                    "name": created[entry["room_id"]],
-                    "member_count": 1 + (entry["room_id"] == room_id),
-                    "last_activity": None,
-                }
-                for entry in rooms
-            ]
-        }
+        for entry in rooms:
+            assert set(entry) == {"room_id", "name", "member_count", "last_activity"}
+            assert entry["name"] == created[entry["room_id"]]
+            assert entry["member_count"] == 1 + (entry["room_id"] == room_id)
+            activity = entry["last_activity"]
+            assert activity is not None
+            assert set(activity) == {"kind", "at", "message_id"}
+            assert activity["kind"] == "member_joined"
+            assert isinstance(activity["at"], int) and activity["at"] > 0
+            assert activity["message_id"] is None
 
         assert get(client, "sender", "/inbox").json() == {"events": []}
         assert get(client, "target", "/inbox").json() == {"events": []}
@@ -242,6 +328,9 @@ def test_v2_sessions_migrate_to_enrollment_purpose(tmp_path):
     raw = token_bytes(32)
     legacy_token = urlsafe_b64encode(raw).decode().rstrip("=")
     legacy_digest = sha256(raw).digest()
+    room_id = "3cb9cbf2-aaf5-459b-a69f-4e256c300454"
+    old_member = "c876568e-8819-40fe-a5f9-da904dcb45a3"
+    late_member = "6f6d3b93-2c2e-4d5f-9a54-6d0f4f65ab21"
     with closing(sqlite3.connect(db_path)) as connection, connection:
         connection.executescript(
             """
@@ -311,12 +400,44 @@ def test_v2_sessions_migrate_to_enrollment_purpose(tmp_path):
             "INSERT INTO account_sessions VALUES (?, ?, ?)",
             (legacy_digest, owner_id, int(time()) + 3600),
         )
+        connection.execute(
+            "INSERT INTO members VALUES (?, 'legacy-owner', 'old-harness', "
+            "'old-session', 'Old role', ?)",
+            (old_member, sha256(sha256(b"old").digest()).digest()),
+        )
+        connection.execute(
+            "INSERT INTO members VALUES (?, 'legacy-owner', 'old-harness', "
+            "'late-session', 'Late role', ?)",
+            (late_member, sha256(sha256(b"late").digest()).digest()),
+        )
+        connection.execute(
+            "INSERT INTO rooms VALUES (?, 'Legacy room', 1, 'Rules', 'Protocol')",
+            (room_id,),
+        )
+        connection.execute(
+            "INSERT INTO room_members VALUES (?, ?, 0, 1, 1)", (room_id, old_member)
+        )
+        connection.execute(
+            "INSERT INTO room_members VALUES (?, ?, 41, 1, 1)", (room_id, late_member)
+        )
+        connection.execute(
+            "INSERT INTO messages VALUES (41, ?, ?, 'old-1', 'First old', NULL)",
+            (room_id, old_member),
+        )
+        connection.execute(
+            "INSERT INTO messages VALUES (42, ?, ?, 'old-2', 'Second old', NULL)",
+            (room_id, old_member),
+        )
+        connection.execute(
+            "INSERT INTO inbox_events VALUES (17, ?, 42, 'message', 0)",
+            (late_member,),
+        )
 
     with live_server(db_path, legacy=False) as (client, _):
         assert bind(client, legacy_token, "sender").status_code == 200
         error(console_rooms(client, legacy_token), 401, "unauthorized")
         with closing(sqlite3.connect(db_path)) as connection:
-            assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+            assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
             purposes = dict(
                 connection.execute("SELECT token_digest, purpose FROM account_sessions")
             )
@@ -326,7 +447,70 @@ def test_v2_sessions_migrate_to_enrollment_purpose(tmp_path):
         console = console_token(client, "alice", PASSWORD)
         response = console_rooms(client, console)
         assert response.status_code == 200, response.text
-        assert response.json() == {"rooms": []}
+        assert response.json() == {
+            "rooms": [
+                {
+                    "room_id": room_id,
+                    "name": "Legacy room",
+                    "member_count": 2,
+                    "last_activity": {"kind": "message", "at": None, "message_id": 42},
+                }
+            ]
+        }
+        timeline = console_timeline(client, console, room_id)
+        activities = timeline.json()["activities"]
+        assert [activity["kind"] for activity in activities] == [
+            "member_joined",
+            "member_joined",
+            "board_acknowledged",
+            "board_acknowledged",
+            "message",
+            "message",
+        ]
+        assert [activity["at"] for activity in activities] == [None] * 6
+        assert [activity["message_id"] for activity in activities] == [
+            None,
+            None,
+            None,
+            None,
+            41,
+            42,
+        ]
+        assert [activity["actor_member_id"] for activity in activities] == [
+            old_member,
+            late_member,
+            late_member,
+            old_member,
+            old_member,
+            old_member,
+        ]
+        assert "First old" not in timeline.text and "Second old" not in timeline.text
+        admin(db_path, "grant-transcript", "alice", room_id)
+        page = console_transcript(client, console, room_id).json()
+        assert page == {
+            "messages": [
+                {
+                    "message_id": 41,
+                    "room_id": room_id,
+                    "sender_member_id": old_member,
+                    "sender_role_description": "Old role",
+                    "text": "First old",
+                    "mention_member_id": None,
+                    "created_at": None,
+                },
+                {
+                    "message_id": 42,
+                    "room_id": room_id,
+                    "sender_member_id": old_member,
+                    "sender_role_description": "Old role",
+                    "text": "Second old",
+                    "mention_member_id": None,
+                    "created_at": None,
+                },
+            ],
+            "has_more": False,
+        }
+        assert len(audit_rows(db_path)) == 1
         assert bind(client, legacy_token, "sender").status_code == 200
 
 
@@ -375,3 +559,554 @@ def test_console_static_package_ships_in_built_wheel(tmp_path):
         names = set(archive.namelist())
     for name in ("index.html", "console.css", "console.js"):
         assert f"teamup_server/console/{name}" in names
+
+
+def test_console_room_detail_roster_and_transcript_gate(tmp_path):
+    db_path = tmp_path / "team.sqlite3"
+    enter_password(db_path, "create", "alice", PASSWORD)
+    with live_server(db_path) as (client, _):
+        enrollment = login_token(client, "alice", PASSWORD)
+        assert bind(client, enrollment, "target").status_code == 200
+        room_id = console_team_room(client)
+        room_path = f"/rooms/{room_id}"
+        join(client, "target", room_path)
+        for label in ("sender", "target"):
+            confirm(client, label, room_path)
+        target = member(client, "target")
+        sender = member(client, "sender")
+        sent = send(client, room_path, "detail-1", text="roster body").json()
+        events = get(client, "target", "/inbox").json()["events"]
+        assert (
+            post(client, "target", f"/inbox/{events[0]['event_id']}/ack").status_code
+            == 200
+        )
+
+        console = console_token(client, "alice", PASSWORD)
+        error(console_room_detail(client, console, room_id), 403, "forbidden")
+        error(
+            console_room_detail(client, credential("sender"), room_id),
+            401,
+            "unauthorized",
+        )
+        error(
+            console_room_detail(client, console, "not-a-uuid"), 422, "invalid_request"
+        )
+        admin(db_path, "grant-console", "alice")
+
+        detail = console_room_detail(client, console, room_id)
+        assert detail.status_code == 200, detail.text
+        assert detail.headers["cache-control"] == "no-store"
+        payload = detail.json()
+        assert set(payload) == {"room", "members", "transcript_allowed"}
+        assert payload["transcript_allowed"] is False
+        room = payload["room"]
+        assert set(room) == {"room_id", "name", "member_count", "last_activity"}
+        assert room["room_id"] == room_id
+        assert room["name"] == "Console room"
+        assert room["member_count"] == 2
+        last = room["last_activity"]
+        assert set(last) == {"kind", "at", "message_id"}
+        assert last["kind"] == "delivery"
+        assert isinstance(last["at"], int) and abs(last["at"] - int(time())) < 600
+        assert last["message_id"] == sent["message_id"]
+
+        members = payload["members"]
+        assert [entry["member_id"] for entry in members] == sorted(
+            entry["member_id"] for entry in members
+        )
+        roles = {entry["role_description"]: entry for entry in members}
+        assert set(roles) == {"sender", "target"}
+        assert roles["target"]["member_id"] == target
+        assert roles["sender"]["member_id"] == sender
+        for entry in members:
+            assert set(entry) == {
+                "member_id",
+                "role_description",
+                "board_state",
+                "last_activity",
+                "harness_state",
+            }
+            assert entry["board_state"] == "acknowledged"
+            assert entry["harness_state"] == "unknown"
+            activity = entry["last_activity"]
+            assert set(activity) == {"kind", "at", "message_id"}
+            assert isinstance(activity["at"], int) and activity["at"] > 0
+        assert roles["target"]["last_activity"]["kind"] == "delivery"
+        assert roles["target"]["last_activity"]["message_id"] == sent["message_id"]
+        assert roles["sender"]["last_activity"]["kind"] == "message"
+        assert roles["sender"]["last_activity"]["message_id"] == sent["message_id"]
+
+        admin(db_path, "grant-transcript", "alice", room_id)
+        assert console_room_detail(client, console, room_id).json()[
+            "transcript_allowed"
+        ]
+        error(console_room_detail(client, console, str(uuid4())), 404, "not_found")
+        # Authorization is re-checked before room existence on every request.
+        admin(db_path, "revoke-console", "alice")
+        error(console_room_detail(client, console, str(uuid4())), 403, "forbidden")
+
+
+def test_console_timeline_is_body_free_metadata_with_stable_paging(tmp_path):
+    db_path = tmp_path / "team.sqlite3"
+    enter_password(db_path, "create", "alice", PASSWORD)
+    with live_server(db_path) as (client, _):
+        room_id = console_team_room(
+            client, messages=("secret one", "secret two", "secret three")
+        )
+        room_path = f"/rooms/{room_id}"
+        join(client, "target", room_path)
+        confirm(client, "target", room_path)
+        assert send(client, room_path, "key-3", text="secret four").status_code == 200
+        events = get(client, "target", "/inbox").json()["events"]
+        assert [event["message"]["message_id"] for event in events] == [4]
+        assert (
+            post(client, "target", f"/inbox/{events[0]['event_id']}/ack").status_code
+            == 200
+        )
+        assert (
+            post(client, "target", f"/inbox/{events[0]['event_id']}/ack").status_code
+            == 200
+        )
+        sender = member(client, "sender")
+        target = member(client, "target")
+
+        console = console_token(client, "alice", PASSWORD)
+        error(console_timeline(client, console, room_id), 403, "forbidden")
+        error(
+            console_timeline(client, credential("sender"), room_id), 401, "unauthorized"
+        )
+        admin(db_path, "grant-console", "alice")
+        error(console_timeline(client, console, str(uuid4())), 404, "not_found")
+
+        full = console_timeline(client, console, room_id, limit=100)
+        assert full.status_code == 200, full.text
+        assert full.headers["cache-control"] == "no-store"
+        activities = full.json()["activities"]
+        assert [activity["kind"] for activity in activities] == [
+            "member_joined",
+            "board_acknowledged",
+            "message",
+            "message",
+            "message",
+            "member_joined",
+            "board_acknowledged",
+            "message",
+            "delivery",
+        ]
+        expected_actors = [
+            sender,
+            sender,
+            sender,
+            sender,
+            sender,
+            target,
+            target,
+            sender,
+            target,
+        ]
+        assert [activity["actor_member_id"] for activity in activities] == (
+            expected_actors
+        )
+        for activity in activities:
+            assert set(activity) == {
+                "activity_id",
+                "room_id",
+                "kind",
+                "at",
+                "message_id",
+                "actor_member_id",
+            }
+            assert activity["room_id"] == room_id
+            assert isinstance(activity["at"], int) and activity["at"] > 0
+        assert [activity["message_id"] for activity in activities] == [
+            None,
+            None,
+            1,
+            2,
+            3,
+            None,
+            None,
+            4,
+            4,
+        ]
+        all_ids = [activity["activity_id"] for activity in activities]
+        assert all_ids == sorted(all_ids)
+        assert len(set(all_ids)) == len(all_ids)
+        assert "secret" not in full.text
+
+        first = console_timeline(client, console, room_id, after=0, limit=4).json()[
+            "activities"
+        ]
+        assert [activity["activity_id"] for activity in first] == all_ids[:4]
+        second = console_timeline(
+            client, console, room_id, after=first[-1]["activity_id"]
+        ).json()["activities"]
+        assert [activity["activity_id"] for activity in second] == all_ids[4:]
+        assert len(second) < 50
+
+        # Idempotent retries of join, board ack, send, and delivery ack add no
+        # duplicate projection rows.
+        join(client, "target", room_path)
+        confirm(client, "target", room_path)
+        assert send(client, room_path, "key-0", text="secret one").status_code == 200
+        assert (
+            post(client, "target", f"/inbox/{events[0]['event_id']}/ack").status_code
+            == 200
+        )
+        retried = console_timeline(client, console, room_id, limit=100).json()
+        assert retried == {"activities": activities}
+
+        for query in ("after=-1", "limit=0", "limit=101", "after=abc"):
+            error(
+                console_get(client, console, f"/rooms/{room_id}/timeline?{query}"),
+                422,
+                "invalid_request",
+            )
+
+
+def test_console_transcript_pages_scoped_grants_audit_and_revocation(tmp_path):
+    db_path = tmp_path / "team.sqlite3"
+    enter_password(db_path, "create", "alice", PASSWORD)
+    with live_server(db_path) as (client, _):
+        enrollment = login_token(client, "alice", PASSWORD)
+        assert bind(client, enrollment, "target").status_code == 200
+        room_a = console_team_room(
+            client,
+            name="Room A",
+            messages=("alpha one", "alpha two", "alpha three"),
+            prefix="alpha",
+        )
+        room_b = console_team_room(
+            client, name="Room B", messages=("beta one",), prefix="beta"
+        )
+        join(client, "target", f"/rooms/{room_a}")
+        confirm(client, "target", f"/rooms/{room_a}")
+        for event in get(client, "target", "/inbox").json()["events"]:
+            assert (
+                post(client, "target", f"/inbox/{event['event_id']}/ack").status_code
+                == 200
+            )
+        assert get(client, "target", "/inbox").json() == {"events": []}
+        sender = member(client, "sender")
+
+        console = console_token(client, "alice", PASSWORD)
+        admin(db_path, "grant-console", "alice")
+        error(console_transcript(client, console, room_a), 403, "forbidden")
+        error(console_transcript(client, console, room_b), 403, "forbidden")
+        error(console_transcript(client, "x" * 43, room_a), 401, "unauthorized")
+        assert audit_rows(db_path) == []
+
+        admin(db_path, "grant-transcript", "alice", room_a)
+        full = console_transcript(client, console, room_a)
+        assert full.status_code == 200, full.text
+        assert full.headers["cache-control"] == "no-store"
+        page = full.json()
+        assert set(page) == {"messages", "has_more"}
+        assert page["has_more"] is False
+        messages = page["messages"]
+        assert [message["message_id"] for message in messages] == [1, 2, 3]
+        assert [message["text"] for message in messages] == [
+            "alpha one",
+            "alpha two",
+            "alpha three",
+        ]
+        for message in messages:
+            assert set(message) == {
+                "message_id",
+                "room_id",
+                "sender_member_id",
+                "sender_role_description",
+                "text",
+                "mention_member_id",
+                "created_at",
+            }
+            assert message["room_id"] == room_a
+            assert message["sender_member_id"] == sender
+            assert message["sender_role_description"] == "sender"
+            assert message["mention_member_id"] is None
+            assert isinstance(message["created_at"], int) and message["created_at"] > 0
+        alpha_one = messages[0]
+
+        latest = console_transcript(client, console, room_a, limit=2).json()
+        assert [message["message_id"] for message in latest["messages"]] == [2, 3]
+        assert latest["has_more"] is True
+        earlier = console_transcript(client, console, room_a, before=2, limit=2).json()
+        assert earlier == {"messages": [alpha_one], "has_more": False}
+        empty = console_transcript(client, console, room_a, before=1, limit=2).json()
+        assert empty == {"messages": [], "has_more": False}
+
+        owner_id = None
+        with closing(sqlite3.connect(db_path)) as connection:
+            owner_id = connection.execute(
+                "SELECT owner_id FROM accounts WHERE username = 'alice'"
+            ).fetchone()[0]
+            columns = [
+                row[1]
+                for row in connection.execute(
+                    "PRAGMA table_info(transcript_access_audit)"
+                )
+            ]
+        assert columns == [
+            "owner_id",
+            "room_id",
+            "action",
+            "at",
+            "page_before",
+            "page_limit",
+        ]
+        rows = audit_rows(db_path)
+        assert len(rows) == 4
+        assert all(
+            row["owner_id"] == owner_id
+            and row["room_id"] == room_a
+            and row["action"] == "transcript_read"
+            for row in rows
+        )
+        assert [row["page_limit"] for row in rows] == [50, 2, 2, 2]
+        assert [row["page_before"] for row in rows] == [None, None, 2, 1]
+        assert all(row["at"].endswith("Z") for row in rows)
+        assert all("alpha" not in str(value) for row in rows for value in row.values())
+
+        # Room-scoped grants: a transcript grant for room A does not open room B.
+        error(console_transcript(client, console, room_b), 403, "forbidden")
+        assert len(audit_rows(db_path)) == 4
+        admin(db_path, "grant-transcript", "alice", room_b)
+        beta = console_transcript(client, console, room_b).json()
+        assert [message["text"] for message in beta["messages"]] == ["beta one"]
+        assert len(audit_rows(db_path)) == 5
+        admin(db_path, "revoke-transcript", "alice", room_b)
+        error(console_transcript(client, console, room_b, before=1), 403, "forbidden")
+
+        # Revocation takes effect for the next page, even with an old cursor.
+        admin(db_path, "revoke-transcript", "alice", room_a)
+        error(console_transcript(client, console, room_a, before=2), 403, "forbidden")
+        error(console_transcript(client, console, room_a), 403, "forbidden")
+        assert len(audit_rows(db_path)) == 5
+        admin(db_path, "revoke-console", "alice")
+        error(console_transcript(client, console, room_a), 403, "forbidden")
+        admin(db_path, "grant-console", "alice")
+
+        # Console reads are read-only for tenant data: no inbox events, no SSE
+        # prompts, no board changes, and members keep sending.
+        assert get(client, "target", "/inbox").json() == {"events": []}
+        assert get(client, "target", f"/rooms/{room_a}/board").json()["version"] == 1
+        assert (
+            send(
+                client, f"/rooms/{room_a}", "after-reads", text="still writable"
+            ).status_code
+            == 200
+        )
+
+        admin(db_path, "disable", "alice")
+        error(console_transcript(client, console, room_a), 401, "unauthorized")
+        error(console_rooms(client, console), 401, "unauthorized")
+        error(console_timeline(client, console, room_a), 401, "unauthorized")
+
+
+_V3_HISTORY_DATABASE = """
+    PRAGMA user_version = 3;
+    CREATE TABLE members (
+        member_id TEXT PRIMARY KEY,
+        owner_id TEXT NOT NULL,
+        harness_instance_id TEXT NOT NULL,
+        session_key TEXT NOT NULL,
+        role_description TEXT NOT NULL,
+        token_digest BLOB NOT NULL UNIQUE,
+        UNIQUE (owner_id, harness_instance_id, session_key)
+    );
+    CREATE TABLE rooms (
+        room_id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        version INTEGER NOT NULL CHECK (version > 0),
+        rules TEXT NOT NULL,
+        protocol TEXT NOT NULL,
+        history_policy TEXT NOT NULL DEFAULT 'since_joining'
+            CHECK (history_policy IN ('retained', 'since_joining'))
+    );
+    CREATE TABLE room_members (
+        room_id TEXT NOT NULL REFERENCES rooms(room_id),
+        member_id TEXT NOT NULL REFERENCES members(member_id),
+        joined_after INTEGER NOT NULL,
+        read_board_version INTEGER,
+        acked_board_version INTEGER,
+        PRIMARY KEY (room_id, member_id)
+    );
+    CREATE TABLE messages (
+        message_id INTEGER PRIMARY KEY,
+        room_id TEXT NOT NULL REFERENCES rooms(room_id),
+        sender_member_id TEXT NOT NULL REFERENCES members(member_id),
+        client_message_id TEXT NOT NULL,
+        text TEXT NOT NULL,
+        mention_member_id TEXT REFERENCES members(member_id),
+        created_at TEXT,
+        UNIQUE (sender_member_id, client_message_id)
+    );
+    CREATE INDEX room_history ON messages (room_id, message_id);
+    CREATE TABLE inbox_events (
+        event_id INTEGER PRIMARY KEY,
+        member_id TEXT NOT NULL REFERENCES members(member_id),
+        message_id INTEGER NOT NULL REFERENCES messages(message_id),
+        kind TEXT NOT NULL CHECK (kind IN ('message', 'mention')),
+        acknowledged INTEGER NOT NULL DEFAULT 0 CHECK (acknowledged IN (0, 1)),
+        UNIQUE (member_id, message_id)
+    );
+    CREATE INDEX pending_inbox ON inbox_events (member_id, event_id)
+        WHERE acknowledged = 0;
+    CREATE TABLE id_counters (
+        counter TEXT PRIMARY KEY CHECK (counter IN ('message_id', 'event_id')),
+        last_id INTEGER NOT NULL CHECK (last_id >= 0)
+    );
+    CREATE TABLE accounts (
+        owner_id TEXT NOT NULL PRIMARY KEY,
+        username TEXT NOT NULL UNIQUE,
+        password_digest TEXT NOT NULL,
+        disabled INTEGER NOT NULL DEFAULT 0 CHECK (disabled IN (0, 1))
+    );
+    CREATE TABLE account_sessions (
+        token_digest BLOB NOT NULL PRIMARY KEY,
+        owner_id TEXT NOT NULL REFERENCES accounts(owner_id),
+        expires_at INTEGER NOT NULL
+    );
+    CREATE INDEX account_sessions_owner ON account_sessions (owner_id);
+"""
+
+
+def test_v3_history_database_upgrades_to_console_v4(tmp_path):
+    db_path = tmp_path / "team.sqlite3"
+    owner_id = str(uuid4())
+    raw = token_bytes(32)
+    legacy_token = urlsafe_b64encode(raw).decode().rstrip("=")
+    legacy_digest = sha256(raw).digest()
+    old_member = "c876568e-8819-40fe-a5f9-da904dcb45a3"
+    room_id = "3cb9cbf2-aaf5-459b-a69f-4e256c300454"
+    created_at = "2026-01-02T03:04:05Z"
+    unix_created = int(datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC).timestamp())
+    with closing(sqlite3.connect(db_path)) as connection, connection:
+        connection.executescript(_V3_HISTORY_DATABASE)
+        connection.execute(
+            "INSERT INTO accounts (owner_id, username, password_digest) VALUES (?, 'alice', ?)",
+            (owner_id, PasswordHasher().hash(PASSWORD)),
+        )
+        connection.execute(
+            "INSERT INTO account_sessions VALUES (?, ?, ?)",
+            (legacy_digest, owner_id, int(time()) + 3600),
+        )
+        connection.execute(
+            "INSERT INTO members VALUES (?, 'legacy-owner', 'old-harness', "
+            "'old-session', 'Old role', ?)",
+            (old_member, sha256(sha256(b"old").digest()).digest()),
+        )
+        connection.execute(
+            "INSERT INTO rooms VALUES (?, 'History room', 1, 'Rules', 'Protocol', 'retained')",
+            (room_id,),
+        )
+        connection.execute(
+            "INSERT INTO room_members VALUES (?, ?, 0, 1, 1)", (room_id, old_member)
+        )
+        connection.execute(
+            """
+            INSERT INTO messages (
+                message_id, room_id, sender_member_id, client_message_id, text,
+                mention_member_id, created_at
+            ) VALUES (41, ?, ?, 'old-1', 'Old body', NULL, ?)
+            """,
+            (room_id, old_member, created_at),
+        )
+        connection.execute(
+            "INSERT INTO inbox_events VALUES (17, ?, 41, 'message', 1)",
+            (old_member,),
+        )
+        connection.execute(
+            "INSERT INTO id_counters (counter, last_id) "
+            "VALUES ('message_id', 41), ('event_id', 17)"
+        )
+
+    with live_server(db_path, legacy=False) as (client, _):
+        assert bind(client, legacy_token, "sender").status_code == 200
+        with closing(sqlite3.connect(db_path)) as connection:
+            assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
+            purposes = dict(
+                connection.execute("SELECT token_digest, purpose FROM account_sessions")
+            )
+        assert purposes[legacy_digest] == "enrollment"
+
+        admin(db_path, "grant-console", "alice")
+        console = console_token(client, "alice", PASSWORD)
+        assert console_rooms(client, console).json() == {
+            "rooms": [
+                {
+                    "room_id": room_id,
+                    "name": "History room",
+                    "member_count": 1,
+                    "last_activity": {
+                        "kind": "delivery",
+                        "at": None,
+                        "message_id": 41,
+                    },
+                }
+            ]
+        }
+        timeline = console_timeline(client, console, room_id).json()
+        assert timeline == {
+            "activities": [
+                {
+                    "activity_id": 1,
+                    "room_id": room_id,
+                    "kind": "member_joined",
+                    "at": None,
+                    "message_id": None,
+                    "actor_member_id": old_member,
+                },
+                {
+                    "activity_id": 2,
+                    "room_id": room_id,
+                    "kind": "board_acknowledged",
+                    "at": None,
+                    "message_id": None,
+                    "actor_member_id": old_member,
+                },
+                {
+                    "activity_id": 3,
+                    "room_id": room_id,
+                    "kind": "message",
+                    "at": unix_created,
+                    "message_id": 41,
+                    "actor_member_id": old_member,
+                },
+                {
+                    "activity_id": 4,
+                    "room_id": room_id,
+                    "kind": "delivery",
+                    "at": None,
+                    "message_id": 41,
+                    "actor_member_id": old_member,
+                },
+            ]
+        }
+        admin(db_path, "grant-transcript", "alice", room_id)
+        page = console_transcript(client, console, room_id).json()
+        assert page == {
+            "messages": [
+                {
+                    "message_id": 41,
+                    "room_id": room_id,
+                    "sender_member_id": old_member,
+                    "sender_role_description": "Old role",
+                    "text": "Old body",
+                    "mention_member_id": None,
+                    "created_at": unix_created,
+                }
+            ],
+            "has_more": False,
+        }
+        assert len(audit_rows(db_path)) == 1
+
+        # The durable allocator continues past the pre-upgrade maximum.
+        sent = post(
+            client,
+            "old",
+            f"/rooms/{room_id}/messages",
+            json={"client_message_id": "after-upgrade", "text": "New body"},
+        )
+        assert sent.status_code == 200, sent.text
+        assert sent.json()["message_id"] == 42

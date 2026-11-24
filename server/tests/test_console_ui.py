@@ -79,9 +79,9 @@ def test_html_document_basics(html):
 def test_html_same_origin_resources_only(html):
     assert "https://" not in html and "http://" not in html
     links = re.findall(r"<link\b[^>]*>", html, re.IGNORECASE)
-    assert [re.search(r'href=["\']([^"\']*)["\']', link).group(1) for link in links] == [
-        "console.css"
-    ]
+    assert [
+        re.search(r'href=["\']([^"\']*)["\']', link).group(1) for link in links
+    ] == ["console.css"]
     scripts = re.findall(r"<script\b[^>]*>", html, re.IGNORECASE)
     assert len(scripts) == 1
     assert re.search(r'src=["\']console\.js["\']', scripts[0])

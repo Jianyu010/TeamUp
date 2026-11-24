@@ -173,6 +173,40 @@ _HISTORY_SCHEMA = (
     """,
 )
 
+_READ_SCHEMA = (
+    """
+    CREATE TABLE room_activity (
+        activity_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        room_id TEXT NOT NULL REFERENCES rooms(room_id),
+        kind TEXT NOT NULL CHECK (
+            kind IN ('member_joined', 'board_acknowledged', 'message', 'delivery')
+        ),
+        at TEXT,
+        actor_member_id TEXT NOT NULL REFERENCES members(member_id),
+        message_id INTEGER REFERENCES messages(message_id),
+        CHECK (
+            (kind IN ('message', 'delivery') AND message_id IS NOT NULL)
+            OR (kind IN ('member_joined', 'board_acknowledged') AND message_id IS NULL)
+        )
+    )
+    """,
+    "CREATE INDEX room_activity_room ON room_activity (room_id, activity_id)",
+    "CREATE INDEX room_activity_actor ON room_activity (actor_member_id, activity_id)",
+    """
+    CREATE TABLE transcript_access_audit (
+        owner_id TEXT NOT NULL REFERENCES accounts(owner_id),
+        room_id TEXT NOT NULL REFERENCES rooms(room_id),
+        action TEXT NOT NULL CHECK (action = 'transcript_read'),
+        at TEXT NOT NULL,
+        page_before INTEGER,
+        page_limit INTEGER NOT NULL
+    )
+    """,
+    "CREATE INDEX transcript_access_audit_room ON transcript_access_audit (room_id)",
+)
+
+_ACTIVITY = "activity_id, room_id, kind, at, message_id, actor_member_id"
+
 
 def _seed_id_counters(connection: sqlite3.Connection) -> None:
     connection.execute(
@@ -206,6 +240,78 @@ def _next_id(connection: sqlite3.Connection, counter: str) -> int:
 
 def _rfc3339_utc_now() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _rfc3339_to_unix(value: str | None) -> int | None:
+    if value is None:
+        return None
+    return int(datetime.fromisoformat(value).timestamp())
+
+
+def _activity_summary(row: sqlite3.Row | None, prefix: str = "") -> dict | None:
+    if row is None:
+        return None
+    return {
+        "kind": row[f"{prefix}kind"],
+        "at": _rfc3339_to_unix(row[f"{prefix}at"]),
+        "message_id": row[f"{prefix}message_id"],
+    }
+
+
+def _backfill_room_activity(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        INSERT INTO room_activity (room_id, kind, at, actor_member_id, message_id)
+        SELECT room_id, 'member_joined', NULL, member_id, NULL FROM room_members
+        ORDER BY room_id, joined_after, member_id
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO room_activity (room_id, kind, at, actor_member_id, message_id)
+        SELECT room_id, 'board_acknowledged', NULL, member_id, NULL
+        FROM room_members WHERE acked_board_version IS NOT NULL
+        ORDER BY room_id, member_id
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO room_activity (room_id, kind, at, actor_member_id, message_id)
+        SELECT room_id, 'message', created_at, sender_member_id, message_id
+        FROM messages ORDER BY message_id
+        """
+    )
+    has_events = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'inbox_events'"
+    ).fetchone()
+    if has_events is not None:
+        connection.execute(
+            """
+            INSERT INTO room_activity (room_id, kind, at, actor_member_id, message_id)
+            SELECT m.room_id, 'delivery', NULL, e.member_id, m.message_id
+            FROM inbox_events AS e JOIN messages AS m ON m.message_id = e.message_id
+            WHERE e.acknowledged = 1
+            ORDER BY e.event_id
+            """
+        )
+
+
+def _record_activity(
+    connection: sqlite3.Connection,
+    room_id: str,
+    kind: str,
+    actor_member_id: str,
+    at: str | None,
+    message_id: int | None = None,
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO room_activity (room_id, kind, at, actor_member_id, message_id)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (room_id, kind, at, actor_member_id, message_id),
+    )
+
 
 ChangeListener = Callable[[], None]
 ObserveInbox = Callable[[ChangeListener], AbstractContextManager[None]]
@@ -358,6 +464,9 @@ class Collaboration:
             if version in (0, 1, 2, 3):
                 for statement in _GRANT_SCHEMA:
                     connection.execute(statement)
+                for statement in _READ_SCHEMA:
+                    connection.execute(statement)
+                _backfill_room_activity(connection)
                 connection.execute("PRAGMA user_version = 4")
             elif version != 4:
                 raise ValueError("Unsupported TeamUp database schema version")
@@ -705,8 +814,14 @@ class Collaboration:
                 """
                 SELECT r.room_id, r.name,
                     (SELECT COUNT(*) FROM room_members AS rm WHERE rm.room_id = r.room_id)
-                        AS member_count
-                FROM rooms AS r ORDER BY r.room_id
+                        AS member_count,
+                    la.kind AS last_kind, la.at AS last_at,
+                    la.message_id AS last_message_id
+                FROM rooms AS r
+                LEFT JOIN room_activity AS la ON la.activity_id = (
+                    SELECT MAX(activity_id) FROM room_activity WHERE room_id = r.room_id
+                )
+                ORDER BY r.room_id
                 """
             )
             return {
@@ -715,11 +830,156 @@ class Collaboration:
                         "room_id": row["room_id"],
                         "name": row["name"],
                         "member_count": row["member_count"],
-                        "last_activity": None,
+                        "last_activity": _activity_summary(row, "last_"),
                     }
                     for row in rows
                 ]
             }
+
+    def console_room_detail(self, token: str, room_id: str) -> dict:
+        with self._transaction() as connection:
+            owner_id = self._console_operator(connection, token)
+            self._require_grant(connection, owner_id, "console_read")
+            room = self._console_room(connection, room_id)
+            member_rows = connection.execute(
+                """
+                SELECT m.member_id, m.role_description, rm.acked_board_version, r.version
+                FROM room_members AS rm
+                JOIN members AS m ON m.member_id = rm.member_id
+                JOIN rooms AS r ON r.room_id = rm.room_id
+                WHERE rm.room_id = ?
+                ORDER BY m.member_id
+                """,
+                (room_id,),
+            ).fetchall()
+            activity_rows = connection.execute(
+                """
+                SELECT kind, at, message_id, actor_member_id FROM room_activity
+                WHERE room_id = ? ORDER BY activity_id
+                """,
+                (room_id,),
+            ).fetchall()
+            latest = {}
+            for row in activity_rows:
+                latest[row["actor_member_id"]] = row
+            granted = connection.execute(
+                """
+                SELECT 1 FROM operator_grants
+                WHERE owner_id = ? AND scope = 'transcript_read' AND room_id = ?
+                """,
+                (owner_id, room_id),
+            ).fetchone()
+            return {
+                "room": {
+                    "room_id": room_id,
+                    "name": room["name"],
+                    "member_count": len(member_rows),
+                    "last_activity": (
+                        _activity_summary(activity_rows[-1]) if activity_rows else None
+                    ),
+                },
+                "members": [
+                    {
+                        "member_id": row["member_id"],
+                        "role_description": row["role_description"],
+                        "board_state": (
+                            "acknowledged"
+                            if row["acked_board_version"] == row["version"]
+                            else "awaiting"
+                        ),
+                        "last_activity": _activity_summary(
+                            latest.get(row["member_id"])
+                        ),
+                        "harness_state": "unknown",
+                    }
+                    for row in member_rows
+                ],
+                "transcript_allowed": granted is not None,
+            }
+
+    def console_timeline(
+        self, token: str, room_id: str, after: int, limit: int
+    ) -> dict:
+        with self._transaction() as connection:
+            owner_id = self._console_operator(connection, token)
+            self._require_grant(connection, owner_id, "console_read")
+            self._console_room(connection, room_id)
+            rows = connection.execute(
+                f"""
+                SELECT {_ACTIVITY} FROM room_activity
+                WHERE room_id = ? AND activity_id > ?
+                ORDER BY activity_id LIMIT ?
+                """,
+                (room_id, min(max(after, 0), _SQLITE_MAX_ID), limit),
+            ).fetchall()
+            return {"activities": [self._activity_payload(row) for row in rows]}
+
+    def console_transcript(
+        self, token: str, room_id: str, before: int | None, limit: int
+    ) -> dict:
+        with self._transaction(write=True) as connection:
+            owner_id = self._console_operator(connection, token)
+            self._require_grant(connection, owner_id, "console_read")
+            self._require_grant(connection, owner_id, "transcript_read", room_id)
+            self._console_room(connection, room_id)
+            boundary = "" if before is None else "AND m.message_id < ?"
+            parameters = (room_id,) if before is None else (room_id, before)
+            rows = connection.execute(
+                f"""
+                SELECT {_MESSAGE}, mem.role_description AS sender_role_description
+                FROM messages AS m
+                JOIN members AS mem ON mem.member_id = m.sender_member_id
+                WHERE m.room_id = ? {boundary}
+                ORDER BY m.message_id DESC LIMIT ?
+                """,
+                (*parameters, limit + 1),
+            ).fetchall()
+            has_more = len(rows) > limit
+            page = list(reversed(rows[:limit]))
+            connection.execute(
+                """
+                INSERT INTO transcript_access_audit (
+                    owner_id, room_id, action, at, page_before, page_limit
+                ) VALUES (?, ?, 'transcript_read', ?, ?, ?)
+                """,
+                (owner_id, room_id, _rfc3339_utc_now(), before, limit),
+            )
+            return {
+                "messages": [
+                    {
+                        "message_id": row["message_id"],
+                        "room_id": row["room_id"],
+                        "sender_member_id": row["sender_member_id"],
+                        "sender_role_description": row["sender_role_description"],
+                        "text": row["text"],
+                        "mention_member_id": row["mention_member_id"],
+                        "created_at": _rfc3339_to_unix(row["created_at"]),
+                    }
+                    for row in page
+                ],
+                "has_more": has_more,
+            }
+
+    def _console_room(
+        self, connection: sqlite3.Connection, room_id: str
+    ) -> sqlite3.Row:
+        room = connection.execute(
+            "SELECT room_id, name FROM rooms WHERE room_id = ?", (room_id,)
+        ).fetchone()
+        if room is None:
+            raise CollaborationError("not_found")
+        return room
+
+    @staticmethod
+    def _activity_payload(row: sqlite3.Row) -> dict:
+        return {
+            "activity_id": row["activity_id"],
+            "room_id": row["room_id"],
+            "kind": row["kind"],
+            "at": _rfc3339_to_unix(row["at"]),
+            "message_id": row["message_id"],
+            "actor_member_id": row["actor_member_id"],
+        }
 
     def _console_operator(self, connection: sqlite3.Connection, token: str) -> str:
         digest = _credential_digest(token)
@@ -781,6 +1041,9 @@ class Collaboration:
                 "INSERT INTO room_members (room_id, member_id, joined_after) VALUES (?, ?, 0)",
                 (room_id, member_id),
             )
+            _record_activity(
+                connection, room_id, "member_joined", member_id, _rfc3339_utc_now()
+            )
         return {"room_id": room_id, "name": name, "history_policy": history_policy}
 
     def join_room(self, token: str, room_id: str) -> dict:
@@ -791,7 +1054,7 @@ class Collaboration:
             ).fetchone()
             if room is None:
                 raise CollaborationError("not_found")
-            connection.execute(
+            joined = connection.execute(
                 """
                 INSERT INTO room_members (room_id, member_id, joined_after)
                 VALUES (?, ?, COALESCE((SELECT MAX(message_id) FROM messages WHERE room_id = ?), 0))
@@ -799,6 +1062,10 @@ class Collaboration:
                 """,
                 (room_id, member_id, room_id),
             )
+            if joined.rowcount:
+                _record_activity(
+                    connection, room_id, "member_joined", member_id, _rfc3339_utc_now()
+                )
         return dict(room)
 
     def read_board(self, token: str, room_id: str) -> dict:
@@ -828,6 +1095,9 @@ class Collaboration:
             connection.execute(
                 "UPDATE room_members SET acked_board_version = ? WHERE room_id = ? AND member_id = ?",
                 (version, room_id, member_id),
+            )
+            _record_activity(
+                connection, room_id, "board_acknowledged", member_id, _rfc3339_utc_now()
             )
             revealed = connection.execute(
                 f"SELECT 1 {_INBOX} AND m.room_id = ? LIMIT 1",
@@ -873,6 +1143,7 @@ class Collaboration:
                 ).fetchone()
                 if is_recipient is None:
                     raise CollaborationError("invalid_mention")
+            created_at = _rfc3339_utc_now()
             message_id = _next_id(connection, "message_id")
             connection.execute(
                 """
@@ -888,8 +1159,11 @@ class Collaboration:
                     client_message_id,
                     text,
                     mention_member_id,
-                    _rfc3339_utc_now(),
+                    created_at,
                 ),
+            )
+            _record_activity(
+                connection, room_id, "message", sender, created_at, message_id
             )
             recipients = [
                 row["member_id"]
@@ -980,7 +1254,7 @@ class Collaboration:
                 raise CollaborationError("not_found")
             event = connection.execute(
                 """
-                SELECT m.room_id, e.acknowledged FROM inbox_events AS e
+                SELECT m.room_id, m.message_id, e.acknowledged FROM inbox_events AS e
                 JOIN messages AS m ON m.message_id = e.message_id
                 WHERE e.event_id = ? AND e.member_id = ?
                 """,
@@ -995,6 +1269,14 @@ class Collaboration:
             connection.execute(
                 "UPDATE inbox_events SET acknowledged = 1 WHERE event_id = ?",
                 (event_id,),
+            )
+            _record_activity(
+                connection,
+                event["room_id"],
+                "delivery",
+                member_id,
+                _rfc3339_utc_now(),
+                event["message_id"],
             )
         self._notify((member_id,))
 
