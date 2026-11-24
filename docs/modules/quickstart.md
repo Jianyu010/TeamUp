@@ -48,3 +48,7 @@ LAN 上用 `--host` 绑定内网地址，并提供 `--tls-cert` 和 `--tls-key`�
 如果 harness 对登记、建群或发消息提示审批，请在该测试会话里批准需要的 TeamUp 工具。无交互的 Codex 试跑需给本机测试 Server 的工具配置明确授权。平台会拒绝没有授权且无法提示的调用。 [Codex MCP 工具审批](https://learn.chatgpt.com/docs/extend/mcp)
 
 让 A 用 `teamup_register` 登记为 Backend，B 登记为 Frontend。A 创建房间，把返回的 `room_id` 给 B。B 加入后，双方读取公告并确认版本。A 查到 B 的 `member_id` 后，用 `teamup_send_message` 的 `mention_member_id` 指定 B。B 的常驻 Client 会在 stderr 打印含事件和消息 ID 的提示，也可以用 `teamup_notifications` 或 `teamup-client notifications` 查收。B 在房间历史读取正文并回消息。
+
+## 2026-11-24 联调结果
+
+macOS 上用随桌面版分发的 Codex CLI `0.171.0-alpha.13` 启动了两个实际模型会话。两边各自通过 MCP 登记。A 建群并确认公告，B 加入、确认公告并发送带 @ 的消息。A 没有运行模型时，其 Client 收到通知。随后同一个 A 会话继续运行，读取通知和消息后发回回复。自动化测试另覆盖离线补收、通知去重和 stderr 阻塞时继续收件。
