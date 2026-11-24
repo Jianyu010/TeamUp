@@ -33,6 +33,7 @@ _ERRORS = {
     "board_ack_required": (409, "Confirm the current board version first."),
     "conflict": (409, "The request conflicts with the existing state."),
     "invalid_mention": (422, "Mention another member of this room."),
+    "rate_limited": (429, "Too many login attempts. Try again later."),
 }
 _UUID = re.compile(r"[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}")
 _KEEPALIVE_SECONDS = 15
@@ -70,6 +71,11 @@ _Limit = Annotated[int, Query(ge=1, le=100)]
 
 class _Body(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+class _Login(_Body):
+    username: Annotated[str, StringConstraints(strict=True)]
+    password: Annotated[str, StringConstraints(strict=True)]
 
 
 class _Enrollment(_Body):
@@ -182,6 +188,10 @@ class Gateway:
                 "invalid_request", status_code=405 if exc.status_code == 405 else None
             )
 
+        @app.post("/v1/auth/login", dependencies=[Depends(_require_utf8)])
+        def login(body: _Login) -> dict:
+            return collaboration.login(body.username, body.password)
+
         @app.post("/v1/members", dependencies=[Depends(_require_utf8)])
         def enroll(token: _Bearer, body: _Enrollment) -> dict:
             return collaboration.enroll(token, **body.model_dump())
@@ -248,7 +258,7 @@ class Gateway:
             if "text/event-stream" not in accepted:
                 raise CollaborationError("invalid_request")
             observe = await run_in_threadpool(collaboration.inbox_changes, token)
-            return _InboxStream(self._event_frames(observe))
+            return _InboxStream(self._event_frames(collaboration, token, observe))
 
     def stop_streams(self) -> None:
         """Complete open SSE responses before the HTTP server drains its requests."""
@@ -256,7 +266,9 @@ class Gateway:
         for changed in self._streams:
             changed.set()
 
-    async def _event_frames(self, observe: ObserveInbox) -> AsyncGenerator[str, None]:
+    async def _event_frames(
+        self, collaboration: Collaboration, token: str, observe: ObserveInbox
+    ) -> AsyncGenerator[str, None]:
         changed = asyncio.Event()
         loop = asyncio.get_running_loop()
 
@@ -266,17 +278,24 @@ class Gateway:
         self._streams.add(changed)
         try:
             with observe(signal):
+                await run_in_threadpool(collaboration.get_member, token)
                 yield ": ready\n\n"
                 while not self._stopping:
+                    frame = "event: inbox_changed\ndata: {}\n\n"
                     try:
                         await asyncio.wait_for(
                             changed.wait(), timeout=_KEEPALIVE_SECONDS
                         )
                     except TimeoutError:
-                        yield ": keepalive\n\n"
-                        continue
-                    changed.clear()
-                    if not self._stopping:
-                        yield "event: inbox_changed\ndata: {}\n\n"
+                        frame = ": keepalive\n\n"
+                    else:
+                        changed.clear()
+                    if self._stopping:
+                        return
+                    await run_in_threadpool(collaboration.get_member, token)
+                    yield frame
+        except CollaborationError as exc:
+            if exc.code != "unauthorized":
+                raise
         finally:
             self._streams.remove(changed)

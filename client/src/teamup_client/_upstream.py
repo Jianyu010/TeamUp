@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 
 import httpx
 
-from ._protocol import decode_json
+from ._protocol import decode_json, is_integer, is_secret
 from .ipc import ClientError
 
 ERROR_MESSAGES = {
@@ -14,6 +14,7 @@ ERROR_MESSAGES = {
     "board_ack_required": "Confirm the current board before exchanging messages",
     "conflict": "Request conflicts with existing server state",
     "invalid_mention": "Mention must target another member of the room",
+    "rate_limited": "Too many login attempts. Try again later",
 }
 
 
@@ -56,17 +57,42 @@ class Upstream:
     def __init__(self, http):
         self._http = http
 
+    async def login(self, username, password):
+        try:
+            result = await self.request(
+                "POST",
+                "/auth/login",
+                body={"username": username, "password": password},
+                member_auth=False,
+            )
+        except ClientError as exc:
+            if exc.code in {
+                "unauthorized",
+                "invalid_request",
+                "rate_limited",
+                "unavailable",
+            }:
+                raise
+            raise unavailable() from None
+        if (
+            set(result) != {"access_token", "expires_at"}
+            or not is_secret(result["access_token"])
+            or not is_integer(result["expires_at"], 1)
+        ):
+            raise unavailable()
+        return result["access_token"]
+
     async def request(
-        self, method, path, token, *, query=None, body=None, member_auth=True
+        self, method, path, token=None, *, query=None, body=None, member_auth=True
     ):
+        headers = {"Accept": "application/json"}
+        if token is not None:
+            headers["Authorization"] = f"Bearer {token}"
         try:
             response = await self._http.request(
                 method,
                 f"/v1{path}",
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "Accept": "application/json",
-                },
+                headers=headers,
                 params=query,
                 json=body,
             )

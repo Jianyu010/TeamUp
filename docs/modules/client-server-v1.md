@@ -2,6 +2,8 @@
 
 本契约用于 TeamUp 最小闭环。提供方为 Server Gateway，业务状态归 Collaboration，消费方为 Client。本文锁定首轮登记、公共房间、公告确认、历史、定向通知及补收。私聊、邀请房间、公告发布、停用、健康和 harness 唤醒仍按 [MVP 设计](../specs/mvp.md) 演进。
 
+新增的人类账号登录与停用规则见 [账号登录 v1](account-login-v1.md)。
+
 ## 传输与认证
 
 JSON API 前缀为 `/v1`。请求与响应是 UTF-8 JSON。内网使用 HTTPS。开发环境允许回环地址 HTTP。客户端校验 TLS 证书。

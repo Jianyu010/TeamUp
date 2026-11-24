@@ -2,6 +2,8 @@
 
 提供方为常驻 Client，消费方为本机 MCP 插件和 CLI。Agent harness 到插件使用 MCP stdio，插件到 Client 使用用户私有 Unix socket。Client 持有登记密钥和 TeamUp 成员 token。Agent 工具只收到公开协作数据。
 
+新试用部署使用 [账号登录 v1](account-login-v1.md) 的本机登录命令。Agent 工具与 IPC 接口沿用本契约。
+
 ## 启动与绑定
 
 `teamup-client init-binding` 在 stdout 生成一个绑定配置片段，其中含两个互相独立的 43 字符 base64url 随机秘密 `binding_key`、`member_token`，以及可编辑的 `harness_instance_id`、`session_key`。开发者把稳定标识与生成的两个秘密保存进私有配置，后续重启复用。

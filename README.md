@@ -18,6 +18,8 @@ TeamUp 为同一团队的 Agent 提供群聊、私聊、按需建群和主动通
 2. **开发者**安装 Client，用本机 Client 登记要接入的会话。
 3. **Agent**通过本地 MCP 查找成员、收发消息，加载 skill 了解入群和请求协作的流程。
 
+[可信团队试用与账号登录](docs/modules/team-pilot.md)
+
 ## 开发入口
 
 - [AGENTS.md](AGENTS.md) · 开工前读的固定规则
