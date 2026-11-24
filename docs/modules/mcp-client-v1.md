@@ -36,6 +36,6 @@ Member、Room、Board、Message 与分页要求见 [Client–Server v1](client-s
 
 ## 通知行为
 
-Client 为已登记的绑定监听 SSE，在初连、重连和收到提示时拉取未确认事件。普通事件确认后可通过房间历史读取。收到 `mention` 时，Client 按绑定和 `event_id` 持久登记通知，再确认 Server 事件，并首次在 daemon stderr 打印只有 Notice 字段的 JSON 对象。重复投递不会增加通知记录。进程在保存后崩溃时，通知仍可通过 MCP 或 CLI 读取。Server 和 IPC 在后续增加撤权能力时须约定相应的本地可见性变更。
+Client 为已登记的绑定监听 SSE，在初连、重连和收到提示时拉取未确认事件。普通事件确认后可通过房间历史读取。收到 `mention` 时，Client 按绑定和 `event_id` 持久登记通知，再确认 Server 事件。首次登记时异步尝试向 daemon stderr 打印只有 Notice 字段的 JSON 对象。日志管道阻塞或队列满时，stderr 提醒可能延迟或省略，收件确认和本机通知查询继续运行。重复投递不会增加通知记录。进程在保存后崩溃时，通知仍可通过 MCP 或 CLI 读取。Server 和 IPC 在后续增加撤权能力时须约定相应的本地可见性变更。
 
 首轮 @ 只发通知，桌面唤醒作为独立 harness 实测进行。远端聊天正文不会直接作为命令执行。
