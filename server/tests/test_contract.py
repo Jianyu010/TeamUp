@@ -1,11 +1,14 @@
 import json
 import os
+import re
 import socket
+import sqlite3
 import subprocess
 import sys
 from base64 import urlsafe_b64encode
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
+from datetime import datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
 from queue import Empty, Queue
@@ -483,3 +486,238 @@ def test_cli_rejects_cleartext_nonloopback_listener(tmp_path):
     )
     assert result.returncode != 0
     assert "TLS" in result.stderr
+
+
+_RFC3339_UTC = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z")
+
+
+def assert_utc_timestamp(value):
+    assert _RFC3339_UTC.fullmatch(value) is not None, value
+    assert datetime.fromisoformat(value).utcoffset() == timedelta(0)
+
+
+def test_room_creation_saves_the_requested_history_policy(team):
+    default = post(team, "sender", "/rooms", json={"name": "Default"})
+    assert default.status_code == 200
+    body = default.json()
+    UUID(body["room_id"])
+    assert body == {
+        "room_id": body["room_id"],
+        "name": "Default",
+        "history_policy": "since_joining",
+    }
+    retained = post(
+        team, "sender", "/rooms", json={"name": "Kept", "history_policy": "retained"}
+    )
+    assert retained.status_code == 200
+    body = retained.json()
+    UUID(body["room_id"])
+    assert body == {
+        "room_id": body["room_id"],
+        "name": "Kept",
+        "history_policy": "retained",
+    }
+    for policy in ("weekly", None, 1, "RETAINED"):
+        error(
+            post(
+                team,
+                "sender",
+                "/rooms",
+                json={"name": "Bad", "history_policy": policy},
+            ),
+            422,
+            "invalid_request",
+        )
+
+
+def test_retained_room_reads_pre_join_history_after_board_ack(team):
+    room_path = room(team, history_policy="retained")
+    confirm(team, "sender", room_path)
+    early = send(team, room_path, "early").json()
+    join(team, "target", room_path)
+    error(get(team, "target", f"{room_path}/messages"), 409, "board_ack_required")
+    confirm(team, "target", room_path)
+    assert get(team, "target", f"{room_path}/messages").json() == {"messages": [early]}
+    assert (
+        get(team, "target", f"{room_path}/messages?after={early['message_id']}")
+        .json()
+        == {"messages": []}
+    )
+    later = send(team, room_path, "later").json()
+    assert get(team, "target", f"{room_path}/messages").json() == {
+        "messages": [early, later]
+    }
+
+
+def test_created_at_is_utc_rfc3339_and_shared_across_send_retry_history_inbox(team):
+    room_path = room(team)
+    join(team, "target", room_path)
+    for label in ("sender", "target"):
+        confirm(team, label, room_path)
+    target = member(team, "target")
+    sent = send(team, room_path, "once", target=target).json()
+    assert_utc_timestamp(sent["created_at"])
+    assert get(team, "sender", f"{room_path}/messages").json() == {"messages": [sent]}
+    assert (
+        get(team, "sender", f"{room_path}/messages?after={sent['message_id']}")
+        .json()
+        == {"messages": []}
+    )
+    assert send(team, room_path, "once", target=target).json() == sent
+    target_events = get(team, "target", "/inbox").json()["events"]
+    assert target_events == [
+        {
+            "kind": "mention",
+            "message": sent,
+            "event_id": target_events[0]["event_id"],
+        }
+    ]
+
+
+_V2_DATABASE = """
+    PRAGMA user_version = 2;
+    CREATE TABLE members (
+        member_id TEXT PRIMARY KEY,
+        owner_id TEXT NOT NULL,
+        harness_instance_id TEXT NOT NULL,
+        session_key TEXT NOT NULL,
+        role_description TEXT NOT NULL,
+        token_digest BLOB NOT NULL UNIQUE,
+        UNIQUE (owner_id, harness_instance_id, session_key)
+    );
+    CREATE TABLE rooms (
+        room_id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        version INTEGER NOT NULL CHECK (version > 0),
+        rules TEXT NOT NULL,
+        protocol TEXT NOT NULL
+    );
+    CREATE TABLE room_members (
+        room_id TEXT NOT NULL REFERENCES rooms(room_id),
+        member_id TEXT NOT NULL REFERENCES members(member_id),
+        joined_after INTEGER NOT NULL,
+        read_board_version INTEGER,
+        acked_board_version INTEGER,
+        PRIMARY KEY (room_id, member_id)
+    );
+    CREATE TABLE messages (
+        message_id INTEGER PRIMARY KEY,
+        room_id TEXT NOT NULL REFERENCES rooms(room_id),
+        sender_member_id TEXT NOT NULL REFERENCES members(member_id),
+        client_message_id TEXT NOT NULL,
+        text TEXT NOT NULL,
+        mention_member_id TEXT REFERENCES members(member_id),
+        UNIQUE (sender_member_id, client_message_id)
+    );
+    CREATE INDEX room_history ON messages (room_id, message_id);
+    CREATE TABLE inbox_events (
+        event_id INTEGER PRIMARY KEY,
+        member_id TEXT NOT NULL REFERENCES members(member_id),
+        message_id INTEGER NOT NULL REFERENCES messages(message_id),
+        kind TEXT NOT NULL CHECK (kind IN ('message', 'mention')),
+        acknowledged INTEGER NOT NULL DEFAULT 0 CHECK (acknowledged IN (0, 1)),
+        UNIQUE (member_id, message_id)
+    );
+    CREATE INDEX pending_inbox ON inbox_events (member_id, event_id)
+        WHERE acknowledged = 0;
+    CREATE TABLE accounts (
+        owner_id TEXT NOT NULL PRIMARY KEY,
+        username TEXT NOT NULL UNIQUE,
+        password_digest TEXT NOT NULL,
+        disabled INTEGER NOT NULL DEFAULT 0 CHECK (disabled IN (0, 1))
+    );
+    CREATE TABLE account_sessions (
+        token_digest BLOB NOT NULL PRIMARY KEY,
+        owner_id TEXT NOT NULL REFERENCES accounts(owner_id),
+        expires_at INTEGER NOT NULL
+    );
+    CREATE INDEX account_sessions_owner ON account_sessions (owner_id);
+"""
+
+
+def test_v2_upgrade_defaults_rooms_to_since_joining_and_keeps_ids_durable(tmp_path):
+    db_path = tmp_path / "team.sqlite3"
+    room_id = "3cb9cbf2-aaf5-459b-a69f-4e256c300454"
+    old_member = "c876568e-8819-40fe-a5f9-da904dcb45a3"
+    late_member = "6f6d3b93-2c2e-4d5f-9a54-6d0f4f65ab21"
+    with closing(sqlite3.connect(db_path)) as connection, connection:
+        connection.executescript(_V2_DATABASE)
+        connection.execute(
+            "INSERT INTO members VALUES (?, 'legacy-owner', 'old-harness', "
+            "'old-session', 'Old role', ?)",
+            (old_member, sha256(sha256(b"old").digest()).digest()),
+        )
+        connection.execute(
+            "INSERT INTO members VALUES (?, 'legacy-owner', 'old-harness', "
+            "'late-session', 'Late role', ?)",
+            (late_member, sha256(sha256(b"late").digest()).digest()),
+        )
+        connection.execute(
+            "INSERT INTO rooms VALUES (?, 'Legacy room', 1, 'Rules', 'Protocol')",
+            (room_id,),
+        )
+        connection.execute(
+            "INSERT INTO room_members VALUES (?, ?, 0, 1, 1)", (room_id, old_member)
+        )
+        connection.execute(
+            "INSERT INTO room_members VALUES (?, ?, 41, 1, 1)", (room_id, late_member)
+        )
+        connection.execute(
+            "INSERT INTO messages VALUES (41, ?, ?, 'old-1', 'First old', NULL)",
+            (room_id, old_member),
+        )
+        connection.execute(
+            "INSERT INTO messages VALUES (42, ?, ?, 'old-2', 'Second old', NULL)",
+            (room_id, old_member),
+        )
+        connection.execute(
+            "INSERT INTO inbox_events VALUES (17, ?, 42, 'message', 0)",
+            (late_member,),
+        )
+
+    room_path = f"/rooms/{room_id}"
+    with api(db_path) as client:
+        old_history = get(client, "old", f"{room_path}/messages").json()["messages"]
+        assert [message["message_id"] for message in old_history] == [41, 42]
+        assert [message["created_at"] for message in old_history] == [None, None]
+        late_history = get(client, "late", f"{room_path}/messages").json()["messages"]
+        assert [message["message_id"] for message in late_history] == [42]
+        sent = post(
+            client,
+            "old",
+            f"{room_path}/messages",
+            json={"client_message_id": "after-upgrade", "text": "Fresh start"},
+        )
+        assert sent.status_code == 200, sent.text
+        fresh = sent.json()
+        assert fresh["message_id"] == 43
+        assert_utc_timestamp(fresh["created_at"])
+        late_history = get(client, "late", f"{room_path}/messages").json()["messages"]
+        assert [message["message_id"] for message in late_history] == [42, 43]
+        events = get(client, "late", "/inbox").json()["events"]
+        assert [event["event_id"] for event in events] == [17, 18]
+        assert [event["message"]["created_at"] for event in events] == [
+            None,
+            fresh["created_at"],
+        ]
+
+    with closing(sqlite3.connect(db_path)) as connection, connection:
+        connection.execute("DELETE FROM inbox_events")
+        connection.execute("DELETE FROM messages")
+
+    with api(db_path) as client:
+        recreated = post(
+            client,
+            "old",
+            f"{room_path}/messages",
+            json={"client_message_id": "after-upgrade", "text": "Fresh start"},
+        )
+        assert recreated.status_code == 200, recreated.text
+        assert recreated.json()["message_id"] == 44
+        assert_utc_timestamp(recreated.json()["created_at"])
+        events = get(client, "late", "/inbox").json()["events"]
+        assert [event["event_id"] for event in events] == [19]
+        assert [event["message"] for event in events] == [recreated.json()]
+        assert get(client, "old", f"{room_path}/messages").json()["messages"] == [
+            recreated.json()
+        ]
