@@ -71,6 +71,7 @@ data/nightly.jsonl     # 每次 nightly 一行（完整 summary）
 data/weekly.jsonl      # 每次 weekly 一行
 data/repo.jsonl        # 每天一行仓库统计（见下）
 data/releases.jsonl    # 每次发布一行 {"tag","version","kind","sha","published_at","prs":[...]}
+data/ci.jsonl          # 每天一行 CI 健康统计（见下）
 index.html  repo.html  performance.html  agents.html  assets/*   # 从 dashboards/site/ 同步
 ```
 
@@ -83,6 +84,17 @@ index.html  repo.html  performance.html  agents.html  assets/*   # 从 dashboard
  "clones_14d": null, "unique_cloners_14d": null, "views_14d": null, "unique_visitors_14d": null,
  "latest_release": "v0.1.1", "latest_release_at": "...", "days_since_release": 0.4}
 ```
+
+CI 健康统计行（`scripts/ci/ci_stats.py`）。`pr_checks`、`main_checks`、`gate`、`review`、`nightly`、`weekly` 各为一组计数，取当天创建的 workflow run：
+
+```json
+{"date": "2026-11-25", "collected_at": "...",
+ "pr_checks": {"runs": 12, "success": 9, "failure": 2, "no_verdict": 1, "first_attempt_success": 8, "pass_rate": 81.8},
+ "main_checks": {...}, "gate": {...}, "review": {...}, "nightly": {...}, "weekly": {...},
+ "prs_merged": 3, "median_hours_to_merge": 5.2, "freeze_open": 0}
+```
+
+`success` 计通过，`failure` 含 `failure`、`timed_out`、`startup_failure`。`cancelled`、`skipped` 计入 `no_verdict`，不进通过率。没有判定的那天 `pass_rate` 为 `null`。
 
 不可读取的字段（例如 traffic 接口无权限）写 `null`，看板显示为空，不当作 0。
 

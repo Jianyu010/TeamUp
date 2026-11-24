@@ -29,7 +29,7 @@ from typing import Any
 from scripts.ci.gate import GitHub
 
 BRANCH = "ci-data"
-KINDS = ("nightly", "weekly", "repo", "releases")
+KINDS = ("nightly", "weekly", "repo", "releases", "ci")
 RED = frozenset({"fail", "error"})
 
 

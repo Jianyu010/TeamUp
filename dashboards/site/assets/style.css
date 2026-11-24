@@ -372,3 +372,9 @@ tbody tr:last-child td {
     scroll-behavior: auto !important;
   }
 }
+
+.note {
+  margin: -4px 0 12px;
+  color: var(--muted);
+  font-size: 0.85rem;
+}

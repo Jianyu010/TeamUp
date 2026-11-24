@@ -169,18 +169,20 @@ def test_open_issues_exclude_pull_requests(repo_stats, monkeypatch):
     assert stats["open_issues"] == 9
     assert stats["open_prs"] == 2
     search_urls = [url for url, _ in calls if "/search/issues" in url]
-    assert any(urllib.parse.parse_qs(urllib.parse.urlparse(url).query)["q"] == [
-        "repo:acme/teamup is:issue is:open"
-    ] for url in search_urls)
-    assert any(urllib.parse.parse_qs(urllib.parse.urlparse(url).query)["q"] == [
-        "repo:acme/teamup is:pr is:open"
-    ] for url in search_urls)
+    assert any(
+        urllib.parse.parse_qs(urllib.parse.urlparse(url).query)["q"]
+        == ["repo:acme/teamup is:issue is:open"]
+        for url in search_urls
+    )
+    assert any(
+        urllib.parse.parse_qs(urllib.parse.urlparse(url).query)["q"]
+        == ["repo:acme/teamup is:pr is:open"]
+        for url in search_urls
+    )
 
 
 def test_releases_are_paginated(repo_stats, monkeypatch):
-    first_page = [
-        {"assets": [{"download_count": 1}]} for _ in range(100)
-    ]
+    first_page = [{"assets": [{"download_count": 1}]} for _ in range(100)]
     second_page = [{"assets": [{"download_count": 5}]}]
     calls = _patch(
         repo_stats,

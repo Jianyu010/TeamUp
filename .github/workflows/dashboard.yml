@@ -1,5 +1,6 @@
 # Dashboards (docs/ci/README.md): a daily line of repository statistics (stars, watchers, issues,
-# PRs, releases, traffic) to data/repo.jsonl on the ci-data branch, and the static pages from
+# PRs, releases, traffic) to data/repo.jsonl and of CI health (pass rates per workflow, merges)
+# to data/ci.jsonl on the ci-data branch, and the static pages from
 # dashboards/site/ synced to that branch's root, which GitHub Pages serves.
 #
 # Dispatched daily by gate-tick.yml (09:30 Asia/Shanghai) and on every push to main that changes
@@ -24,7 +25,9 @@ jobs:
     runs-on: [self-hosted, teamup-merge]
     timeout-minutes: 10
     permissions:
+      actions: read # workflow runs for the CI health statistics
       contents: write # the ci-data branch
+      issues: read # open freeze issues
     steps:
       - name: Fetch main's scripts and pages (API tarball)
         timeout-minutes: 5
@@ -46,6 +49,11 @@ jobs:
           # does not. Without it those fields stay null.
           GITHUB_TOKEN: ${{ secrets.TEAMUP_MERGE_TOKEN || github.token }}
         run: python3 -E -s scripts/ci/repo_stats.py --repo "$GITHUB_REPOSITORY" --out stats.json
+      - name: CI health statistics
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 -E -s -m scripts.ci.ci_stats --out ci.json
       - name: Publish
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -53,5 +61,8 @@ jobs:
           set -euo pipefail
           if [ -f stats.json ]; then
             python3 -E -s -m scripts.ci.results publish --kind repo stats.json
+          fi
+          if [ -f ci.json ]; then
+            python3 -E -s -m scripts.ci.results publish --kind ci ci.json
           fi
           python3 -E -s -m scripts.ci.results sync-site dashboards/site

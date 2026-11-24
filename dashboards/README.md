@@ -22,7 +22,7 @@ gh api -X GET search/issues -f 'q=repo:Jianyu010/TeamUp is:pr is:merged' --jq .t
 
 ## CI 看板
 
-`dashboards/site/` 是静态页面，发布到 `ci-data` 分支根目录。页面用相对路径读取同分支的 `data/nightly.jsonl`、`data/weekly.jsonl`、`data/repo.jsonl` 和 `data/releases.jsonl`。文件缺失时显示空状态，不报错。
+`dashboards/site/` 是静态页面，发布到 `ci-data` 分支根目录。页面用相对路径读取同分支的 `data/nightly.jsonl`、`data/weekly.jsonl`、`data/repo.jsonl`、`data/releases.jsonl` 和 `data/ci.jsonl`。文件缺失时显示空状态，不报错。
 
 | 页面 | 内容 |
 | --- | --- |
@@ -30,6 +30,7 @@ gh api -X GET search/issues -f 'q=repo:Jianyu010/TeamUp is:pr is:merged' --jq .t
 | `repo.html` | Stars、Watchers、Forks、Issue/PR、发布下载与 14 天访问 |
 | `performance.html` | nightly 指标、最近场景与通过率 |
 | `agents.html` | weekly 指标、最近场景与场景状态历史 |
+| `ci.html` | PR checks、main、AI review 的每日通过率（含首次通过），nightly/weekly 通过率，合入吞吐、冻结状态与场景稳定性 |
 
 仓库统计由 `scripts/ci/repo_stats.py` 生成，每个自然日一行。traffic 接口无权限时对应字段写 `null`，看板显示为空，不当作 0。
 

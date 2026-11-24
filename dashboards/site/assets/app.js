@@ -3,6 +3,7 @@ const DATA_FILES = {
   weekly: "data/weekly.jsonl",
   repo: "data/repo.jsonl",
   releases: "data/releases.jsonl",
+  ci: "data/ci.jsonl",
 };
 
 const REPO_URL = "https://github.com/Jianyu010/TeamUp";
@@ -588,7 +589,8 @@ function renderMetricCharts(runs, stat, charts) {
     }
 
     const options = chartOptions({ yTitle: entry.unit || undefined });
-    options.plugins.tooltip.callbacks = {
+    options.datasets = { bar: { grouped: false } };
+  options.plugins.tooltip.callbacks = {
       title(items) {
         const index = items[0].dataIndex;
         const run = runs[index] || {};
@@ -675,6 +677,7 @@ function renderPassRate(runs) {
   });
   const hasData = stats.some((stat) => stat.total > 0);
   const options = chartOptions({ yTitle: "%", maxY: 100 });
+  options.datasets = { bar: { grouped: false } };
   options.plugins.tooltip.callbacks = {
     label(item) {
       const stat = stats[item.dataIndex];
@@ -793,6 +796,278 @@ async function initSuite(kind) {
   }
 }
 
+// ---- CI health page (data/ci.jsonl + suite runs) ----
+
+function rateText(passed, judged) {
+  if (!judged) {
+    return "—";
+  }
+  return `${Math.round((passed / judged) * 1000) / 10}%`;
+}
+
+function windowCounts(rows, key, days) {
+  const recent = rows.slice(-days);
+  let passed = 0;
+  let failed = 0;
+  let runs = 0;
+  for (const row of recent) {
+    const series = row && row[key];
+    if (!series) {
+      continue;
+    }
+    passed += numeric(series.success) || 0;
+    failed += numeric(series.failure) || 0;
+    runs += numeric(series.runs) || 0;
+  }
+  return { passed, judged: passed + failed, runs };
+}
+
+function suiteRunRate(run) {
+  const scenarios = Array.isArray(run.scenarios) ? run.scenarios : [];
+  const judged = scenarios.filter((item) => item.status !== "skip");
+  const passed = judged.filter((item) => item.status === "pass").length;
+  return judged.length ? Math.round((passed / judged.length) * 1000) / 10 : null;
+}
+
+function renderSuiteTile(prefix, runs, count) {
+  const recent = runs.slice(-count);
+  const judged = recent.filter((run) => suiteStatus(run) !== "skip");
+  const green = judged.filter((run) => suiteStatus(run) === "pass").length;
+  setText(`ci-${prefix}-rate`, rateText(green, judged.length));
+  setText(
+    `ci-${prefix}-count`,
+    judged.length ? `${green}/${judged.length} 次全绿` : "暂无运行",
+  );
+}
+
+function seriesRate(row, key, field) {
+  const series = row && row[key];
+  if (!series) {
+    return null;
+  }
+  if (field === "first") {
+    const judged = (numeric(series.success) || 0) + (numeric(series.failure) || 0);
+    return judged
+      ? Math.round(((numeric(series.first_attempt_success) || 0) / judged) * 1000) / 10
+      : null;
+  }
+  return numeric(series.pass_rate);
+}
+
+function renderFlaky(nightly, weekly) {
+  const table = document.getElementById("ci-flaky-table");
+  const empty = document.getElementById("ci-flaky-empty");
+  if (!table) {
+    return;
+  }
+  const body = table.querySelector("tbody");
+  body.replaceChildren();
+  const stats = new Map();
+  const add = (runs, suite) => {
+    for (const run of runs) {
+      for (const scenario of Array.isArray(run.scenarios) ? run.scenarios : []) {
+        if (!scenario || !scenario.id) {
+          continue;
+        }
+        const key = `${suite}:${scenario.id}`;
+        const entry = stats.get(key) || {
+          id: scenario.id,
+          title: scenario.title || "",
+          suite,
+          passed: 0,
+          judged: 0,
+          last: "skip",
+        };
+        if (scenario.status !== "skip") {
+          entry.judged += 1;
+          if (scenario.status === "pass") {
+            entry.passed += 1;
+          }
+        }
+        entry.last = scenario.status;
+        entry.title = scenario.title || entry.title;
+        stats.set(key, entry);
+      }
+    }
+  };
+  add(nightly.slice(-30), "nightly");
+  add(weekly.slice(-12), "weekly");
+  const rows = [...stats.values()].sort((a, b) => {
+    const ra = a.judged ? a.passed / a.judged : 2;
+    const rb = b.judged ? b.passed / b.judged : 2;
+    return ra - rb || a.id.localeCompare(b.id);
+  });
+  if (empty) {
+    empty.hidden = rows.length > 0;
+  }
+  table.hidden = rows.length === 0;
+  for (const entry of rows) {
+    const tr = create("tr");
+    tr.append(
+      create("td", null, `${entry.id} ${entry.title}`.trim()),
+      create("td", null, entry.suite),
+      create("td", null, rateText(entry.passed, entry.judged)),
+      create("td", null, `${entry.passed} / ${entry.judged}`),
+    );
+    const last = create("td");
+    last.append(statusBadge(entry.last));
+    tr.append(last);
+    body.append(tr);
+  }
+}
+
+async function initCi() {
+  const [ciRows, nightlyRows, weeklyRows] = await Promise.all([
+    loadJsonl(DATA_FILES.ci),
+    loadJsonl(DATA_FILES.nightly),
+    loadJsonl(DATA_FILES.weekly),
+  ]);
+  const days = ciRows.slice().sort((a, b) => String(a.date).localeCompare(String(b.date)));
+  const nightly = sortedRuns(nightlyRows);
+  const weekly = sortedRuns(weeklyRows);
+
+  for (const [key, id] of [
+    ["pr_checks", "pr"],
+    ["main_checks", "main"],
+  ]) {
+    const counts = windowCounts(days, key, 7);
+    setText(`ci-${id}-rate`, rateText(counts.passed, counts.judged));
+    setText(
+      `ci-${id}-count`,
+      counts.judged ? `${counts.passed}/${counts.judged} 次通过` : "暂无判定",
+    );
+  }
+  renderSuiteTile("nightly", nightly, 14);
+  renderSuiteTile("weekly", weekly, 8);
+
+  const week = days.slice(-7);
+  const merged = week.reduce((sum, row) => sum + (numeric(row.prs_merged) || 0), 0);
+  const hours = week.map((row) => numeric(row.median_hours_to_merge)).filter((v) => v !== null);
+  setText("ci-merged", week.length ? formatInt(merged) : "—");
+  if (hours.length) {
+    const sorted = hours.slice().sort((a, b) => a - b);
+    const mid = sorted[Math.floor(sorted.length / 2)];
+    setText("ci-merge-hours", `中位合入耗时约 ${mid} 小时`);
+  } else {
+    setText("ci-merge-hours", "暂无合入");
+  }
+  const latest = days[days.length - 1];
+  const freezeNode = document.getElementById("ci-freeze");
+  if (latest && numeric(latest.freeze_open) !== null) {
+    const frozen = numeric(latest.freeze_open) > 0;
+    setBadge(freezeNode, frozen ? "fail" : "pass");
+    if (freezeNode) {
+      freezeNode.textContent = frozen ? "已冻结" : "正常";
+    }
+    setText("ci-freeze-note", `截至 ${latest.date}`);
+  } else {
+    setText("ci-freeze-note", "暂无数据");
+  }
+
+  const labels = days.map((row) => row.date);
+  const dashed = (dataset) => ({ ...dataset, borderDash: [5, 4], pointRadius: 0 });
+  makeChart(
+    "ci-rate-chart",
+    {
+      type: "line",
+      data: {
+        labels,
+        datasets: [
+          lineDataset("PR checks", days.map((r) => seriesRate(r, "pr_checks")), PALETTE[0]),
+          dashed(lineDataset("PR checks 首次", days.map((r) => seriesRate(r, "pr_checks", "first")), PALETTE[0])),
+          lineDataset("main", days.map((r) => seriesRate(r, "main_checks")), PALETTE[1]),
+          lineDataset("AI review", days.map((r) => seriesRate(r, "review")), PALETTE[3]),
+        ],
+      },
+      options: chartOptions({ yTitle: "%", maxY: 100 }),
+    },
+    days.length > 0,
+  );
+
+  const pr = (field) => days.map((r) => numeric((r.pr_checks || {})[field]));
+  makeChart(
+    "ci-runs-chart",
+    {
+      type: "bar",
+      data: {
+        labels,
+        datasets: [
+          barDataset("通过", pr("success"), PALETTE[1]),
+          barDataset("失败", pr("failure"), PALETTE[4]),
+          barDataset("无判定", pr("no_verdict"), PALETTE[7]),
+        ],
+      },
+      options: chartOptions({ yTitle: "runs", stacked: true }),
+    },
+    days.length > 0,
+  );
+
+  const suiteRuns = [
+    ...nightly.map((run) => ({ run, suite: "nightly" })),
+    ...weekly.map((run) => ({ run, suite: "weekly" })),
+  ].sort((a, b) => runTimestamp(a.run) - runTimestamp(b.run));
+  const options = chartOptions({ yTitle: "%", maxY: 100 });
+  options.datasets = { bar: { grouped: false } };
+  options.plugins.tooltip.callbacks = {
+    afterLabel(item) {
+      const entry = suiteRuns[item.dataIndex];
+      return entry ? `${entry.suite} · ${shortSha(entry.run.sha)} · ${suiteStatus(entry.run)}` : "";
+    },
+  };
+  makeChart(
+    "ci-suite-chart",
+    {
+      type: "bar",
+      data: {
+        labels: suiteRuns.map((entry) => runDate(entry.run)),
+        datasets: [
+          barDataset(
+            "nightly",
+            suiteRuns.map((e) => (e.suite === "nightly" ? suiteRunRate(e.run) : null)),
+            PALETTE[0],
+          ),
+          barDataset(
+            "weekly",
+            suiteRuns.map((e) => (e.suite === "weekly" ? suiteRunRate(e.run) : null)),
+            PALETTE[2],
+          ),
+        ],
+      },
+      options,
+    },
+    suiteRuns.length > 0,
+  );
+
+  const mergeOptions = chartOptions({ yTitle: "PRs" });
+  mergeOptions.scales.y1 = {
+    position: "right",
+    beginAtZero: true,
+    grid: { drawOnChartArea: false },
+    title: { display: true, text: "小时" },
+  };
+  makeChart(
+    "ci-merge-chart",
+    {
+      type: "bar",
+      data: {
+        labels,
+        datasets: [
+          barDataset("合入 PR", days.map((r) => numeric(r.prs_merged)), PALETTE[1]),
+          {
+            ...lineDataset("中位合入耗时（小时）", days.map((r) => numeric(r.median_hours_to_merge)), PALETTE[2]),
+            type: "line",
+            yAxisID: "y1",
+          },
+        ],
+      },
+      options: mergeOptions,
+    },
+    days.length > 0,
+  );
+
+  renderFlaky(nightly, weekly);
+}
+
 function initPage() {
   initChartDefaults();
   const page = document.body.dataset.page;
@@ -807,6 +1082,9 @@ function initPage() {
   }
   if (page === "agents") {
     return initSuite("weekly");
+  }
+  if (page === "ci") {
+    return initCi();
   }
   return Promise.resolve();
 }

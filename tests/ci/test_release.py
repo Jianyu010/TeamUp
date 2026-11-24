@@ -29,7 +29,9 @@ class FakeGitHub:
         self.order = ["c", "p1", "m1", "p2", "m2", "d"]
         self.writes: list[tuple[str, str, Any]] = []
 
-    def pages(self, path: str, key: str | None = None, limit: int = 30) -> list[dict[str, Any]]:
+    def pages(
+        self, path: str, key: str | None = None, limit: int = 30
+    ) -> list[dict[str, Any]]:
         assert path == "/tags"
         return [{"name": n, "commit": {"sha": s}} for n, s in self.tags.items()]
 
@@ -64,7 +66,11 @@ class FakeGitHub:
             sha = path.split("/")[2]
             if sha in ("m1", "m2"):
                 n = 11 if sha == "m1" else 12
-                title = "Add room history search" if n == 11 else "Fix duplicate mention notices"
+                title = (
+                    "Add room history search"
+                    if n == 11
+                    else "Fix duplicate mention notices"
+                )
                 return [
                     {
                         "number": n,
@@ -108,12 +114,17 @@ def test_release_plan_patch_and_minor() -> None:
     assert release.plan({}, "patch") is None
 
 
-def test_a_patch_release_tags_and_summarises(capsys: pytest.CaptureFixture[str]) -> None:
+def test_a_patch_release_tags_and_summarises(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     gh = FakeGitHub()
     evidence = {
         "suite": "nightly",
         "sha": "d" * 40,
-        "scenarios": [{"id": "NS-01", "status": "pass"}, {"id": "NS-08", "status": "skip"}],
+        "scenarios": [
+            {"id": "NS-01", "status": "pass"},
+            {"id": "NS-08", "status": "skip"},
+        ],
         "metrics": [
             {
                 "name": "dm_delivery_latency",
@@ -124,11 +135,19 @@ def test_a_patch_release_tags_and_summarises(capsys: pytest.CaptureFixture[str])
         ],
     }
     line = release.cut(gh, "patch", "d", evidence, "RUN", dry_run=False)
-    assert line and line["tag"] == "v0.1.1" and line["prs"] == [11, 12] and line["commits"] == 3
+    assert (
+        line
+        and line["tag"] == "v0.1.1"
+        and line["prs"] == [11, 12]
+        and line["commits"] == 3
+    )
     posted = {p: b for _, p, b in gh.writes}
     assert posted["/git/refs"] == {"ref": "refs/tags/v0.1.1", "sha": "d"}
     body = posted["/releases"]["body"]
-    assert "3 change(s) since `v0.1.0`: 2 merged PR(s) by 2 contributor(s), closing 2 issue(s)." in body
+    assert (
+        "3 change(s) since `v0.1.0`: 2 merged PR(s) by 2 contributor(s), closing 2 issue(s)."
+        in body
+    )
     assert "## Features\n\n- Add room history search #11 (@dev) — closes #6" in body
     assert "## Fixes\n\n- Fix duplicate mention notices #12 (@dev) — closes #9" in body
     assert "- Bump dashboards `d`" in body  # a direct commit, not a PR
@@ -145,7 +164,12 @@ def test_nothing_to_release_when_nothing_merged() -> None:
 def test_a_weekly_rolls_the_patches_into_a_minor() -> None:
     gh = FakeGitHub({"v0.1.0": "c", "v0.1.1": "d"})
     line = release.cut(gh, "minor", "d", None, "", dry_run=True)
-    assert line and line["tag"] == "v0.2.0" and line["base"] == "v0.1.0" and line["prs"] == [11, 12]
+    assert (
+        line
+        and line["tag"] == "v0.2.0"
+        and line["base"] == "v0.1.0"
+        and line["prs"] == [11, 12]
+    )
     assert gh.writes == []  # dry run
 
 
@@ -207,12 +231,69 @@ def test_cadence_slots() -> None:
     utc = dt.UTC
     # 2026-11-25 01:00 Shanghai is 2026-11-24 17:00 UTC: the slot is the 24th 02:00 local.
     now = dt.datetime(2026, 11, 24, 17, 0, tzinfo=utc)
-    assert cadence.last_slot(now, rule, 8) == dt.datetime(2026, 11, 23, 18, 0, tzinfo=utc)
+    assert cadence.last_slot(now, rule, 8) == dt.datetime(
+        2026, 11, 23, 18, 0, tzinfo=utc
+    )
     now = dt.datetime(2026, 11, 24, 18, 30, tzinfo=utc)  # 02:30 local on the 25th
-    assert cadence.last_slot(now, rule, 8) == dt.datetime(2026, 11, 24, 18, 0, tzinfo=utc)
+    assert cadence.last_slot(now, rule, 8) == dt.datetime(
+        2026, 11, 24, 18, 0, tzinfo=utc
+    )
     weekly = {"weekday": 6, "at": "04:00"}  # Sunday
     now = dt.datetime(2026, 11, 25, 3, 0, tzinfo=utc)  # Wednesday
-    assert cadence.last_slot(now, weekly, 8) == dt.datetime(2026, 11, 21, 20, 0, tzinfo=utc)
+    assert cadence.last_slot(now, weekly, 8) == dt.datetime(
+        2026, 11, 21, 20, 0, tzinfo=utc
+    )
     slot = dt.datetime(2026, 11, 24, 18, 0, tzinfo=utc)
     assert cadence.due([{"created_at": "2026-11-24T17:59:00Z"}], slot)
     assert not cadence.due([{"created_at": "2026-11-24T18:05:00Z"}], slot)
+
+
+def test_ci_stats_tally_counts_verdicts_only() -> None:
+    from scripts.ci import ci_stats
+
+    runs = [
+        {
+            "name": "PR checks",
+            "event": "pull_request",
+            "status": "completed",
+            "conclusion": "success",
+            "run_attempt": 1,
+        },
+        {
+            "name": "PR checks",
+            "event": "pull_request",
+            "status": "completed",
+            "conclusion": "success",
+            "run_attempt": 2,
+        },
+        {
+            "name": "PR checks",
+            "event": "pull_request",
+            "status": "completed",
+            "conclusion": "failure",
+        },
+        {
+            "name": "PR checks",
+            "event": "pull_request",
+            "status": "completed",
+            "conclusion": "cancelled",
+        },
+        {"name": "PR checks", "event": "pull_request", "status": "in_progress"},
+        {
+            "name": "PR checks",
+            "event": "push",
+            "status": "completed",
+            "conclusion": "timed_out",
+        },
+    ]
+    pr = ci_stats.tally(runs, "PR checks", "pull_request")
+    assert pr == {
+        "runs": 5,
+        "success": 2,
+        "failure": 1,
+        "no_verdict": 1,
+        "first_attempt_success": 1,
+        "pass_rate": 66.7,
+    }
+    assert ci_stats.tally(runs, "PR checks", "push")["pass_rate"] == 0.0
+    assert ci_stats.tally(runs, "Nightly", None)["pass_rate"] is None

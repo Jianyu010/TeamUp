@@ -138,22 +138,14 @@ def collect(
     if not isinstance(repo_data, dict):
         raise ApiError("repos: unexpected response")
 
-    open_issues = _search_count(
-        api, token, f"repo:{repo} is:issue is:open"
-    )
+    open_issues = _search_count(api, token, f"repo:{repo} is:issue is:open")
     open_prs = _search_count(api, token, f"repo:{repo} is:pr is:open")
     issues_opened = _search_count(
         api, token, f"repo:{repo} is:issue created:{day_text}"
     )
-    issues_closed = _search_count(
-        api, token, f"repo:{repo} is:issue closed:{day_text}"
-    )
-    prs_opened = _search_count(
-        api, token, f"repo:{repo} is:pr created:{day_text}"
-    )
-    prs_merged = _search_count(
-        api, token, f"repo:{repo} is:pr merged:{day_text}"
-    )
+    issues_closed = _search_count(api, token, f"repo:{repo} is:issue closed:{day_text}")
+    prs_opened = _search_count(api, token, f"repo:{repo} is:pr created:{day_text}")
+    prs_merged = _search_count(api, token, f"repo:{repo} is:pr merged:{day_text}")
 
     downloads = _releases_downloads(api, token, repo)
 
@@ -175,9 +167,7 @@ def collect(
     if published is None:
         days_since_release = None
     else:
-        days_since_release = round(
-            (moment - published).total_seconds() / 86400, 1
-        )
+        days_since_release = round((moment - published).total_seconds() / 86400, 1)
 
     return {
         "date": day_text,
