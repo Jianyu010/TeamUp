@@ -14,6 +14,12 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 ROOT = Path(__file__).resolve().parents[1]
+# Stands in for osascript: records each desktop notice instead of showing it.
+RECORDER = (
+    "import json, sys, time\n"
+    "with open(sys.argv[1], 'a', encoding='utf-8') as log:\n"
+    "    log.write(json.dumps([time.time(), *sys.argv[2:]]) + '\\n')\n"
+)
 
 
 def wait_for(predicate, child=None, timeout=15):
@@ -75,6 +81,7 @@ class Developer:
         self.config_path = directory / "client.json"
         self.socket_path = directory / "client.sock"
         self.log = directory / "client.log"
+        self.desktop = directory / "desktop.jsonl"
         self.enrollment_key = secrets.token_urlsafe(32)
         self.binding_key = secrets.token_urlsafe(32)
         self.config_path.touch(mode=0o600)
@@ -84,6 +91,12 @@ class Developer:
                     "server_url": f"http://127.0.0.1:{port}",
                     "socket_path": str(self.socket_path),
                     "enrollment_key": self.enrollment_key,
+                    "notify_command": [
+                        sys.executable,
+                        "-c",
+                        RECORDER,
+                        str(self.desktop),
+                    ],
                     "bindings": [
                         {
                             "harness_instance_id": "desktop",
@@ -124,6 +137,11 @@ class Developer:
         ):
             await session.initialize()
             yield session
+
+    def desktop_notices(self):
+        if not self.desktop.exists():
+            return []
+        return [json.loads(line) for line in self.desktop.read_text().splitlines()]
 
     def wait_for_notice(self, message_id, child):
         def find():
@@ -250,6 +268,7 @@ async def run_exchange(root, port):
                     "text": "Can you review the response shape?",
                     "mention_member_id": bob["member_id"],
                 }
+                sent = time.time()
                 live = await tool(agent_a, "send_message", **ping)
                 assert await tool(agent_a, "send_message", **ping) == live
                 notice = await asyncio.to_thread(
@@ -257,10 +276,33 @@ async def run_exchange(root, port):
                 )
                 assert notice["sender_member_id"] == alice["member_id"]
                 assert "text" not in notice
+                # Bob's session is idle and has no wake permission: the owner
+                # still gets one desktop notice within 5 s and no turn starts.
+                [shown] = await asyncio.to_thread(
+                    wait_for, b.desktop_notices, bob_daemon
+                )
+                assert shown[0] - sent < 5
+                assert shown[1:] == [
+                    "Backend mentioned you",
+                    "API compatibility",
+                    "Can you review the response shape?",
+                ]
                 async with b.agent() as agent_b:
+                    # Any tool result carries the unread hint until notices are read.
+                    response = await agent_b.call_tool(
+                        "teamup_get_board", {"room_id": room_id}
+                    )
+                    assert response.content[-1].text == (
+                        "TeamUp: 1 unread mention. "
+                        "Call teamup_notifications to read them."
+                    )
                     assert (await tool(agent_b, "notifications"))["notifications"] == [
                         notice
                     ]
+                    response = await agent_b.call_tool(
+                        "teamup_get_board", {"room_id": room_id}
+                    )
+                    assert len(response.content) == 1
                     messages = (await tool(agent_b, "read_messages", room_id=room_id))[
                         "messages"
                     ]
@@ -302,11 +344,19 @@ async def run_exchange(root, port):
                 backfill = await asyncio.to_thread(
                     b.wait_for_notice, offline["message_id"], bob_daemon
                 )
+                # Reconnecting delivers the offline mention exactly once.
+                await asyncio.to_thread(
+                    wait_for, lambda: len(b.desktop_notices()) == 2, bob_daemon
+                )
+                assert b.desktop_notices()[1][3] == "Check this when you get back."
                 async with b.agent() as agent_b:
                     assert (await tool(agent_b, "notifications"))["notifications"] == [
                         notice,
                         backfill,
                     ]
+            with b.daemon():
+                await asyncio.sleep(1)
+            assert len(b.desktop_notices()) == 2
 
 
 def test_two_agent_mcp_loop_and_offline_notification():

@@ -32,14 +32,20 @@ def test_stdio_passes_approved_binding_and_surfaces_ipc_error():
             ),
             ("get_board", {"room_id": "room"}, None),
             ("list_rooms", {}, {"rooms": []}),
+            ("notifications", {}, {"notifications": []}),
         ]
+        # Unread counts the Client reports after each successful non-notice tool.
+        unread = iter([0, 2, 0])
         seen = []
 
         async def serve(reader, writer):
             request = json.loads(await reader.readline())
-            index = len(seen)
             seen.append(request)
-            result = requests[index][2]
+            if request["method"] == "mention_status":
+                result = {"unread_mentions": next(unread)}
+            else:
+                calls = [item for item in seen if item["method"] != "mention_status"]
+                result = requests[len(calls) - 1][2]
             response = (
                 {"result": result}
                 if result is not None
@@ -92,6 +98,7 @@ def test_stdio_passes_approved_binding_and_surfaces_ipc_error():
                 "teamup_read_messages",
                 "teamup_notifications",
             }
+            hints = []
             for method, args, result in requests:
                 response = await session.call_tool(f"teamup_{method}", args)
                 if result is None:
@@ -100,10 +107,34 @@ def test_stdio_passes_approved_binding_and_surfaces_ipc_error():
                 else:
                     assert not response.isError
                     assert response.structuredContent == result
+                    assert json.loads(response.content[0].text) == result
+                hints.append([item.text for item in response.content[1:]])
+            assert hints == [
+                [],
+                ["TeamUp: 2 unread mentions. Call teamup_notifications to read them."],
+                [],
+                [],
+                [],
+            ]
 
+        def ipc(method, params):
+            return {
+                "version": 1,
+                "binding_key": key,
+                "method": method,
+                "params": params,
+            }
+
+        status = ipc("mention_status", {})
         assert seen == [
-            {"version": 1, "binding_key": key, "method": method, "params": args}
-            for method, args, _ in requests
+            ipc("register", requests[0][1]),
+            status,
+            ipc("send_message", requests[1][1]),
+            status,
+            ipc("get_board", requests[2][1]),
+            ipc("list_rooms", requests[3][1]),
+            status,
+            ipc("notifications", {}),
         ]
 
     with tempfile.TemporaryDirectory(prefix="tu-mcp-", dir="/tmp") as directory:

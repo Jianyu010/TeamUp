@@ -6,6 +6,7 @@ import re
 import stat
 import sys
 import tempfile
+import time
 from collections import Counter
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
@@ -36,6 +37,22 @@ MEMBERS = [
 ]
 ROOM = "00000000-0000-4000-8000-000000000003"
 CLI = (sys.executable, "-m", "teamup_client.main")
+RECORDER = (
+    "import json, sys, time\n"
+    "with open(sys.argv[1], 'a', encoding='utf-8') as log:\n"
+    "    log.write(json.dumps([time.time(), *sys.argv[2:]]) + '\\n')\n"
+    "sys.exit(int(sys.argv[2] == 'fail mentioned you'))\n"
+)
+
+
+def recorder(path):
+    return [sys.executable, "-c", RECORDER, str(path)]
+
+
+def recorded(path):
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text().splitlines()]
 
 
 class TeamupGateway:
@@ -201,6 +218,8 @@ def write_config(directory, server_url, **overrides):
                 "socket_path": str(socket),
                 "enrollment_key": ENROLLMENT,
                 "bindings": BINDINGS,
+                # Tests never raise real desktop notices.
+                "notify_command": [],
                 **overrides,
             }
         ),
@@ -730,3 +749,287 @@ def test_blocked_notice_output_does_not_block_ack_or_local_queries():
     finally:
         os.close(write_fd)
         os.close(read_fd)
+
+
+def mention_event(event_id, message_id, text="Please review the schema"):
+    return {
+        "event_id": event_id,
+        "kind": "mention",
+        "message": {
+            "message_id": message_id,
+            "room_id": ROOM,
+            "sender_member_id": MEMBERS[1],
+            "client_message_id": f"m{message_id}",
+            "text": text,
+            "mention_member_id": MEMBERS[0],
+        },
+    }
+
+
+def test_mention_raises_one_desktop_notice_and_tracks_delivery():
+    from teamup_client.ipc import call
+
+    async def scenario():
+        with tempfile.TemporaryDirectory(dir="/tmp") as name:
+            directory = Path(name)
+            shown = directory / "shown.jsonl"
+            async with gateway() as (upstream, server_url):
+                config, socket = write_config(
+                    directory, server_url, notify_command=recorder(shown)
+                )
+                token = BINDINGS[0]["member_token"]
+                key = BINDINGS[0]["binding_key"]
+                upstream.registered = {
+                    token: {"member_id": MEMBERS[0], "role_description": "Backend"},
+                    BINDINGS[1]["member_token"]: {
+                        "member_id": MEMBERS[1],
+                        "role_description": "Codex reviewer",
+                    },
+                }
+                async with daemon(config, socket):
+                    # Joining caches the room name used to label the notice.
+                    await call(socket, key, "join_room", {"room_id": ROOM})
+                    assert await call(socket, key, "mention_status", {}) == {
+                        "unread_mentions": 0
+                    }
+                    upstream.events[token] = {
+                        5: mention_event(
+                            5, 4, "Please\n review\x1b[31m the schema " * 9
+                        )
+                    }
+                    # The first ack fails, so the Server redelivers the mention.
+                    upstream.ack_failures[5] = 1
+                    sent = time.time()
+                    upstream.streams[token].write(b"event: inbox_changed\ndata: {}\n\n")
+                    await upstream.streams[token].drain()
+                    await until(lambda: recorded(shown))
+                    await until(lambda: not upstream.events[token])
+                    [(when, title, subtitle, body)] = recorded(shown)
+                    assert when - sent < 5
+                    assert (title, subtitle) == ("Codex reviewer mentioned you", "team")
+                    assert body.startswith("Please review[31m the schema Please")
+                    assert len(body) == 140 and body.endswith("…")
+                    assert "\n" not in body and "\x1b" not in body
+                    assert await call(socket, key, "mention_status", {}) == {
+                        "unread_mentions": 1
+                    }
+                    # Another binding on the same Client sees nothing.
+                    other = BINDINGS[1]["binding_key"]
+                    assert await call(socket, other, "mention_status", {}) == {
+                        "unread_mentions": 0
+                    }
+                    notices = await call(socket, key, "notifications", {})
+                    assert [item["event_id"] for item in notices["notifications"]] == [
+                        5
+                    ]
+                    assert "text" not in notices["notifications"][0]
+                    assert await call(socket, key, "mention_status", {}) == {
+                        "unread_mentions": 0
+                    }
+
+                # Redelivery after a restart neither repeats the notice nor reopens it.
+                upstream.events[token] = {5: mention_event(5, 4)}
+                async with daemon(config, socket):
+                    await until(lambda: not upstream.events[token])
+                    await asyncio.sleep(0.5)
+                    assert len(recorded(shown)) == 1
+                    assert await call(socket, key, "mention_status", {}) == {
+                        "unread_mentions": 0
+                    }
+
+    asyncio.run(scenario())
+
+
+def test_offline_mentions_notify_once_in_order_and_failures_stay_unread():
+    from teamup_client.ipc import call
+
+    async def scenario():
+        with tempfile.TemporaryDirectory(dir="/tmp") as name:
+            directory = Path(name)
+            shown = directory / "shown.jsonl"
+            async with gateway() as (upstream, server_url):
+                config, socket = write_config(
+                    directory, server_url, notify_command=recorder(shown)
+                )
+                token = BINDINGS[0]["member_token"]
+                key = BINDINGS[0]["binding_key"]
+                upstream.registered = {
+                    token: {"member_id": MEMBERS[0], "role_description": "Backend"},
+                    # The sender's role names the failing notice for the recorder.
+                    BINDINGS[1]["member_token"]: {
+                        "member_id": MEMBERS[1],
+                        "role_description": "fail",
+                    },
+                }
+                # Mentions that arrived while this Client was offline.
+                upstream.events[token] = {
+                    3: mention_event(3, 2, "first"),
+                    4: mention_event(4, 3, "second"),
+                }
+                async with daemon(config, socket):
+                    await until(lambda: len(recorded(shown)) == 2)
+                    await until(lambda: not upstream.events[token])
+                    titles = [entry[1:] for entry in recorded(shown)]
+                    room = f"Room {ROOM[:8]}"
+                    assert titles == [
+                        ["fail mentioned you", room, "first"],
+                        ["fail mentioned you", room, "second"],
+                    ]
+                    # A failed desktop notice is still pending for the agent.
+                    assert await call(socket, key, "mention_status", {}) == {
+                        "unread_mentions": 2
+                    }
+                    page = await call(socket, key, "notifications", {"limit": 1})
+                    assert [item["event_id"] for item in page["notifications"]] == [3]
+                    assert await call(socket, key, "mention_status", {}) == {
+                        "unread_mentions": 1
+                    }
+                async with daemon(config, socket):
+                    await asyncio.sleep(0.5)
+                    assert len(recorded(shown)) == 2
+
+    asyncio.run(scenario())
+
+
+def test_notice_store_upgrades_and_never_repeats_an_unsettled_attempt():
+    import sqlite3
+
+    from teamup_client._notices import NoticeStore
+
+    db = sqlite3.connect(":memory:")
+    db.execute("""
+        CREATE TABLE notices (
+            binding_scope TEXT NOT NULL,
+            event_id INTEGER NOT NULL,
+            room_id TEXT NOT NULL,
+            message_id INTEGER NOT NULL,
+            sender_member_id TEXT NOT NULL,
+            PRIMARY KEY (binding_scope, event_id)
+        ) WITHOUT ROWID
+    """)
+    db.execute("INSERT INTO notices VALUES ('s', 1, ?, 1, ?)", (ROOM, MEMBERS[1]))
+    db.commit()
+    store = NoticeStore(db)
+    notice = {"room_id": ROOM, "message_id": 2, "sender_member_id": MEMBERS[1]}
+    # Pre-upgrade notices count as unread but are not shown again.
+    assert store.state("s", 1) == {
+        "state": "shown",
+        "attempts": 0,
+        "harness_state": "skipped",
+    }
+    assert store.next_pending("s") is None
+    assert store.record("s", {**notice, "event_id": 2}, "hi")
+    assert not store.record("s", {**notice, "event_id": 2}, "hi")
+    assert store.next_pending("s")["event_id"] == 2
+    store.begin_attempt("s", 2)
+    # The Client stopped before the notifier reported back.
+    store.abandon_unsettled("s")
+    assert store.state("s", 2) == {
+        "state": "failed",
+        "attempts": 1,
+        "harness_state": None,
+    }
+    assert store.next_pending("s") is None
+    assert store.unread("s") == 2
+    store.mark_delivered("s", [1, 2])
+    store.settle("s", 2, shown=True)
+    assert store.state("s", 2)["state"] == "delivered"
+    assert store.unread("s") == 0
+
+
+def test_owner_methods_and_attach_reject_agent_credentials():
+    from teamup_client._config import owner_key, read_config
+    from teamup_client.ipc import ClientError, call
+
+    install = {"binding_key": "G" * 42 + "A", "harness_instance_id": "claude-code@mac"}
+    session = {"id": "session-1", "kind": "claude-code"}
+
+    async def expect(code, *args, **kwargs):
+        with pytest.raises(ClientError) as failure:
+            await call(*args, **kwargs)
+        assert failure.value.code == code
+
+    async def scenario():
+        with tempfile.TemporaryDirectory(dir="/tmp") as name:
+            directory = Path(name)
+            async with gateway() as (_upstream, server_url):
+                config, socket = write_config(
+                    directory, server_url, bindings=[], installs=[install]
+                )
+                owner = owner_key(read_config(config))
+                key = install["binding_key"]
+                async with daemon(config, socket):
+                    # An install key names a harness, not a session.
+                    await expect("invalid_request", socket, key, "find_members", {})
+                    # Agents cannot reach owner operations with their own secret.
+                    await expect(
+                        "invalid_request", socket, key, "sessions", {}, session
+                    )
+                    await expect("unauthorized", socket, "H" * 42 + "A", "sessions", {})
+                    assert await call(socket, owner, "sessions", {}) == {"sessions": []}
+                    # The first call parks the session for the owner.
+                    await expect(
+                        "session_pending", socket, key, "find_members", {}, session
+                    )
+                    report = (await call(socket, owner, "sessions", {}))["sessions"]
+                    assert [
+                        (item["session_key"], item["state"]) for item in report
+                    ] == [("session-1", "pending")]
+                    await expect(
+                        "not_found",
+                        socket,
+                        owner,
+                        "set_wake",
+                        {
+                            "harness_instance_id": "claude-code@mac",
+                            "session_key": "session-1",
+                            "rooms": [ROOM],
+                            "senders": [],
+                        },
+                    )
+                    await call(
+                        socket,
+                        owner,
+                        "decide_session",
+                        {
+                            "harness_instance_id": "claude-code@mac",
+                            "session_key": "session-1",
+                            "state": "rejected",
+                        },
+                    )
+                    await expect(
+                        "unauthorized", socket, key, "find_members", {}, session
+                    )
+
+                    # attach needs a Claude Code session and a socket this user owns.
+                    for bad_session, address in (
+                        ({"id": "session-1", "kind": "codex"}, str(socket)),
+                        (session, str(config)),
+                        (session, "relative.sock"),
+                    ):
+                        await expect(
+                            "invalid_request",
+                            socket,
+                            key,
+                            "attach",
+                            {"address": address, "token": "t"},
+                            bad_session,
+                        )
+
+    asyncio.run(scenario())
+
+
+def test_unsettled_submission_is_never_resent():
+    import sqlite3
+
+    from teamup_client._notices import NoticeStore
+
+    store = NoticeStore(sqlite3.connect(":memory:"))
+    notice = {"room_id": ROOM, "message_id": 2, "sender_member_id": MEMBERS[1]}
+    for event_id in (1, 2, 3):
+        store.record("s", {**notice, "event_id": event_id})
+    store.set_harness_state("s", 1, "submitting")
+    store.set_harness_state("s", 2, "waiting")
+    store.abandon_submitting("s")
+    assert store.state("s", 1)["harness_state"] == "unknown"
+    assert [item["event_id"] for item in store.undecided("s")] == [2, 3]
