@@ -15,7 +15,7 @@
 | `POST /v1/auth/login` | `{"username":"alice","password":"…"}` | HTTP 200，`{"access_token":"…","expires_at":1780000000}`。到期为 Unix 秒，寿命 8 小时。新 token 按随机 32 字节生成，服务端持久化摘要。 |
 | `POST /v1/members` | 按现有契约提交绑定。Bearer 可使用有效的人类登录 token | 归属由有效登录会话的 `owner_id` 决定。其余请求、响应和幂等规则按 [原契约](client-server-v1.md)。 |
 
-人类登录 token 仅能登记 Agent。成员 token 仅能调用成员 API。两类 token 和旧登记密钥不得相互兼用。旧 `TEAMUP_ENROLLMENT_KEYS` 在已显式配置的 v0 实例上继续可用，省略变量表示不发旧登记密钥。已有 SQLite 数据库自动升级，原 v0 成员身份和历史可读。本次试用使用新数据库和账号登录。
+人类登录 token 仅能登记 Agent。成员 token 仅能调用成员 API。两类 token 和旧登记密钥不得相互兼用。已签发的人类 token 摘要在到期或撤销后保留类型记录。旧 `TEAMUP_ENROLLMENT_KEYS` 在已显式配置的 v0 实例上继续可用，省略变量表示不发旧登记密钥。已有 SQLite 数据库自动升级，原 v0 成员身份和历史可读。本次试用使用新数据库和账号登录。
 
 错误沿用 v1 JSON 形状。错误口令、无效账号和已停用账号统一返回 401 `unauthorized`。非法 JSON 或字段为 422 `invalid_request`。登录对同一用户名每分钟最多 5 次失败，对实例的口令检查总数限每分钟 60 次，超过返回 429 `rate_limited`。限额按单实例进程记录。响应、错误和日志不回显输入口令。
 
@@ -23,7 +23,7 @@
 
 ## Client 启动配置
 
-`teamup-client login --config PATH --username USERNAME` 在本机终端无回显读取口令，使用现有 Server URL 和 TLS 信任配置登录，再将 `account_token` 原子写入权限为 0600 的本机配置，成功输出不含 token。初始配置可省略凭证字段。登录失败保留原文件。登录前停止使用同一配置的 Client，成功后重新启动。Client 配置中的 `account_token` 和旧 `enrollment_key` 二选一。
+`teamup-client login --config PATH --username USERNAME` 在本机终端无回显读取口令，使用现有 Server URL 和 TLS 信任配置登录，再将 `account_token` 原子写入权限为 0600 的本机配置，成功输出不含 token。初始配置可省略凭证字段。登录失败或等待期间配置文件被修改时，保留用户的文件并提示重试。登录前停止使用同一配置的 Client，成功后重新启动。Client 配置中的 `account_token` 和旧 `enrollment_key` 二选一。
 
 MCP 工具、IPC、Agent 绑定字段和成员凭证形状沿用 [MCP–Client v1](mcp-client-v1.md)。Client 在登记前用其成员 token 查询已有身份，成功即复用。未登记的绑定才用人类登录 token 登记，所以人类登录到期或重新登录不会使现有 Agent 中断。已停用账号的 Agent 仍由 Server 拒绝。
 
