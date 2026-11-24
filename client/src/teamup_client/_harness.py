@@ -96,10 +96,13 @@ async def submit_codex(command, address, token, text):
         async with asyncio.timeout(CODEX_TIMEOUT):
             return await process.wait() == 0
     except TimeoutError:
-        with suppress(ProcessLookupError):
-            process.kill()
-        await process.wait()
         return None
+    finally:
+        # Also on cancellation: never leave a CLI that may still queue the text.
+        if process.returncode is None:
+            with suppress(ProcessLookupError):
+                process.kill()
+            await process.wait()
 
 
 def drivers(codex_command):

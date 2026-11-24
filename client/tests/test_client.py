@@ -1086,6 +1086,37 @@ def test_codex_driver_runs_the_cli_by_argv_and_maps_its_exit(monkeypatch):
         assert time.monotonic() - started < 5
 
 
+def test_cancelled_codex_submission_kills_the_cli():
+    from teamup_client import _harness
+
+    thread = "00000000-0000-4000-8000-0000000000aa"
+    with tempfile.TemporaryDirectory() as directory:
+        pid_file = Path(directory) / "pid"
+        script = (
+            "import os, sys, time\n"
+            "open(sys.argv[1], 'w').write(str(os.getpid()))\n"
+            "time.sleep(30)\n"
+        )
+
+        async def run():
+            command = (sys.executable, "-c", script, str(pid_file))
+            task = asyncio.create_task(
+                _harness.submit_codex(command, thread, None, "x")
+            )
+            async with asyncio.timeout(5):
+                while not pid_file.exists() or not pid_file.read_text():
+                    await asyncio.sleep(0.02)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            return int(pid_file.read_text())
+
+        pid = asyncio.run(run())
+        # Killed and reaped: the process no longer exists.
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
+
+
 def test_codex_command_defaults_to_the_bundled_cli_only_on_macos(monkeypatch):
     from teamup_client import _harness
 
