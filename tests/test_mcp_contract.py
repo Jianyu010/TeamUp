@@ -31,6 +31,7 @@ def test_stdio_passes_approved_binding_and_surfaces_ipc_error():
                 {"message_id": 1},
             ),
             ("get_board", {"room_id": "room"}, None),
+            ("list_rooms", {}, {"rooms": []}),
         ]
         seen = []
 
@@ -73,9 +74,16 @@ def test_stdio_passes_approved_binding_and_surfaces_ipc_error():
             assert "private handoff" in instructions
             tools = {tool.name: tool for tool in (await session.list_tools()).tools}
             assert "three or more" in tools["teamup_create_room"].description
+            assert tools["teamup_list_rooms"].inputSchema == {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": False,
+            }
             assert tools.keys() == {
                 "teamup_register",
                 "teamup_find_members",
+                "teamup_list_rooms",
                 "teamup_create_room",
                 "teamup_join_room",
                 "teamup_get_board",
