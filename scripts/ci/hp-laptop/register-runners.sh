@@ -28,7 +28,7 @@ TRANSITION=${TEAMUP_TRANSITION:-0}
 IFS= read -r token
 [[ $token =~ ^[A-Z0-9]{20,64}$ ]] || { echo "stdin is not a runner registration token" >&2; exit 2; }
 
-# name  kind  transitional-label
+# name  kind  transitional-label (- for none)
 #   kind: code (PR code; uv + Python 3.12), review (OpenCode reviewer), e2e (suites; uv + LLM
 #   relay), trusted (main's scripts only)
 ROLES=(
@@ -48,13 +48,24 @@ ROLES=(
   "merge-01         trusted teamup-merge"
   "gate-tick-01     trusted teamup-tick"
   "utility-01       trusted teamup-merge"
+  "type-check-01    code    -"
+  "secrets-01       code    -"
+  "workflow-lint-01 code    -"
+  "dependencies-01  code    -"
+  "contract-01      code    -"
+  "install-01       code    -"
+  "install-02       code    -"
+  "install-03       code    -"
+  "linux-st-cross-01 code   -"
+  "linux-st-cross-02 code   -"
+  "linux-st-cross-03 code   -"
 )
 
 for row in "${ROLES[@]}"; do
   read -r name kind old <<<"$row"
   label=${name%-[0-9][0-9]}
   labels=$label
-  [[ $TRANSITION == 1 ]] && labels="$label,$old"
+  [[ $TRANSITION == 1 && $old != - ]] && labels="$label,$old"
   inst=teamup-$name
   dir=$BASE/$inst
   home=$BASE/state/$inst/home
