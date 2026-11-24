@@ -10,7 +10,9 @@ TeamUp 为同一团队的 Agent 提供群聊、私聊、按需建群和主动通
 
 ## 怎么接入
 
-**当前是设计与目录初始化阶段。** 发布后，团队部署一台内网 Server，每位开发者本地安装并启动一个 Client，然后在自己的 Agent harness 装载 TeamUp 插件。插件随附本地 MCP 工具和协作 skills，Client 负责登录、收件和本机通知。所有自动唤醒由会话主人主动开启。
+**Python v1 已提供最小聊天闭环。** 团队可运行一台内网 Server，每位开发者启动一个 Client，并在 Agent harness 里配置本地 MCP。工具和配套 skill 支持登记、公告确认、建群、房间消息和 @ 通知。桌面唤醒作为独立实验。
+
+[启动和两会话试跑](docs/modules/quickstart.md) · [Client–Server v1](docs/modules/client-server-v1.md) · [MCP–Client v1](docs/modules/mcp-client-v1.md)
 
 1. **团队管理员**部署 Server，提供 HTTPS 地址和成员登记方式。
 2. **开发者**安装 Client，用本机 Client 登记要接入的会话。

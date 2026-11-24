@@ -32,7 +32,7 @@ TeamUp/
 | `plugin/skills/` | 每个工作流一个 `SKILL.md` 目录。工具 schema 和授权逻辑由各自的代码 owner 维护。 |
 | `dashboards/` | 看板和数据来源说明。需要内网状态时使用授权 API。 |
 
-计划将 `server`、`client`、`plugin/mcp` 作为三个 Python workspace 成员管理。Client 和 MCP 进程可以随同一个安装包交付。文件夹内按组件放测试，跨进程的验收测试独立覆盖已发布协议。源码和构建配置随首个实现提交加入。
+`server`、`client`、`plugin/mcp` 是 uv workspace 的三个 Python 包。Client 和 MCP 入口可在同一个 workspace 环境安装。各包的测试面向其公开入口，根目录 `tests/` 覆盖跨进程闭环和导入边界。
 
 ## 依赖与验证
 

@@ -1,9 +1,22 @@
 # Codex 桌面会话唤醒验证
 
-**状态为待验证。** CLI `0.163.0` 的帮助确认有 `codex queue --thread`，未列出 `--resume`。官方参考列出在支持版本和 daemon 上通过 `--resume` 恢复未加载会话。App Server 的 `thread/resume`、`turn/start` 是自管会话的接入依据。桌面会话能否走同一个授权后端，由下列实验确定。 [Codex CLI 参考](https://learn.chatgpt.com/docs/cli/reference) · [Codex App Server](https://learn.chatgpt.com/docs/app-server)
+## 2026-11-24 实测
 
-1. 在 B 的实际部署环境里，用拥有者授权的测试项目开两个桌面会话。使用无敏感资料的目录，记录桌面和 CLI 版本、授权的 daemon 或后端、目标会话 ID，以及两个窗口的会话标识。两个会话可在同一台机器和同一服务下运行。
-2. 给目标会话登记独立成员，Client 只允许目标成员自动处理来自 A 的测试请求。先用支持版本提供的 `codex queue` 或授权的 App Server 入口提交一条带唯一标记的无副作用测试消息。检查同一个目标桌面会话是否显示该标记，另一会话是否保持原状态。
-3. 分别测**空闲已加载、忙碌、关闭窗口或会话未加载**。检查 Client 能否根据实际 turn 事件或带标记的回复确认开始与完成。分别记录 CLI 排队成功、退出码和自动恢复警告。忙碌时要求排队，避免插入正在执行的 turn。未加载时在版本和后端支持、拥有者允许的条件下尝试恢复。
-4. 运行 TeamUp 试装后由 A 发一个真实 ping。检查服务端入箱、Client 收件、目标会话启动和原会话回复。确认重复投递只产生一条协作回复，未授权来源不会唤醒，目标全站隔离后不再接收新的请求。
-5. 按版本、配置和状态记录结论。某个状态只有在**原桌面会话收到请求并自动启动 turn**时才算支持唤醒。只到达 Client、仅成功排队或启动了独立会话时，保留实际结果。对应环境采用本机通知或独立受限会话接入。
+环境为 macOS 26.6.2、ChatGPT 桌面版 `26.1117.41037`、随应用附带的 Codex CLI `0.171.0-alpha.13`。另装的 Homebrew CLI `0.163.0` 的帮助未列出 `--resume`。测试使用无敏感内容的专用桌面 chat，记录发送标记、目标会话 ID、turn ID 与完成状态。
+
+| 现有桌面会话状态 | 结果 | 证据 |
+| --- | --- | --- |
+| 空闲、已加载 | 通过 | 从桌面外调用随附 CLI 的 `codex queue --disable daemon_auto_start --resume --thread … --message …`。CLI 报告已排队，同时提示无法用 daemon 恢复。大约 9 秒后，原桌面 chat 自行启动了新 turn，完成并回复测试标记。 |
+| 忙碌、已加载 | 通过 | 原会话执行 20 秒无副作用测试指令时，使用同一 CLI 排队下一条标记。前一轮先完成，随后同一桌面会话启动独立新 turn 并回复第二个标记。桌面应用当时在后台。 |
+| 未加载或关闭 | 未验证 | 桌面在后台超过 60 秒，目标仍报告 `idle`。默认 daemon 控制套接字不可连接。现有桌面应用保持运行。 |
+
+隔离 App Server 通过自己的私有 Unix socket 完成了空闲、忙碌和确认为 `notLoaded` 的三个场景。对于未加载的隔离会话，普通排队时保持 `notLoaded`。使用 `--resume` 后，同一测试线程执行排队标记。该结果对应自管 App Server 的后端。
+
+对已加载的桌面 chat，TeamUp 后续可评估经所有者授权调用 CLI 排队。本次实测直接调用 harness 入口。TeamUp v1 的 @ 路径只发通知。 [Codex CLI 参考](https://learn.chatgpt.com/docs/cli/reference#codex-queue) · [Codex App Server](https://learn.chatgpt.com/docs/app-server) · [跨进程队列实现](https://github.com/openai/codex/pull/39034)
+
+## 复验步骤
+
+1. 使用拥有者授权的测试项目开两个桌面会话。记录桌面和 CLI 版本、授权的 daemon 或后端、目标会话 ID。给两个会话使用可区分的测试标记。
+2. 先用 CLI 排队或受支持的本机 App Server 入口提交无副作用测试消息。空闲时记录实际 turn 启动和完成。忙碌时记录前一轮结束与新一轮开始的顺序，并确认另一会话无变化。
+3. 在未加载情形下先证明会话状态，记录排队退出码、自动恢复警告和后续 turn 事件。在支持版本、后端和所有者授权齐备时尝试恢复。
+4. 将具体版本和场景单独记为已验证或待验证。只有**原桌面会话实际自动启动 turn**才算支持唤醒。

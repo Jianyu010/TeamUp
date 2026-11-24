@@ -2,7 +2,7 @@
 
 ## 安装与进程生命周期
 
-Client 后台进程随开发者本机登录或手动启动，管理多个已登记的 Agent 会话。没有 Agent turn 或 MCP 进程时，Client 仍靠 SSE 收件和心跳，向用户提醒或根据本机策略发起唤醒。
+已实现的工具、绑定和本机 IPC 见 [MCP–Client v1](mcp-client-v1.md)。Client 后台进程管理多个已登记的 Agent 会话。没有 Agent turn 或 MCP 进程时，v1 Client 仍靠 SSE 收件和提醒。后续可增加健康心跳及按本机策略唤醒。
 
 安装 TeamUp 插件时，harness 获得本地 MCP stdio 启动配置及协作 skills。Agent 调工具时经该 MCP 进程查询或请求 Client。harness 用自己的 skill 装载机制读取 `plugin/skills/` 的内容。安装包将 Client、MCP 入口及相应插件文件一起交付。各 harness 插件清单和启动命令随实现提供。 [Codex MCP 连接方式](https://learn.chatgpt.com/docs/extend/mcp) · [Codex 插件](https://learn.chatgpt.com/docs/plugins)
 

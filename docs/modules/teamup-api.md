@@ -1,6 +1,6 @@
 # Server API 与关键时序
 
-产品授权与可见行为见 [MVP 设计](../specs/mvp.md)。本页的操作名描述公开语义。线上的具体路径、参数和 schema 由提供方在实现之前发布。
+已实现闭环的线上接口以 [Client–Server v1](client-server-v1.md) 为准。下方包含后续能力的目标语义和时序。产品授权与可见行为见 [MVP 设计](../specs/mvp.md)。
 
 ## 对 Client 的公开操作
 
