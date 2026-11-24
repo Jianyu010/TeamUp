@@ -3,7 +3,7 @@
 A freeze is an open issue labelled ``ci/freeze`` whose title starts with ``[ci:<source>]``.
 While one is open the merger merges only PRs the owner passed with ``ready`` (scripts/ci/merge.py),
 so a fix or revert can land and nothing else piles onto a red ``main``. Each source owns its own
-issue: ``main`` (PR checks on a push to main) and ``nightly``. The same source clears it when it
+issue: ``main`` (CI on a push to main) and ``nightly``. The same source clears it when it
 is green again; a person can also close the issue. ``weekly`` uses the same mechanics with the
 ``weekly-failure`` label instead: real-agent runs can be flaky, so a red weekly reports but never
 freezes.
@@ -26,6 +26,12 @@ from scripts.ci.gate import GitHub, load_policy
 
 SOURCES = ("main", "nightly", "weekly")
 REPORT_ONLY = {"weekly": "weekly-failure"}
+# Axis labels so a freeze issue meets docs/ci/labeling.md (type, source and priority).
+AXIS_LABELS = {
+    "main": ["type/bug", "source/ci", "priority/critical"],
+    "nightly": ["type/bug", "source/nightly", "priority/critical"],
+    "weekly": ["type/bug", "source/weekly", "priority/high"],
+}
 
 
 def title_prefix(source: str) -> str:
@@ -68,7 +74,11 @@ def set_freeze(gh: GitHub, label: str, source: str, reason: str, url: str) -> No
     issue = gh.call(
         "POST",
         "/issues",
-        {"title": title, "labels": [label], "body": f"{body}\n\n{tail}"},
+        {
+            "title": title,
+            "labels": [label, *AXIS_LABELS.get(source, [])],
+            "body": f"{body}\n\n{tail}",
+        },
     )
     print(f"freeze: opened #{(issue or {}).get('number')} for {source}")
 
