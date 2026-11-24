@@ -1,0 +1,55 @@
+# Layer 5 · the `merge-gate` commit status, PR side (docs/ci/README.md; ported from tweakie).
+#
+# pull_request_target runs this file and scripts/ci/gate.py from main, never from the PR, so a PR
+# cannot change the rules that judge it. No PR code runs here: the PR is read through the API.
+#
+# This is the only gate run GitHub lists on a PR. Everything that follows a PR-checks run, the
+# 15-minute sweep or a dispatch is in gate-queue.yml, whose runs belong to main.
+#
+# - a new PR starts with `merge-gate` pending; new commits reset it and remove `ready`;
+# - a draft conversion, ready-for-review or `pr/hold` change re-judges the automatic route;
+# - the owner's `ready` passes the gate without the AI review (and is how a PR that layer 1 holds,
+#   e.g. one that touches .github/, gets through); any later push or edit removes it.
+name: Gate
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, edited, labeled, unlabeled, converted_to_draft, ready_for_review]
+
+permissions: {}
+
+jobs:
+  guard:
+    if: >-
+      ${{ !github.event.pull_request.draft
+      || !contains(fromJSON('["opened","reopened","synchronize","edited"]'), github.event.action) }}
+    runs-on: [self-hosted, teamup-merge] # trusted hp-laptop runner: never runs PR code
+    timeout-minutes: 5
+    permissions:
+      actions: write # dispatch main's review workflow
+      contents: read
+      checks: read
+      issues: write # remove an unaccepted `ready` and say why
+      pull-requests: write
+      statuses: write
+    steps:
+      - name: Fetch main's gate (contents API, not git)
+        timeout-minutes: 2
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ github.sha }} # the base branch (main), never the PR
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/gate"
+          for f in scripts/ci/gate.py .github/ci/policy.json; do
+            mkdir -p "$RUNNER_TEMP/gate/$(dirname "$f")"
+            curl -fsSL --connect-timeout 10 --max-time 15 --retry 3 --retry-delay 2 --retry-max-time 55 --retry-all-errors \
+              -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github.raw" \
+              -o "$RUNNER_TEMP/gate/$f" "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/contents/$f?ref=$REF"
+          done
+
+      - name: Guard
+        working-directory: ${{ runner.temp }}/gate
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 -E -s -m scripts.ci.gate guard
