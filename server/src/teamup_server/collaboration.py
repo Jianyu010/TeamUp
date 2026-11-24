@@ -31,6 +31,7 @@ _DEFAULT_PROTOCOL = (
 _CREDENTIAL = re.compile(r"[A-Za-z0-9_-]{43}")
 _USERNAME = re.compile(r"[a-z][a-z0-9_-]{2,63}")
 _SESSION_SECONDS = 8 * 3600
+_DM_EXPIRY_BATCH = 500
 _LOGIN_WINDOW_SECONDS = 60
 _LOGIN_CHECKS_PER_WINDOW = 60
 _LOGIN_FAILURES_PER_USERNAME = 5
@@ -75,6 +76,7 @@ _DMS_TABLE = """
         dm_id TEXT PRIMARY KEY,
         member_low TEXT NOT NULL REFERENCES members(member_id),
         member_high TEXT NOT NULL REFERENCES members(member_id),
+        expired_through_message_id INTEGER,
         UNIQUE (member_low, member_high),
         CHECK (member_low < member_high)
     )
@@ -317,6 +319,20 @@ def _rfc3339_utc_now() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
+def _parse_timestamp(value: object) -> datetime | None:
+    """Parse an RFC 3339 timestamp with an explicit offset, else return None."""
+
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed
+
+
 ChangeListener = Callable[[], None]
 ObserveInbox = Callable[[ChangeListener], AbstractContextManager[None]]
 
@@ -418,7 +434,7 @@ def _dm_participant(
 ) -> sqlite3.Row:
     record = connection.execute(
         """
-        SELECT member_low, member_high FROM dms
+        SELECT member_low, member_high, expired_through_message_id FROM dms
         WHERE dm_id = ? AND ? IN (member_low, member_high)
         """,
         (dm_id, member_id),
@@ -480,9 +496,13 @@ class Collaboration:
                 _seed_id_counters(connection)
             if version in (1, 2, 3):
                 _migrate_dm_schema(connection)
-            if version in (0, 1, 2, 3):
-                connection.execute("PRAGMA user_version = 4")
-            elif version != 4:
+            if version == 4:
+                connection.execute(
+                    "ALTER TABLE dms ADD COLUMN expired_through_message_id INTEGER"
+                )
+            if version in (0, 1, 2, 3, 4):
+                connection.execute("PRAGMA user_version = 5")
+            elif version != 5:
                 raise ValueError("Unsupported TeamUp database schema version")
 
     def _connect(self) -> sqlite3.Connection:
@@ -1012,10 +1032,11 @@ class Collaboration:
         self._notify((peer,))
         return message
 
-    def dm_history(self, token: str, dm_id: str, after: int, limit: int) -> list[dict]:
+    def dm_history(self, token: str, dm_id: str, after: int, limit: int) -> dict:
         with self._transaction() as connection:
             member_id = _member(connection, token)["member_id"]
-            _dm_participant(connection, dm_id, member_id)
+            dm = _dm_participant(connection, dm_id, member_id)
+            watermark = dm["expired_through_message_id"]
             cursor = min(max(after, 0), _SQLITE_MAX_ID)
             rows = connection.execute(
                 f"""
@@ -1024,7 +1045,66 @@ class Collaboration:
                 """,
                 (dm_id, cursor, limit),
             )
-            return [dict(record) for record in rows]
+            history = {"messages": [dict(record) for record in rows]}
+            if watermark is not None:
+                history["expired_through_message_id"] = watermark
+                history["history_truncated"] = cursor < watermark
+            return history
+
+    def expire_due_dms(self, cutoff: datetime) -> tuple[int, bool]:
+        """Delete one bounded batch of DM messages due at ``cutoff``.
+
+        A row is due when its ``created_at`` parses as an RFC 3339 timestamp
+        with an explicit offset at or before ``cutoff``; rows without a usable
+        timestamp survive. Room rows are never selected. One write transaction
+        removes the inbox events referencing the pruned messages, the canonical
+        messages themselves, and advances each affected conversation's
+        ``expired_through_message_id`` watermark to the greatest deleted ID.
+        The ID counters keep their allocated values. Returns the number of
+        deleted messages and whether more due rows remain.
+        """
+        if not isinstance(cutoff, datetime) or cutoff.tzinfo is None:
+            raise ValueError("DM expiry cutoff must be a timezone-aware datetime")
+        with self._transaction(write=True) as connection:
+            due: list[tuple[int, str]] = []
+            for row in connection.execute(
+                """
+                SELECT message_id, dm_id, created_at FROM messages
+                WHERE dm_id IS NOT NULL AND created_at IS NOT NULL
+                ORDER BY message_id
+                """
+            ):
+                created = _parse_timestamp(row["created_at"])
+                if created is not None and created <= cutoff:
+                    due.append((row["message_id"], row["dm_id"]))
+                    if len(due) > _DM_EXPIRY_BATCH:
+                        break
+            batch = due[:_DM_EXPIRY_BATCH]
+            if not batch:
+                return 0, False
+            message_ids = [message_id for message_id, _ in batch]
+            placeholders = ", ".join("?" * len(message_ids))
+            connection.execute(
+                f"DELETE FROM inbox_events WHERE message_id IN ({placeholders})",
+                message_ids,
+            )
+            connection.execute(
+                f"DELETE FROM messages WHERE message_id IN ({placeholders})",
+                message_ids,
+            )
+            watermarks: dict[str, int] = {}
+            for message_id, dm_id in batch:
+                watermarks[dm_id] = max(watermarks.get(dm_id, 0), message_id)
+            for dm_id, watermark in watermarks.items():
+                connection.execute(
+                    """
+                    UPDATE dms SET expired_through_message_id =
+                        MAX(COALESCE(expired_through_message_id, 0), ?)
+                    WHERE dm_id = ?
+                    """,
+                    (watermark, dm_id),
+                )
+            return len(batch), len(due) > _DM_EXPIRY_BATCH
 
     def history(self, token: str, room_id: str, after: int, limit: int) -> list[dict]:
         with self._transaction() as connection:
