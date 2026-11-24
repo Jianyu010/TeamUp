@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from functools import partial
 
+from ._desktop import PREVIEW_LIMIT, TITLE_LIMIT, clean
 from ._notices import binding_scope
 from ._protocol import is_integer, is_string, is_uuid
 from ._upstream import unavailable
@@ -51,7 +52,9 @@ OPERATIONS = {
     ),
     "read_messages": Operation("GET", "/rooms/{room_id}/messages", ROOM, PAGE),
     "notifications": Operation(optional=PAGE),
+    "mention_status": Operation(),
 }
+LOOKUP_TIMEOUT = 2
 
 
 @dataclass
@@ -59,15 +62,17 @@ class Session:
     scope: str
     inbox_changed: asyncio.Event = field(default_factory=asyncio.Event)
     registered: asyncio.Event = field(default_factory=asyncio.Event)
+    notices_changed: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 class Coordinator:
-    def __init__(self, config, upstream, notices, notice_output):
+    def __init__(self, config, upstream, notices, notice_output, notifier):
         self._registration_token = config.account_token or config.enrollment_key
         self._legacy_enrollment = config.enrollment_key is not None
         self._upstream = upstream
         self._notices = notices
         self._notice_output = notice_output
+        self._notifier = notifier
         self._bindings = {binding.binding_key: binding for binding in config.bindings}
         self._sessions = {
             binding.binding_key: Session(binding_scope(config.server_url, binding))
@@ -95,10 +100,16 @@ class Coordinator:
             notices = self._notices.page(
                 session.scope, params.get("after", 0), params.get("limit", 50)
             )
+            self._notices.mark_delivered(
+                session.scope, [notice["event_id"] for notice in notices]
+            )
             return {"notifications": notices}
+        if method == "mention_status":
+            return {"unread_mentions": self._notices.unread(session.scope)}
         if method == "register":
             result = await self._register(binding, operation, params)
             session.registered.set()
+            self._remember_members(session.scope, [result])
             return result
 
         path = operation.route.format(**params)
@@ -113,7 +124,27 @@ class Coordinator:
             )
         if method == "ack_board":
             session.inbox_changed.set()
+        elif method in ("create_room", "join_room"):
+            self._remember_room(session.scope, result)
+        elif method == "find_members" and isinstance(result.get("members"), list):
+            self._remember_members(session.scope, result["members"])
         return result
+
+    def _remember_room(self, scope, room):
+        if is_uuid(room.get("room_id")) and ROLE(room.get("name")):
+            self._notices.remember_room(scope, room["room_id"], room["name"])
+
+    def _remember_members(self, scope, members):
+        self._notices.remember_members(
+            scope,
+            [
+                member
+                for member in members
+                if isinstance(member, dict)
+                and is_uuid(member.get("member_id"))
+                and ROLE(member.get("role_description"))
+            ],
+        )
 
     async def _register(self, binding, operation, params):
         if not self._legacy_enrollment:
@@ -144,8 +175,9 @@ class Coordinator:
     @asynccontextmanager
     async def watching_inboxes(self):
         workers = [
-            asyncio.create_task(self._watch(binding, self._sessions[key]))
+            asyncio.create_task(worker(binding, self._sessions[key]))
             for key, binding in self._bindings.items()
+            for worker in (self._watch, self._announce)
         ]
         try:
             yield
@@ -178,7 +210,9 @@ class Coordinator:
         try:
             while True:
                 wake.clear()
-                await self._drain(binding.member_token, session.scope)
+                await self._drain(
+                    binding.member_token, session.scope, session.notices_changed
+                )
                 if reader.done():
                     await reader
                     return
@@ -204,7 +238,7 @@ class Coordinator:
         finally:
             wake.set()
 
-    async def _drain(self, token, scope):
+    async def _drain(self, token, scope, notices_changed):
         after = 0
         limit = 100
         while True:
@@ -224,12 +258,54 @@ class Coordinator:
                 event_id = event["event_id"]
                 if event["kind"] == "mention":
                     notice = _notice(event)
-                    if self._notices.record(scope, notice):
+                    text = event["message"].get("text")
+                    preview = clean(text, PREVIEW_LIMIT) if BOARD_TEXT(text) else ""
+                    if self._notices.record(scope, notice, preview):
                         self._notice_output.emit(notice)
+                        notices_changed.set()
                 await self._upstream.request("POST", f"/inbox/{event_id}/ack", token)
                 after = event_id
             if len(events) < limit:
                 return
+
+    async def _announce(self, binding, session):
+        """Show one desktop notice per recorded mention, in event order."""
+        scope = session.scope
+        while True:
+            try:
+                self._notices.abandon_unsettled(scope)
+                while True:
+                    session.notices_changed.clear()
+                    while notice := self._notices.next_pending(scope):
+                        title, subtitle, body = await self._describe(
+                            binding, scope, notice
+                        )
+                        # Persist the attempt first so a crash never repeats it.
+                        self._notices.begin_attempt(scope, notice["event_id"])
+                        shown = await self._notifier.show(title, subtitle, body)
+                        self._notices.settle(scope, notice["event_id"], shown)
+                    await session.notices_changed.wait()
+            except sqlite3.Error:
+                await asyncio.sleep(1)
+
+    async def _describe(self, binding, scope, notice):
+        sender = notice["sender_member_id"]
+        role = self._notices.member_role(scope, sender)
+        if role is None:
+            try:
+                async with asyncio.timeout(LOOKUP_TIMEOUT):
+                    page = await self._upstream.request(
+                        "GET", "/members", binding.member_token, query={"q": ""}
+                    )
+                if isinstance(page, dict) and isinstance(page.get("members"), list):
+                    self._remember_members(scope, page["members"])
+                    role = self._notices.member_role(scope, sender)
+            except (ClientError, OSError, OverflowError, TimeoutError):
+                pass
+        room = self._notices.room_name(scope, notice["room_id"])
+        room = room or f"Room {notice['room_id'][:8]}"
+        title = clean(f"{role or 'A teammate'} mentioned you", TITLE_LIMIT)
+        return title, clean(room, TITLE_LIMIT), notice["preview"] or "New mention"
 
 
 def _notice(event):

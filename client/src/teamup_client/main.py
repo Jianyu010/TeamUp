@@ -15,6 +15,7 @@ from pathlib import Path
 from ._config import ConfigError, locked_config
 from ._coordinator import Coordinator
 from ._daemon import handle
+from ._desktop import DesktopNotifier, default_command
 from ._local import LocalError, listen
 from ._login import login
 from ._notice_output import NoticeOutput
@@ -33,7 +34,13 @@ async def _serve(path):
             open_store(config.socket_path) as notices,
         ):
             async with connect(config) as upstream:
-                coordinator = Coordinator(config, upstream, notices, NoticeOutput())
+                command = config.notify_command
+                notifier = DesktopNotifier(
+                    default_command() if command is None else command
+                )
+                coordinator = Coordinator(
+                    config, upstream, notices, NoticeOutput(), notifier
+                )
                 on_call = partial(handle, coordinator=coordinator)
                 async with (
                     listen(config.socket_path, on_call),

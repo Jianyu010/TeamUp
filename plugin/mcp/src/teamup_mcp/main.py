@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 from typing import Any
 
@@ -79,6 +80,19 @@ TOOLS = [
 ]
 
 
+async def unread_hint(socket_path: str, binding_key: str) -> str | None:
+    """Best-effort reminder so an active agent notices mentions without polling."""
+    try:
+        status = await call(socket_path, binding_key, "mention_status", {})
+    except ClientError:
+        return None
+    count = status.get("unread_mentions")
+    if type(count) is not int or count < 1:
+        return None
+    noun = "mention" if count == 1 else "mentions"
+    return f"TeamUp: {count} unread {noun}. Call teamup_notifications to read them."
+
+
 def create_mcp(socket_path: str, binding_key: str) -> Server:
     server = Server(
         "TeamUp",
@@ -102,12 +116,18 @@ def create_mcp(socket_path: str, binding_key: str) -> Server:
     @server.call_tool(validate_input=False)
     async def invoke(
         name: str, arguments: dict[str, Any]
-    ) -> dict[str, Any] | CallToolResult:
+    ) -> tuple[list[TextContent], dict[str, Any]] | CallToolResult:
         # Client validates the exact IPC values and returns the published error code.
         try:
             if name not in methods:
                 raise ClientError("invalid_request", "Unknown TeamUp tool")
-            return await call(socket_path, binding_key, methods[name], arguments)
+            result = await call(socket_path, binding_key, methods[name], arguments)
+            content = [TextContent(type="text", text=json.dumps(result, indent=2))]
+            if name != "teamup_notifications" and (
+                hint := await unread_hint(socket_path, binding_key)
+            ):
+                content.append(TextContent(type="text", text=hint))
+            return content, result
         except ClientError as error:
             return CallToolResult(
                 isError=True,

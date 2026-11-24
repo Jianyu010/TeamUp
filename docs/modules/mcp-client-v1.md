@@ -15,6 +15,7 @@
 - `enrollment_key`，管理员分发给本机开发者的登记密钥。
 - `bindings`，本机批准的会话列表。每项包含 `binding_key`、`member_token`、`harness_instance_id`、`session_key`。每项的秘密与稳定标识对在配置中唯一。
 - 可选 `ca_file`，自建 CA 的证书路径，用于 HTTPS 校验。
+- 可选 `notify_command`，桌面提醒命令的 argv 字符串数组。Client 在末尾追加标题、副标题和正文三个参数后直接执行，不经 shell。省略时 macOS 用 `osascript`，Linux 在有 `notify-send` 时使用它。空数组关闭桌面提醒。
 
 `teamup-mcp` 从环境变量 `TEAMUP_SOCKET`、`TEAMUP_BINDING_KEY` 取得本机 socket 和当前会话的绑定秘密。由拥有者为每个 harness 会话配置各自的启动方式。只获准的本机用户能连接 socket。绑定秘密按对该本机用户的授权凭证保管，私有仓库或团队共享配置也不要提交。
 
@@ -36,7 +37,8 @@ MCP 初始化说明与随附的协作 skill 会引导 Agent 按参与范围选�
 | `teamup_ack_board` | `ack_board` | `room_id`、`version` | `{"version":1}` |
 | `teamup_send_message` | `send_message` | `room_id`、`client_message_id`、`text`、可选 `mention_member_id` | Message |
 | `teamup_read_messages` | `read_messages` | `room_id`、可选 `after`、`limit` | `{"messages":[Message]}` |
-| `teamup_notifications` | `notifications` | 可选 `after`、`limit` | `{"notifications":[Notice]}`，按 `event_id` 递增 |
+| `teamup_notifications` | `notifications` | 可选 `after`、`limit` | `{"notifications":[Notice]}`，按 `event_id` 递增。返回的通知记为已送达 |
+| 无，MCP 插件内部调用 | `mention_status` | `{}` | `{"unread_mentions":0}`，本绑定尚未送达的通知数 |
 
 Member、Room、Board、Message 与分页要求见 [Client–Server v1](client-server-v1.md)。Notice 只含 `event_id`、`room_id`、`message_id`、`sender_member_id`。返回值由 MCP 作为结构化工具结果交付。无效绑定返回 `unauthorized`，协议错误、非法参数或未知方法返回 `invalid_request`，未登记返回 `not_registered`，上游不可达返回 `unavailable`。Server 业务错误透传 code。对 Agent 的工具失败携带同一 code 和简短原因。用户可用 `teamup-client notifications` 和相同的 `TEAMUP_SOCKET`、`TEAMUP_BINDING_KEY` 环境变量主动读取通知。
 
@@ -44,4 +46,22 @@ Member、Room、Board、Message 与分页要求见 [Client–Server v1](client-s
 
 Client 为已登记的绑定监听 SSE，在初连、重连和收到提示时拉取未确认事件。普通事件确认后可通过房间历史读取。收到 `mention` 时，Client 按绑定和 `event_id` 持久登记通知，再确认 Server 事件。首次登记时异步尝试向 daemon stderr 打印只有 Notice 字段的 JSON 对象。日志管道阻塞或队列满时，stderr 提醒可能延迟或省略，收件确认和本机通知查询继续运行。重复投递不会增加通知记录。进程在保存后崩溃时，通知仍可通过 MCP 或 CLI 读取。Server 和 IPC 在后续增加撤权能力时须约定相应的本地可见性变更。
 
-首轮 @ 只发通知，桌面唤醒作为独立 harness 实测进行。远端聊天正文不会直接作为命令执行。
+### 桌面提醒与送达状态
+
+每条通知在本机通知库中有一个送达状态，只由 Client 写入：
+
+| 状态 | 含义 |
+| --- | --- |
+| `pending` | 已登记，桌面提醒尚未尝试 |
+| `shown` | 桌面提醒命令成功退出。只说明提醒已交给系统，不证明主人看到 |
+| `failed` | 提醒命令失败、超时、未配置，或进程在尝试中途退出、结果未知 |
+| `delivered` | 本绑定的 `notifications` 调用已把它返回给 Agent 或主人。终态，不被其他状态覆盖 |
+
+- 每个绑定按 `event_id` 顺序串行处理 `pending` 通知，每条最多尝试一次提醒。尝试前先持久记录。重启时，已尝试但未落定的通知记为 `failed`，不重复弹出，尚未尝试的继续按顺序提醒。
+- 提醒包含发送者角色、房间名和消息开头不超过 140 字符的预览。角色和房间名来自 Client 经本绑定调用 `register`、`find_members`、`create_room`、`join_room` 得到的结果，缺失时 Client 以本绑定身份调用 `GET /v1/members` 补查发送者。仍无法得到时用通用称呼和房间 ID 前缀。这些名称只用于显示，不作授权依据。预览去掉控制字符并截断，只保存在本机通知库中，不出现在 Notice 里。
+- 提醒不启动任何模型 turn。提醒失败不影响收件确认和查询。
+- 首版升级前已有的通知记为 `shown`，升级时不补弹提醒，仍计入未送达数。
+
+MCP 插件在 `teamup_notifications` 以外的工具成功后调用 `mention_status`。未送达数大于 0 时，在工具结果的文本内容末尾追加一行提示，结构化结果保持不变。该调用失败时省略提示。
+
+首轮 @ 只发通知，harness 唤醒的设计见 [Harness 投递设计](harness-delivery.md)，尚未实现。远端聊天正文不会直接作为命令执行。

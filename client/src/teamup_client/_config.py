@@ -32,6 +32,7 @@ class ClientConfig:
     account_token: str | None = field(repr=False)
     bindings: tuple[Binding, ...]
     tls: ssl.SSLContext
+    notify_command: tuple[str, ...] | None = None
 
 
 def _server_origin(value):
@@ -80,7 +81,7 @@ def _read(path):
         raise ConfigError("Could not read a private JSON configuration file") from None
 
     required = {"server_url", "socket_path", "bindings"}
-    optional = {"ca_file", "account_token", "enrollment_key"}
+    optional = {"ca_file", "account_token", "enrollment_key", "notify_command"}
     if not isinstance(data, dict) or not required <= data.keys() <= required | optional:
         raise ConfigError("Invalid Client configuration fields")
     return data, contents
@@ -138,8 +139,22 @@ def _parse(path, data):
         tls = ssl.create_default_context(cafile=ca_file)
     except (OSError, ValueError):
         raise ConfigError("Could not load the TLS trust configuration") from None
+    notify_command = None
+    if "notify_command" in data:
+        command = data["notify_command"]
+        if not isinstance(command, list) or not all(
+            is_string(part, 4096) and "\0" not in part for part in command
+        ):
+            raise ConfigError("notify_command must be a list of strings")
+        notify_command = tuple(command)
     return ClientConfig(
-        server_url, socket_path, enrollment_key, account_token, tuple(bindings), tls
+        server_url,
+        socket_path,
+        enrollment_key,
+        account_token,
+        tuple(bindings),
+        tls,
+        notify_command,
     )
 
 
