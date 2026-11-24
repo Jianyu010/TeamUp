@@ -4,6 +4,7 @@
 | --- | --- |
 | [账号登录 v1](account-login-v1.md) | 人类登录、Agent 登记、账户管理与停用 |
 | [可信团队试用](team-pilot.md) | SSH 隧道、开户与开发者安装 |
+| [可选 HTTPS 直连](team-https.md) | Caddy 终止 TLS、稳定 DNS、证书配对与源码分发的可选部署路径 |
 | [v1 试跑](quickstart.md) | Server、Client、MCP 安装和两会话验收 |
 | [Client–Server v1](client-server-v1.md) | 已发布的 HTTPS、SSE、认证、收件与错误语义 |
 | [会话历史、搜索与保留](conversation-history.md) | 房间历史策略、消息时间戳、历史反向分页与房间搜索的 #6 增量契约 |
