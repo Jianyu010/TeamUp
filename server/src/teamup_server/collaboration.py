@@ -9,7 +9,7 @@ from collections import deque
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import AbstractContextManager, closing, contextmanager, suppress
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from functools import partial
 from hashlib import sha256
 from hmac import compare_digest
@@ -24,6 +24,8 @@ from argon2.exceptions import VerifyMismatchError
 
 _LOGGER = logging.getLogger(__name__)
 _SQLITE_MAX_ID = (1 << 63) - 1
+_EXPIRE_BATCH = 500
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _DEFAULT_RULES = "Share only information authorized for this room."
 _DEFAULT_PROTOCOL = (
     "Coordinate work in the room and direct mentions to the intended teammate."
@@ -72,7 +74,8 @@ _SCHEMA = (
         rules TEXT NOT NULL,
         protocol TEXT NOT NULL,
         history_policy TEXT NOT NULL DEFAULT 'since_joining'
-            CHECK (history_policy IN ('retained', 'since_joining'))
+            CHECK (history_policy IN ('retained', 'since_joining')),
+        expired_through_message_id INTEGER
     )
     """,
     """
@@ -153,6 +156,8 @@ _HISTORY_SCHEMA = (
     """,
 )
 
+_RETENTION_SCHEMA = ("ALTER TABLE rooms ADD COLUMN expired_through_message_id INTEGER",)
+
 
 def _seed_id_counters(connection: sqlite3.Connection) -> None:
     connection.execute(
@@ -187,6 +192,17 @@ def _next_id(connection: sqlite3.Connection, counter: str) -> int:
 def _rfc3339_utc_now() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
+
+def _expiry_micros(stamp: object) -> int | None:
+    """Microseconds since the UTC epoch, or None when the stamp is unknown."""
+    try:
+        moment = datetime.fromisoformat(stamp)
+    except (TypeError, ValueError):
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    return (moment.astimezone(UTC) - _EPOCH) // timedelta(microseconds=1)
+
 ChangeListener = Callable[[], None]
 ObserveInbox = Callable[[ChangeListener], AbstractContextManager[None]]
 
@@ -197,6 +213,15 @@ class CollaborationError(Exception):
     def __init__(self, code: str):
         super().__init__(code)
         self.code = code
+
+
+@dataclass(frozen=True)
+class RetentionPass:
+    """One committed retention batch and whether more expired work is due."""
+
+    expired_messages: int
+    expired_events: int
+    more_due: bool
 
 
 @dataclass
@@ -272,7 +297,8 @@ def _room_member(
     record = connection.execute(
         """
         SELECT r.version, r.rules, r.protocol, r.history_policy,
-            rm.read_board_version, rm.acked_board_version, rm.joined_after
+            r.expired_through_message_id, rm.read_board_version,
+            rm.acked_board_version, rm.joined_after
         FROM room_members AS rm JOIN rooms AS r ON r.room_id = rm.room_id
         WHERE rm.room_id = ? AND rm.member_id = ?
         """,
@@ -302,6 +328,22 @@ def _transcript_floor(membership: sqlite3.Row) -> int:
     if membership["history_policy"] == "retained":
         return 0
     return membership["joined_after"]
+
+
+def _expiry_metadata(
+    expired_through: int | None, cursor: int, upper: int | None
+) -> dict:
+    """The resume-cursor gap appended after a room's first committed prune."""
+    if expired_through is None:
+        return {}
+    return {
+        "expired_through_message_id": expired_through,
+        "history_truncated": (
+            cursor < expired_through
+            if upper is None
+            else cursor < min(expired_through, upper - 1)
+        ),
+    }
 
 
 def _room_transcript(
@@ -369,9 +411,12 @@ class Collaboration:
                 for statement in _HISTORY_SCHEMA:
                     connection.execute(statement)
                 _seed_id_counters(connection)
-            if version in (0, 1, 2):
-                connection.execute("PRAGMA user_version = 3")
-            elif version != 3:
+            if version in (1, 2, 3):
+                for statement in _RETENTION_SCHEMA:
+                    connection.execute(statement)
+            if version in (0, 1, 2, 3):
+                connection.execute("PRAGMA user_version = 4")
+            elif version != 4:
                 raise ValueError("Unsupported TeamUp database schema version")
 
     def _connect(self) -> sqlite3.Connection:
@@ -833,22 +878,29 @@ class Collaboration:
         after: int,
         limit: int,
         before: int | None = None,
-    ) -> list[dict]:
+    ) -> dict:
         with self._transaction() as connection:
             membership = _authorized_membership(connection, token, room_id)
+            cursor = min(max(after, _transcript_floor(membership)), _SQLITE_MAX_ID)
+            upper = None if before is None else min(before, _SQLITE_MAX_ID)
             rows = _room_transcript(
                 connection,
                 room_id,
-                after=min(max(after, _transcript_floor(membership)), _SQLITE_MAX_ID),
-                before=None if before is None else min(before, _SQLITE_MAX_ID),
+                after=cursor,
+                before=upper,
                 limit=limit,
                 newest_first=before is not None,
             )
-            return [dict(record) for record in rows]
+            return {
+                "messages": [dict(record) for record in rows],
+                **_expiry_metadata(
+                    membership["expired_through_message_id"], cursor, upper
+                ),
+            }
 
     def search(
         self, token: str, room_id: str, query: str, after: int, limit: int
-    ) -> list[dict]:
+    ) -> dict:
         with self._transaction() as connection:
             membership = _authorized_membership(connection, token, room_id)
             cursor = min(max(after, _transcript_floor(membership)), _SQLITE_MAX_ID)
@@ -878,7 +930,12 @@ class Collaboration:
                 """,
                 (needle, room_id, cursor, needle, limit, lead, _SNIPPET),
             )
-            return [dict(record) for record in rows]
+            return {
+                "matches": [dict(record) for record in rows],
+                **_expiry_metadata(
+                    membership["expired_through_message_id"], cursor, None
+                ),
+            }
 
     def inbox(self, token: str, after: int, limit: int) -> list[dict]:
         with self._transaction() as connection:
@@ -924,6 +981,59 @@ class Collaboration:
                 (event_id,),
             )
         self._notify((member_id,))
+
+    def expire_due(
+        self, max_age: timedelta, now: datetime | None = None
+    ) -> RetentionPass:
+        """Commit one bounded batch of expired room messages and deliveries.
+
+        Messages recorded at or before ``now - max_age`` leave together with
+        every inbox reference in one transaction, each owning room advances
+        its durable expiry watermark to the largest deleted message ID, and
+        messages without a known timestamp stay untouched. The ID counters
+        never move, so later messages and events keep new, higher IDs.
+        """
+        if max_age <= timedelta(0):
+            raise ValueError("The retention age must be positive")
+        moment = datetime.now(UTC) if now is None else now.astimezone(UTC)
+        cutoff = (moment - max_age - _EPOCH) // timedelta(microseconds=1)
+        with self._transaction(write=True) as connection:
+            connection.create_function(
+                "teamup_expiry_micros", 1, _expiry_micros, deterministic=True
+            )
+            due = connection.execute(
+                """
+                SELECT message_id, room_id FROM messages
+                WHERE created_at IS NOT NULL
+                    AND teamup_expiry_micros(created_at) <= ?
+                ORDER BY message_id LIMIT ?
+                """,
+                (cutoff, _EXPIRE_BATCH),
+            ).fetchall()
+            if not due:
+                return RetentionPass(0, 0, False)
+            expired = [row["message_id"] for row in due]
+            placeholders = ",".join("?" * len(due))
+            expired_events = connection.execute(
+                f"DELETE FROM inbox_events WHERE message_id IN ({placeholders})",
+                expired,
+            ).rowcount
+            connection.execute(
+                f"DELETE FROM messages WHERE message_id IN ({placeholders})",
+                expired,
+            )
+            watermarks: dict[str, int] = {}
+            for row in due:
+                watermarks[row["room_id"]] = row["message_id"]
+            connection.executemany(
+                """
+                UPDATE rooms SET expired_through_message_id
+                    = MAX(COALESCE(expired_through_message_id, 0), ?)
+                WHERE room_id = ?
+                """,
+                [(through, room_id) for room_id, through in watermarks.items()],
+            )
+            return RetentionPass(len(due), expired_events, len(due) == _EXPIRE_BATCH)
 
     def inbox_changes(self, token: str) -> ObserveInbox:
         with self._transaction() as connection:

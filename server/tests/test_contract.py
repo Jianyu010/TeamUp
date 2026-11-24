@@ -22,8 +22,8 @@ import httpx
 import pytest
 
 
-def server_command(db_path):
-    return [sys.executable, "-m", "teamup_server.main", "--db", str(db_path)]
+def server_command(db_path, *extra):
+    return [sys.executable, "-m", "teamup_server.main", "--db", str(db_path), *extra]
 
 
 def server_env():
@@ -35,7 +35,7 @@ def server_env():
 
 
 @contextmanager
-def live_server(db_path, *, legacy=True):
+def live_server(db_path, *, legacy=True, extra=()):
     with socket.socket() as candidate:
         candidate.bind(("127.0.0.1", 0))
         port = candidate.getsockname()[1]
@@ -44,7 +44,7 @@ def live_server(db_path, *, legacy=True):
         env.pop("TEAMUP_ENROLLMENT_KEYS")
     with (
         subprocess.Popen(
-            [*server_command(db_path), "--port", str(port)],
+            [*server_command(db_path, "--port", str(port), *extra)],
             env=env,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
