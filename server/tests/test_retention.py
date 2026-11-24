@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from queue import Queue
 from threading import Thread
-from time import monotonic, sleep
+from time import monotonic
 
 import httpx
 import pytest
@@ -15,6 +15,7 @@ from teamup_server.collaboration import Collaboration, RetentionPass
 from teamup_server.maintenance import RETENTION_CADENCE
 from test_contract import (
     _V2_DATABASE,
+    RacingCollaboration,
     api,
     assert_utc_timestamp,
     confirm,
@@ -30,11 +31,13 @@ from test_contract import (
     send,
     server_command,
     server_env,
+    wait_for,
 )
 from test_direct_messages import dm_send, open_dm
 
 OLD = "2020-01-01T00:00:00Z"
 OLD_FRACTIONAL = "2020-01-01T00:00:00.123456Z"
+NAIVE = "2020-01-01T00:00:00"
 
 
 @contextmanager
@@ -54,13 +57,9 @@ def expire_in_sqlite(db_path, stamps):
         )
 
 
-def wait_for(condition, timeout, *, step=0.2):
-    deadline = monotonic() + timeout
-    while monotonic() < deadline:
-        if condition():
-            return
-        sleep(step)
-    pytest.fail(f"Condition not met within {timeout} seconds")
+def stored(db_path, query, params=()):
+    with closing(sqlite3.connect(db_path)) as connection:
+        return connection.execute(query, params).fetchall()
 
 
 def next_event_line(lines, timeout=5):
@@ -248,11 +247,16 @@ def test_retention_startup_pass_empties_expired_rooms(tmp_path):
         {first["message_id"]: OLD, second["message_id"]: OLD_FRACTIONAL},
     )
     with retention_api(db_path) as client:
-        assert get(client, "sender", f"{room_path}/messages").json() == {
-            "messages": [],
-            "expired_through_message_id": watermark,
-            "history_truncated": True,
-        }
+        # The startup pass runs on its own thread: poll to its committed state.
+        wait_for(
+            lambda: get(client, "sender", f"{room_path}/messages").json()
+            == {
+                "messages": [],
+                "expired_through_message_id": watermark,
+                "history_truncated": True,
+            },
+            timeout=10,
+        )
         assert get(client, "sender", f"{room_path}/search?q=needle").json() == {
             "matches": [],
             "expired_through_message_id": watermark,
@@ -345,11 +349,16 @@ def test_v3_upgrade_prunes_timestamps_and_keeps_null_times(tmp_path):
             "mention_member_id": None,
             "created_at": None,
         }
-        assert get(client, "old", f"{room_path}/messages").json() == {
-            "messages": [survivor],
-            "expired_through_message_id": 42,
-            "history_truncated": True,
-        }
+        # The startup pass runs on its own thread: poll to its committed state.
+        wait_for(
+            lambda: get(client, "old", f"{room_path}/messages").json()
+            == {
+                "messages": [survivor],
+                "expired_through_message_id": 42,
+                "history_truncated": True,
+            },
+            timeout=10,
+        )
         sent = post(
             client,
             "old",
@@ -629,16 +638,25 @@ def test_retention_startup_runs_both_enabled_passes(tmp_path):
     with live_server(
         db_path, extra=("--room-retention-hours", "1", "--dm-retention-hours", "1")
     ) as (client, _):
-        assert get(client, "sender", f"{room_path}/messages").json() == {
-            "messages": [],
-            "expired_through_message_id": room_message["message_id"],
-            "history_truncated": True,
-        }
-        assert get(client, "sender", f"/dms/{dm_id}/messages").json() == {
-            "messages": [],
-            "expired_through_message_id": dm_message["message_id"],
-            "history_truncated": True,
-        }
+        # Both passes run on the maintenance thread: poll each committed family.
+        wait_for(
+            lambda: get(client, "sender", f"{room_path}/messages").json()
+            == {
+                "messages": [],
+                "expired_through_message_id": room_message["message_id"],
+                "history_truncated": True,
+            },
+            timeout=10,
+        )
+        wait_for(
+            lambda: get(client, "sender", f"/dms/{dm_id}/messages").json()
+            == {
+                "messages": [],
+                "expired_through_message_id": dm_message["message_id"],
+                "history_truncated": True,
+            },
+            timeout=10,
+        )
         assert get(client, "target", "/inbox").json() == {"events": []}
         error(
             post(client, "target", f"/inbox/{room_event['event_id']}/ack"),
@@ -647,3 +665,188 @@ def test_retention_startup_runs_both_enabled_passes(tmp_path):
         )
         fresh_room = send(client, room_path, "room-fresh", text="fresh needle").json()
         assert fresh_room["message_id"] > room_message["message_id"]
+
+
+def _expiry_room(collaboration):
+    """An acknowledged two-member retained room with sender and target tokens."""
+    token = credential("sender")
+    target_token = credential("target")
+    for owner, key, member_token in (
+        ("alice", "sender-key", token),
+        ("alice", "target-key", target_token),
+    ):
+        collaboration.enroll(
+            credential("enroll-alice"),
+            harness_instance_id="harness",
+            session_key=key,
+            role_description=key,
+            member_token=member_token,
+        )
+    room_id = collaboration.create_room(token, "Build", None, None, "retained")[
+        "room_id"
+    ]
+    collaboration.join_room(target_token, room_id)
+    for candidate in (token, target_token):
+        collaboration.read_board(candidate, room_id)
+        collaboration.confirm_board(candidate, room_id, 1)
+    return token, room_id
+
+
+def test_expire_due_rejects_a_naive_or_non_datetime_clock(tmp_path):
+    """An explicitly supplied clock is refused unless it carries an offset."""
+    collaboration = Collaboration(
+        tmp_path / "team.sqlite3", {"alice": credential("enroll-alice")}
+    )
+    with pytest.raises(ValueError):
+        collaboration.expire_due(timedelta(hours=1), now=datetime(2026, 1, 1))
+    with pytest.raises(ValueError):
+        collaboration.expire_due(timedelta(hours=1), now="2026-01-01T00:00:00Z")
+
+
+def test_expire_due_spares_naive_and_unusable_timestamps(tmp_path):
+    """Room expiry shares the DM's fail-closed timestamp policy."""
+    db_path = tmp_path / "team.sqlite3"
+    collaboration = Collaboration(db_path, {"alice": credential("enroll-alice")})
+    token, room_id = _expiry_room(collaboration)
+    naive = collaboration.send_message(token, room_id, "naive", "naive needle", None)
+    garbage = collaboration.send_message(token, room_id, "garbage", "bad needle", None)
+    aware = collaboration.send_message(token, room_id, "aware", "old needle", None)
+    expire_in_sqlite(
+        db_path,
+        {
+            naive["message_id"]: NAIVE,
+            garbage["message_id"]: "not-a-timestamp",
+            aware["message_id"]: OLD,
+        },
+    )
+    moment = datetime(2026, 1, 1, tzinfo=UTC)
+    # Only the offset-carrying stamp expires; naive and unusable stamps stay.
+    assert collaboration.expire_due(timedelta(hours=1), now=moment) == RetentionPass(
+        1, 1, False
+    )
+    page = collaboration.history(token, room_id, 0, 50)
+    assert [message["message_id"] for message in page["messages"]] == [
+        naive["message_id"],
+        garbage["message_id"],
+    ]
+    assert [message["created_at"] for message in page["messages"]] == [
+        NAIVE,
+        "not-a-timestamp",
+    ]
+    assert page["expired_through_message_id"] == aware["message_id"]
+    assert page["history_truncated"] is True
+    # A second pass changes nothing: neither survivor ever converts to UTC.
+    assert collaboration.expire_due(timedelta(hours=1), now=moment) == RetentionPass(
+        0, 0, False
+    )
+
+
+def test_expire_due_skips_candidates_removed_between_transactions(tmp_path):
+    """A candidate a concurrent pass already removed is never recounted."""
+    db_path = tmp_path / "team.sqlite3"
+    collaboration = Collaboration(db_path, {"alice": credential("enroll-alice")})
+    token, room_id = _expiry_room(collaboration)
+    doomed = collaboration.send_message(token, room_id, "doomed", "old needle", None)
+    expire_in_sqlite(db_path, {doomed["message_id"]: OLD})
+
+    def competing_expiry():
+        with closing(sqlite3.connect(db_path)) as connection, connection:
+            connection.execute(
+                "DELETE FROM inbox_events WHERE message_id = ?",
+                (doomed["message_id"],),
+            )
+            connection.execute(
+                "DELETE FROM messages WHERE message_id = ?",
+                (doomed["message_id"],),
+            )
+            connection.execute(
+                "UPDATE rooms SET expired_through_message_id = ? WHERE room_id = ?",
+                (doomed["message_id"], room_id),
+            )
+
+    moment = datetime(2026, 1, 1, tzinfo=UTC)
+    racing = RacingCollaboration(
+        db_path, {"alice": credential("enroll-alice")}, competing_expiry
+    )
+    assert racing.expire_due(timedelta(hours=1), now=moment) == RetentionPass(0, 0, False)
+    # The competitor's removal stands alone: no recount, no extra watermark move.
+    assert collaboration.history(token, room_id, 0, 50) == {
+        "messages": [],
+        "expired_through_message_id": doomed["message_id"],
+        "history_truncated": True,
+    }
+
+
+def test_expire_due_rechecks_the_cutoff_before_deleting(tmp_path):
+    """A candidate re-dated between the two passes is reprieved in full."""
+    db_path = tmp_path / "team.sqlite3"
+    collaboration = Collaboration(db_path, {"alice": credential("enroll-alice")})
+    token, room_id = _expiry_room(collaboration)
+    reprieved = collaboration.send_message(
+        token, room_id, "reprieved", "kept needle", None
+    )
+    expire_in_sqlite(db_path, {reprieved["message_id"]: OLD})
+
+    def reprieve():
+        with closing(sqlite3.connect(db_path)) as connection, connection:
+            connection.execute(
+                "UPDATE messages SET created_at = ? WHERE message_id = ?",
+                ("2999-01-01T00:00:00Z", reprieved["message_id"]),
+            )
+
+    moment = datetime(2026, 1, 1, tzinfo=UTC)
+    racing = RacingCollaboration(
+        db_path, {"alice": credential("enroll-alice")}, reprieve
+    )
+    assert racing.expire_due(timedelta(hours=1), now=moment) == RetentionPass(0, 0, False)
+    # Nothing was deleted, so the room keeps the exact never-pruned shape.
+    page = collaboration.history(token, room_id, 0, 50)
+    assert set(page) == {"messages"}
+    assert [message["message_id"] for message in page["messages"]] == [
+        reprieved["message_id"]
+    ]
+
+
+def test_expire_due_counts_only_candidates_still_due_after_interference(tmp_path):
+    """Only rechecked survivors are deleted, counted and watermarked."""
+    db_path = tmp_path / "team.sqlite3"
+    collaboration = Collaboration(db_path, {"alice": credential("enroll-alice")})
+    token, room_id = _expiry_room(collaboration)
+    removed = collaboration.send_message(token, room_id, "removed", "old needle", None)
+    kept = collaboration.send_message(token, room_id, "kept", "kept needle", None)
+    expire_in_sqlite(db_path, {removed["message_id"]: OLD, kept["message_id"]: OLD})
+
+    def competing_expiry():
+        with closing(sqlite3.connect(db_path)) as connection, connection:
+            connection.execute(
+                "DELETE FROM inbox_events WHERE message_id = ?",
+                (removed["message_id"],),
+            )
+            connection.execute(
+                "DELETE FROM messages WHERE message_id = ?",
+                (removed["message_id"],),
+            )
+            connection.execute(
+                "UPDATE rooms SET expired_through_message_id = ? WHERE room_id = ?",
+                (removed["message_id"], room_id),
+            )
+
+    moment = datetime(2026, 1, 1, tzinfo=UTC)
+    racing = RacingCollaboration(
+        db_path, {"alice": credential("enroll-alice")}, competing_expiry
+    )
+    assert racing.expire_due(timedelta(hours=1), now=moment) == RetentionPass(1, 1, False)
+    # The watermark covers both removals but the batch counted only its own.
+    assert collaboration.history(token, room_id, 0, 50) == {
+        "messages": [],
+        "expired_through_message_id": kept["message_id"],
+        "history_truncated": True,
+    }
+    assert stored(
+        db_path,
+        """
+        SELECT COUNT(*) FROM inbox_events AS e
+        LEFT JOIN messages AS m ON m.message_id = e.message_id
+        WHERE m.message_id IS NULL
+        """,
+    ) == [(0,)]

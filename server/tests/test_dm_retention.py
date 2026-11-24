@@ -10,6 +10,7 @@ import pytest
 from teamup_server.collaboration import Collaboration
 from test_contract import (
     KEYS,
+    RacingCollaboration,
     api,
     confirm,
     error,
@@ -22,6 +23,7 @@ from test_contract import (
     send,
     server_command,
     server_env,
+    wait_for,
 )
 from test_direct_messages import dm_events, dm_read, dm_send, enroll_team, open_dm
 
@@ -621,11 +623,16 @@ def test_dm_retention_startup_pass_prunes_only_dm_content(tmp_path):
     with closing(sqlite3.connect(db_path)) as connection, connection:
         connection.execute("UPDATE messages SET created_at = '2020-01-01T00:00:00Z'")
     with live_server(db_path, extra=("--dm-retention-hours", "1")) as (client, _):
-        assert dm_read(client, "sender", dm_id).json() == {
-            "messages": [],
-            "expired_through_message_id": second["message_id"],
-            "history_truncated": True,
-        }
+        # The startup pass runs on its own thread: poll to its committed state.
+        wait_for(
+            lambda: dm_read(client, "sender", dm_id).json()
+            == {
+                "messages": [],
+                "expired_through_message_id": second["message_id"],
+                "history_truncated": True,
+            },
+            timeout=10,
+        )
         assert get(client, "sender", f"{room_path}/messages").json() == {
             "messages": [{**room_message, "created_at": "2020-01-01T00:00:00Z"}]
         }
@@ -656,3 +663,133 @@ def test_dm_retention_startup_pass_prunes_only_dm_content(tmp_path):
             "expired_through_message_id": second["message_id"],
             "history_truncated": True,
         }
+
+
+def test_dm_expiry_spares_naive_timestamps_like_room_expiry(tmp_path):
+    """The DM family keeps the fail-closed shared timestamp policy."""
+    db_path = tmp_path / "team.sqlite3"
+    with api(db_path) as client:
+        enroll_team(client, labels=("sender", "target"))
+        target = member(client, "target")
+        dm_id = open_dm(client, "sender", target).json()["dm_id"]
+        naive = dm_send(client, "sender", dm_id, "naive", "naive private").json()
+        aware = dm_send(client, "target", dm_id, "aware", "aware private").json()
+        with closing(sqlite3.connect(db_path)) as connection, connection:
+            connection.executemany(
+                "UPDATE messages SET created_at = ? WHERE message_id = ?",
+                [
+                    ("2020-01-01T00:00:00", naive["message_id"]),
+                    ("2020-01-01T00:00:00Z", aware["message_id"]),
+                ],
+            )
+
+        assert prune(db_path, datetime(2100, 1, 1, tzinfo=UTC)) == (1, False)
+        assert dm_message_ids(db_path) == [naive["message_id"]]
+        assert stored(
+            db_path,
+            "SELECT expired_through_message_id FROM dms WHERE dm_id = ?",
+            (dm_id,),
+        ) == [(aware["message_id"],)]
+
+
+def test_dm_expiry_skips_candidates_removed_between_transactions(tmp_path):
+    """A candidate a concurrent pass already removed is never recounted."""
+    db_path = tmp_path / "team.sqlite3"
+    with api(db_path) as client:
+        enroll_team(client, labels=("sender", "target"))
+        target = member(client, "target")
+        dm_id = open_dm(client, "sender", target).json()["dm_id"]
+        first = dm_send(client, "sender", dm_id, "one", "first private").json()
+
+    def competing_expiry():
+        with closing(sqlite3.connect(db_path)) as connection, connection:
+            connection.execute(
+                "DELETE FROM inbox_events WHERE message_id = ?",
+                (first["message_id"],),
+            )
+            connection.execute(
+                "DELETE FROM messages WHERE message_id = ?",
+                (first["message_id"],),
+            )
+            connection.execute(
+                "UPDATE dms SET expired_through_message_id = ? WHERE dm_id = ?",
+                (first["message_id"], dm_id),
+            )
+
+    racing = RacingCollaboration(db_path, KEYS, competing_expiry)
+    assert racing.expire_due_dms(datetime(2100, 1, 1, tzinfo=UTC)) == (0, False)
+    assert dm_message_ids(db_path) == []
+    assert stored(
+        db_path,
+        "SELECT expired_through_message_id FROM dms WHERE dm_id = ?",
+        (dm_id,),
+    ) == [(first["message_id"],)]
+
+
+def test_dm_expiry_rechecks_the_cutoff_before_deleting(tmp_path):
+    """A candidate re-dated between the two passes is reprieved in full."""
+    db_path = tmp_path / "team.sqlite3"
+    with api(db_path) as client:
+        enroll_team(client, labels=("sender", "target"))
+        target = member(client, "target")
+        dm_id = open_dm(client, "sender", target).json()["dm_id"]
+        first = dm_send(client, "sender", dm_id, "one", "first private").json()
+
+    def reprieve():
+        with closing(sqlite3.connect(db_path)) as connection, connection:
+            connection.execute(
+                "UPDATE messages SET created_at = ? WHERE message_id = ?",
+                ("2999-01-01T00:00:00Z", first["message_id"]),
+            )
+
+    racing = RacingCollaboration(db_path, KEYS, reprieve)
+    assert racing.expire_due_dms(datetime(2100, 1, 1, tzinfo=UTC)) == (0, False)
+    assert dm_message_ids(db_path) == [first["message_id"]]
+    assert stored(
+        db_path,
+        "SELECT expired_through_message_id FROM dms WHERE dm_id = ?",
+        (dm_id,),
+    ) == [(None,)]
+
+
+def test_dm_expiry_counts_only_candidates_still_due_after_interference(tmp_path):
+    """Only rechecked survivors are deleted, counted and watermarked."""
+    db_path = tmp_path / "team.sqlite3"
+    with api(db_path) as client:
+        enroll_team(client, labels=("sender", "target"))
+        target = member(client, "target")
+        dm_id = open_dm(client, "sender", target).json()["dm_id"]
+        removed = dm_send(client, "sender", dm_id, "removed", "removed private").json()
+        kept = dm_send(client, "target", dm_id, "kept", "kept private").json()
+
+    def competing_expiry():
+        with closing(sqlite3.connect(db_path)) as connection, connection:
+            connection.execute(
+                "DELETE FROM inbox_events WHERE message_id = ?",
+                (removed["message_id"],),
+            )
+            connection.execute(
+                "DELETE FROM messages WHERE message_id = ?",
+                (removed["message_id"],),
+            )
+            connection.execute(
+                "UPDATE dms SET expired_through_message_id = ? WHERE dm_id = ?",
+                (removed["message_id"], dm_id),
+            )
+
+    racing = RacingCollaboration(db_path, KEYS, competing_expiry)
+    assert racing.expire_due_dms(datetime(2100, 1, 1, tzinfo=UTC)) == (1, False)
+    assert dm_message_ids(db_path) == []
+    assert stored(
+        db_path,
+        "SELECT expired_through_message_id FROM dms WHERE dm_id = ?",
+        (dm_id,),
+    ) == [(kept["message_id"],)]
+    assert stored(
+        db_path,
+        """
+        SELECT COUNT(*) FROM inbox_events AS e
+        LEFT JOIN messages AS m ON m.message_id = e.message_id
+        WHERE m.message_id IS NULL
+        """,
+    ) == [(0,)]

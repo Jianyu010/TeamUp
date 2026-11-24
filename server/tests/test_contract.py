@@ -20,6 +20,7 @@ from uuid import UUID, uuid4
 
 import httpx
 import pytest
+from teamup_server.collaboration import Collaboration
 
 
 def server_command(db_path, *extra):
@@ -88,6 +89,42 @@ KEYS = {"alice": credential("enroll-alice"), "bob": credential("enroll-bob")}
 def api(db_path):
     with live_server(db_path) as (client, _):
         yield client
+
+
+def wait_for(condition, timeout, *, step=0.2):
+    """Poll ``condition`` until it holds or a ``timeout``-second deadline passes."""
+    deadline = monotonic() + timeout
+    while monotonic() < deadline:
+        if condition():
+            return
+        sleep(step)
+    pytest.fail(f"Condition not met within {timeout} seconds")
+
+
+class RacingCollaboration(Collaboration):
+    """A test double that commits one change between the read and write passes.
+
+    Retention selects its bounded candidate batch in a read transaction and
+    deletes in a separate write transaction. The double runs ``interfere``
+    once, on the write transaction that follows a read on the same call, so
+    a regression can commit a competing change (a concurrent expiry's rows)
+    between the two transactions and observe how the write pass rechecks.
+    """
+
+    def __init__(self, db_path, keys, interfere):
+        self._interfere = interfere
+        self._read_open = False
+        super().__init__(db_path, keys)
+
+    @contextmanager
+    def _transaction(self, *, write=False):
+        if write and self._read_open:
+            self._read_open = False
+            self._interfere()
+        elif not write:
+            self._read_open = True
+        with super()._transaction(write=write) as connection:
+            yield connection
 
 
 def auth(token):

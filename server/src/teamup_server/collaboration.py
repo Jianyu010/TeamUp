@@ -26,6 +26,16 @@ _LOGGER = logging.getLogger(__name__)
 _SQLITE_MAX_ID = (1 << 63) - 1
 _EXPIRE_BATCH = 500
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+_DM_DUE_MESSAGES = """
+    SELECT message_id, dm_id FROM messages
+    WHERE dm_id IS NOT NULL AND created_at IS NOT NULL
+        AND teamup_expiry_micros(created_at) <= ?
+"""
+_ROOM_DUE_MESSAGES = """
+    SELECT message_id, room_id FROM messages
+    WHERE room_id IS NOT NULL AND created_at IS NOT NULL
+        AND teamup_expiry_micros(created_at) <= ?
+"""
 _DEFAULT_RULES = "Share only information authorized for this room."
 _DEFAULT_PROTOCOL = (
     "Coordinate work in the room and direct mentions to the intended teammate."
@@ -485,19 +495,37 @@ def _record_activity(
     )
 
 
-def _expiry_micros(stamp: object) -> int | None:
-    """Microseconds since the UTC epoch, or None when the stamp is unknown."""
-    try:
-        moment = datetime.fromisoformat(stamp)
-    except (TypeError, ValueError):
-        return None
-    if moment.tzinfo is None:
-        moment = moment.replace(tzinfo=UTC)
+def _utc_micros(moment: datetime) -> int:
+    """Microseconds since the UTC epoch for a timezone-aware moment."""
     return (moment.astimezone(UTC) - _EPOCH) // timedelta(microseconds=1)
 
 
+def _expiry_micros(stamp: object) -> int | None:
+    """Microseconds since the UTC epoch, or None when the stamp is unusable.
+
+    Both retention families share this SQL-side clock and the single
+    parser behind it: a ``created_at`` without an explicit offset, or
+    with any unusable value, never expires -- the policy fails closed.
+    """
+    moment = _parse_timestamp(stamp)
+    if moment is None:
+        return None
+    return _utc_micros(moment)
+
+
+def _register_expiry_clock(connection: sqlite3.Connection) -> None:
+    """Publish the shared timestamp policy to SQL for one connection."""
+    connection.create_function(
+        "teamup_expiry_micros", 1, _expiry_micros, deterministic=True
+    )
+
+
 def _parse_timestamp(value: object) -> datetime | None:
-    """Parse an RFC 3339 timestamp with an explicit offset, else return None."""
+    """Parse an RFC 3339 timestamp with an explicit offset, else return None.
+
+    This is the single timestamp policy for both retention families:
+    naive, missing, and otherwise unusable values never expire.
+    """
 
     if not isinstance(value, str):
         return None
@@ -1673,36 +1701,49 @@ class Collaboration:
     def expire_due_dms(self, cutoff: datetime) -> tuple[int, bool]:
         """Delete one bounded batch of DM messages due at ``cutoff``.
 
-        A row is due when its ``created_at`` parses as an RFC 3339 timestamp
-        with an explicit offset at or before ``cutoff``; rows without a usable
-        timestamp survive. Room rows are never selected. One write transaction
-        removes the inbox events referencing the pruned messages, the canonical
-        messages themselves, and advances each affected conversation's
-        ``expired_through_message_id`` watermark to the greatest deleted ID.
-        The ID counters keep their allocated values. Returns the number of
-        deleted messages and whether more due rows remain.
+        Candidate selection runs in the owner's read transaction with the
+        aware-UTC cutoff applied SQL-side and a bounded result, so the
+        potentially linear scan never holds the write lock. One atomic
+        write transaction then rechecks the selected IDs -- still
+        present, still DM rows, still due at the same cutoff -- and
+        deletes the survivors together with the inbox events referencing
+        them, advancing each affected conversation's
+        ``expired_through_message_id`` watermark to the greatest ID this
+        pass actually deleted. A concurrent expiry that removed or
+        re-dated candidates between the two transactions only drops them
+        from the recheck: the returned count reflects exactly this
+        pass's deletions and no watermark regresses. A row is due when
+        its ``created_at`` parses as an RFC 3339 timestamp with an
+        explicit offset at or before ``cutoff``; rows without a usable
+        offset survive. Room rows are never selected. The ID counters
+        keep their allocated values. Returns the number of deleted
+        messages and whether more due rows remain.
         """
         if not isinstance(cutoff, datetime) or cutoff.tzinfo is None:
             raise ValueError("DM expiry cutoff must be a timezone-aware datetime")
+        cutoff_micros = _utc_micros(cutoff)
+        with self._transaction() as connection:
+            _register_expiry_clock(connection)
+            candidates = connection.execute(
+                f"{_DM_DUE_MESSAGES} ORDER BY message_id LIMIT ?",
+                (cutoff_micros, _DM_EXPIRY_BATCH + 1),
+            ).fetchall()
+        if not candidates:
+            return 0, False
+        more_due = len(candidates) > _DM_EXPIRY_BATCH
+        selected = [row["message_id"] for row in candidates[:_DM_EXPIRY_BATCH]]
+        selected_placeholders = ",".join("?" * len(selected))
         with self._transaction(write=True) as connection:
-            due: list[tuple[int, str]] = []
-            for row in connection.execute(
-                """
-                SELECT message_id, dm_id, created_at FROM messages
-                WHERE dm_id IS NOT NULL AND created_at IS NOT NULL
-                ORDER BY message_id
-                """
-            ):
-                created = _parse_timestamp(row["created_at"])
-                if created is not None and created <= cutoff:
-                    due.append((row["message_id"], row["dm_id"]))
-                    if len(due) > _DM_EXPIRY_BATCH:
-                        break
-            batch = due[:_DM_EXPIRY_BATCH]
-            if not batch:
-                return 0, False
-            message_ids = [message_id for message_id, _ in batch]
-            placeholders = ", ".join("?" * len(message_ids))
+            _register_expiry_clock(connection)
+            due = connection.execute(
+                f"{_DM_DUE_MESSAGES} AND message_id IN ({selected_placeholders})"
+                " ORDER BY message_id",
+                (cutoff_micros, *selected),
+            ).fetchall()
+            if not due:
+                return 0, more_due
+            message_ids = [row["message_id"] for row in due]
+            placeholders = ",".join("?" * len(message_ids))
             connection.execute(
                 f"DELETE FROM inbox_events WHERE message_id IN ({placeholders})",
                 message_ids,
@@ -1712,8 +1753,10 @@ class Collaboration:
                 message_ids,
             )
             watermarks: dict[str, int] = {}
-            for message_id, dm_id in batch:
-                watermarks[dm_id] = max(watermarks.get(dm_id, 0), message_id)
+            for row in due:
+                watermarks[row["dm_id"]] = max(
+                    watermarks.get(row["dm_id"], 0), row["message_id"]
+                )
             for dm_id, watermark in watermarks.items():
                 connection.execute(
                     """
@@ -1723,7 +1766,7 @@ class Collaboration:
                     """,
                     (watermark, dm_id),
                 )
-            return len(batch), len(due) > _DM_EXPIRY_BATCH
+            return len(due), more_due
 
     def history(
         self,
@@ -1877,33 +1920,51 @@ class Collaboration:
     ) -> RetentionPass:
         """Commit one bounded batch of expired room messages and deliveries.
 
-        Messages recorded at or before ``now - max_age`` leave together with
-        every inbox reference in one transaction, each owning room advances
-        its durable expiry watermark to the largest deleted message ID, and
-        messages without a known timestamp stay untouched. The ID counters
+        Candidate selection runs in the owner's read transaction with the
+        aware-UTC cutoff applied SQL-side and a bounded result, so the
+        potentially linear scan never holds the write lock. One atomic
+        write transaction then rechecks the selected IDs -- still
+        present, still room rows, still due at the same cutoff -- and
+        deletes the survivors together with every inbox reference and
+        the owning rooms' watermark advances. A concurrent expiry that
+        removed or re-dated candidates between the two transactions only
+        drops them from the recheck: the pass counts exactly the messages
+        it deleted, each watermark advances only to a message this pass
+        actually deleted, and no watermark regresses. Messages recorded
+        at or before ``now - max_age`` expire; records without a usable
+        RFC 3339 offset stay untouched. An explicitly supplied ``now``
+        must be a timezone-aware datetime -- naive or non-datetime
+        values are rejected before any conversion. The ID counters
         never move, so later messages and events keep new, higher IDs.
         """
         if max_age <= timedelta(0):
             raise ValueError("The retention age must be positive")
+        if now is not None and (not isinstance(now, datetime) or now.tzinfo is None):
+            raise ValueError("The expiry clock must be a timezone-aware datetime")
         moment = datetime.now(UTC) if now is None else now.astimezone(UTC)
-        cutoff = (moment - max_age - _EPOCH) // timedelta(microseconds=1)
-        with self._transaction(write=True) as connection:
-            connection.create_function(
-                "teamup_expiry_micros", 1, _expiry_micros, deterministic=True
-            )
-            due = connection.execute(
-                """
-                SELECT message_id, room_id FROM messages
-                WHERE room_id IS NOT NULL AND created_at IS NOT NULL
-                    AND teamup_expiry_micros(created_at) <= ?
-                ORDER BY message_id LIMIT ?
-                """,
+        cutoff = _utc_micros(moment - max_age)
+        with self._transaction() as connection:
+            _register_expiry_clock(connection)
+            candidates = connection.execute(
+                f"{_ROOM_DUE_MESSAGES} ORDER BY message_id LIMIT ?",
                 (cutoff, _EXPIRE_BATCH),
             ).fetchall()
+        if not candidates:
+            return RetentionPass(0, 0, False)
+        more_due = len(candidates) == _EXPIRE_BATCH
+        selected = [row["message_id"] for row in candidates]
+        selected_placeholders = ",".join("?" * len(selected))
+        with self._transaction(write=True) as connection:
+            _register_expiry_clock(connection)
+            due = connection.execute(
+                f"{_ROOM_DUE_MESSAGES} AND message_id IN ({selected_placeholders})"
+                " ORDER BY message_id",
+                (cutoff, *selected),
+            ).fetchall()
             if not due:
-                return RetentionPass(0, 0, False)
+                return RetentionPass(0, 0, more_due)
             expired = [row["message_id"] for row in due]
-            placeholders = ",".join("?" * len(due))
+            placeholders = ",".join("?" * len(expired))
             expired_events = connection.execute(
                 f"DELETE FROM inbox_events WHERE message_id IN ({placeholders})",
                 expired,
@@ -1923,7 +1984,7 @@ class Collaboration:
                 """,
                 [(through, room_id) for room_id, through in watermarks.items()],
             )
-            return RetentionPass(len(due), expired_events, len(due) == _EXPIRE_BATCH)
+            return RetentionPass(len(due), expired_events, more_due)
 
     def inbox_changes(self, token: str) -> ObserveInbox:
         with self._transaction() as connection:
