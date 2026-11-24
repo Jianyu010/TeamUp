@@ -27,6 +27,13 @@
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
+          "history_policy": {
+            "enum": [
+              "retained",
+              "since_joining"
+            ],
+            "type": "string"
+          },
           "name": {
             "maxLength": 200,
             "minLength": 1,
@@ -135,6 +142,10 @@
             "minimum": 0,
             "type": "integer"
           },
+          "before": {
+            "minimum": 1,
+            "type": "integer"
+          },
           "limit": {
             "default": 50,
             "maximum": 100,
@@ -165,6 +176,39 @@
         },
         "required": [
           "role_description"
+        ],
+        "type": "object"
+      }
+    },
+    "teamup_search_room": {
+      "description": "Search readable room messages for a case-insensitive substring.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "default": 0,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "limit": {
+            "default": 50,
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "q": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "room_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "room_id",
+          "q"
         ],
         "type": "object"
       }

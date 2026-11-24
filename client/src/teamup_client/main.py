@@ -18,6 +18,7 @@ from ._console_data import ConsoleReader
 from ._coordinator import Coordinator
 from ._daemon import handle
 from ._desktop import DesktopNotifier, default_command
+from ._harness import default_codex_command, drivers
 from ._local import LocalError, listen
 from ._login import login
 from ._notice_output import NoticeOutput
@@ -40,8 +41,14 @@ async def _serve(path, *, console=False):
                 notifier = DesktopNotifier(
                     default_command() if command is None else command
                 )
+                codex = config.codex_command
                 coordinator = Coordinator(
-                    config, upstream, notices, NoticeOutput(), notifier
+                    config,
+                    upstream,
+                    notices,
+                    NoticeOutput(),
+                    notifier,
+                    drivers(default_codex_command() if codex is None else codex),
                 )
                 on_call = partial(handle, coordinator=coordinator)
                 viewer = (
