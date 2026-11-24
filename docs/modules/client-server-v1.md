@@ -12,7 +12,7 @@ JSON API 前缀为 `/v1`。请求与响应是 UTF-8 JSON。内网使用 HTTPS。
 
 管理员为每位开发者分配登记密钥，Server 将其映射到稳定的 `owner_id`。登记后，其他请求一律使用 `Authorization: Bearer <member_token>`。登记密钥和成员 token 都是各自独立的 32 随机字节经无填充 base64url 编码的 43 字符串。Client 为每个本机绑定生成并保留独立成员 token。Server 只保存成员 token 的摘要。Server 根据凭证决定当前成员，客户端字段不能替换发起方身份。
 
-Server 启动读取 `TEAMUP_ENROLLMENT_KEYS` JSON 对象，键为 owner ID，值为登记密钥。支持命令 `teamup-server --db PATH [--host 127.0.0.1] [--port 8765] [--tls-cert PATH --tls-key PATH] [--room-retention-hours HOURS]`。声明非回环监听地址时需要 TLS。反向代理在同主机终止 TLS 时可连回环。`--room-retention-hours` 必须是 1–876000（含）之间的整数小时，省略时不做任何自动清理；清理运行节奏见 [会话历史、搜索与保留](conversation-history.md)。
+Server 启动读取 `TEAMUP_ENROLLMENT_KEYS` JSON 对象，键为 owner ID，值为登记密钥。支持命令 `teamup-server --db PATH [--host 127.0.0.1] [--port 8765] [--tls-cert PATH --tls-key PATH] [--room-retention-hours HOURS] [--dm-retention-hours HOURS]`。声明非回环监听地址时需要 TLS。反向代理在同主机终止 TLS 时可连回环。`--room-retention-hours` 与 `--dm-retention-hours` 都必须是 1–876000（含）之间的整数小时，各自独立校验并分别作用于房间与私聊；省略的配置不做对应的自动清理，两者都省略时不启动任何清理调度。清理运行节奏见 [会话历史、搜索与保留](conversation-history.md) 与 [Direct Messages](direct-messages.md)。
 
 ## 数据形状
 
