@@ -85,7 +85,7 @@ Transcript 翻页不使用 `after`：入口请求省略 `before` 取得最新页
 
 ## 静态托管（stage 2 交付）
 
-- Gateway 同源托管**恰好三个**路径：`/console/`（HTML）、`/console/console.css`、`/console/console.js`，与静态包 `server/src/teamup_server/console/` 内文件一一对应、字节一致。不做目录列举、不接受任何其他 `/console/…` 路径（一律 404 `not_found`），方法不符返回 405。`redirect_slashes` 保持关闭，`/console`（无斜杠）不是入口。
+- Gateway 同源托管**恰好三个**路径：`GET /console/`（HTML）、`GET /console/console.css`、`GET /console/console.js`，与静态包 `server/src/teamup_server/console/` 内文件一一对应、字节一致。不做目录列举、不接受任何其他 `/console/…` 路径（一律 404 `not_found`），方法不符返回 405。`redirect_slashes` 保持关闭，`/console`（无斜杠）不是入口。
 - 响应头：`Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`、`X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`、`Cache-Control: no-cache`（无修订机制前避免陈旧资源）；媒体类型分别为 `text/html; charset=utf-8`、`text/css; charset=utf-8`、`text/javascript; charset=utf-8`。
 - 静态路由不需鉴权，页面内容不含任何私有数据（token 只在 API 鉴权后经 `/v1/console/*` 返回）。控制台无写入 UI；静态托管只做装配，不含业务逻辑。
 
