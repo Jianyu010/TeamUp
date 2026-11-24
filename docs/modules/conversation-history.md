@@ -10,8 +10,8 @@ Collaboration 在 SQLite 保存规范消息和收件箱引用。Gateway 提供 H
 
 - Server 为每条新消息记录 UTC RFC 3339 `created_at`。升级时保留现有消息 ID、顺序和内容。旧消息没有时间戳，`created_at` 返回 null。
 - 消息 ID 和收件事件 ID 分别全局递增。同一写事务内分配 ID、更新消息和写入相关投递。持久分配器从升级前的最大 ID 开始，删除记录以后仍不复用 ID。
-- 新建房间可明确选择 `retained` 或 `since_joining`。现有房间及省略该字段的旧版建房请求都使用 `since_joining`。新工作流可明确选择 `retained`，并通过 [房间目录](room-directory.md) 在加入前展示当前策略。房间建立后，策略在本阶段保持固定。
-- 存储 schema 原为 v3 草稿（`history_policy`、`created_at`、`id_counters`），随 [控制台 stage 3](control-console.md) 并入 **v4**：迁移次序覆盖 fresh/v1/v2/历史 v3；控制台读路径复用同一规范消息记录与所有权，成员端点形状不变。
+- 新建房间可明确选择 `retained` 或 `since_joining`。现有房间及省略该字段的旧版建房请求都使用 `since_joining`。新工作流可明确选择 `retained`，并通过 [房间目录](../specs/collaboration-surfaces.md#room-directory) 在加入前展示当前策略。房间建立后，策略在本阶段保持固定。
+- 存储 schema 原为 v3 草稿（`history_policy`、`created_at`、`id_counters`），随后随 [#3 私聊](direct-messages.md) 并入 **v4**（DM 家族表、可空 `messages.room_id`、按家族限定的重试索引、收件 `dm` kind），再随 [控制台 stage 3](control-console.md) 并入 **v5**（`purpose` 会话、`operator_grants`、活动投影与审计表）：迁移次序覆盖 fresh/v1/v2、两种 v3 草稿（#6 历史与 #5 鉴权预览，见控制台契约的判别规则）与 #3 DM v4；控制台读路径复用同一规范消息记录与所有权，成员端点形状不变。
 
 ## 房间读取和搜索
 
@@ -21,9 +21,9 @@ Collaboration 在 SQLite 保存规范消息和收件箱引用。Gateway 提供 H
 | --- | --- |
 | `POST /v1/rooms` | 请求增加可选 `history_policy`，值为 `retained` 或 `since_joining`。成功结果携带已保存的策略。 |
 | `POST /v1/rooms/{room_id}/messages` | Message 增加 `created_at`。保留现有消息 ID 和重试语义。 |
-| `GET /v1/rooms/{room_id}/messages` | 现有 `after` 低位排他边界，新增可选 `before` 高位排他边界。给出 `before` 时从其之前取最近一页，按 ID 递增展示。默认 limit 50，最大 100。Message 增加 `created_at`。 |
-| `GET /v1/rooms/{room_id}/search` | `q` 为 1–200 个字符且不能全为空白。对房间内已获准的消息做大小写不敏感的字面子串匹配。按 ID 递增，`after` 和 `limit` 同历史；结果 `{"matches":[Match]}`。 |
-| Match | `message_id`、`sender_member_id`、`created_at` 和最多 200 字符的普通文本 `snippet`。片段包含首次匹配，可用稳定消息 ID 读取上下文。 |
+| `GET /v1/rooms/{room_id}/messages` | 现有 `after` 低位排他边界，新增可选 `before` 高位排他边界。给出 `before` 时从其之前取最近一页，按 ID 递增展示；大于 SQLite 最大 ID 的 `before` 作为无上界处理，不排除合法的最大 ID。默认 limit 50，最大 100。Message 增加 `created_at`。 |
+| `GET /v1/rooms/{room_id}/search` | `q` 为 1–200 个字符且不能全为空白。对房间内已获准的消息按大小写折叠做字面子串匹配（不使用 FTS），授权先于过滤和分页。按 ID 递增，`after` 和 `limit` 同历史；结果 `{"matches":[Match]}`，空页合法。 |
+| Match | `message_id`、`sender_member_id`、`created_at` 和最多 200 个原文字符的普通文本 `snippet`。片段引用原始正文，保留原大小写与 Unicode（如 Straße 保持 Straße），围绕首次折叠匹配截取并包含被匹配的原始字符；折叠扩展（如 ß、İ）的偏移安全映射回原文字符。授权房间的过滤与限量先在 SQL 内完成，再为结果行生成片段；正文不随结果复制。可用稳定消息 ID 读取上下文。 |
 
 MCP/IPC 在既有 `teamup_create_room` / `create_room` 增加可选 `history_policy`，在 `teamup_read_messages` / `read_messages` 增加可选 `before`，并增加 `teamup_search_room` / `search_room`，参数为 `room_id`、`q`、可选 `after` 与 `limit`。按 v1 返回验证、授权及公告错误。API 和 IPC 均使用已发布成员凭证边界。
 
@@ -33,7 +33,7 @@ MCP/IPC 在既有 `teamup_create_room` / `create_room` 增加可选 `history_pol
 - 清理在一个事务内删去到期消息和引用它的投递，推进会话自己的 `expired_through_message_id` 到已删除的最大消息 ID。空历史仍保留这项边界。最早尚存的消息不能证明发生过删除。
 - 对已发生删除的会话，授权历史和搜索响应追加 `expired_through_message_id` 与 `history_truncated`。后者表示请求游标与授权的加入位置合并后，仍落后于这次请求覆盖范围内的到期记录。旧客户端可以继续读取现有 `messages`/ `matches` 数组。
 - 收件箱重连仍补收可授权的未确认事件。已经到期的事件不再投递。消息存在时，同键同内容的授权重试返回原消息。清理后再次使用同键可创建消息，用新的 ID。
-- [私聊契约](direct-messages.md) 定义参与权限和操作。私聊复用时间戳、ID、边界和清理语义。[控制台契约](control-console.md) 定义房间正文授权和无正文审计。控制台通过 Collaboration 的规范房间查询读取同一批消息（stage 3 已实现 `before` 翻页与同事务审计；控制台载荷的 `created_at` 换算为 Unix 秒）。
+- [私聊契约](direct-messages.md) 定义参与权限和操作。私聊复用时间戳、ID、边界和清理语义，且不进入目录、房间搜索或控制台（`messages.room_id` 为 NULL 的行被排除）。[控制台契约](control-console.md) 定义房间正文授权和无正文审计。控制台通过 Collaboration 的规范房间查询读取同一批消息（stage 3 已实现 `before` 翻页与同事务审计；控制台载荷的 `created_at` 换算为 Unix 秒；transcript 恒以 `m.room_id = ?` 过滤，DM 行永不出现）。
 
 ## 验收
 

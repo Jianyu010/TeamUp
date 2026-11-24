@@ -8,8 +8,16 @@ assets. Stage 3 (this file's additions) covers the roster detail route, the
 body-free Timeline projection with backfill, the Chats transcript route with
 in-transaction audit, scoped transcript grants, revocation taking effect on
 the next page, pagination, and Cache-Control: no-store on authorized reads.
+
+After merging the #3 direct messages server, these tests additionally pin
+the v5 migration layering (console on top of the DM v4 schema) for every
+supported start -- including the published #5 auth preview v3 (e495544),
+whose purposes, sessions, grants and room data must survive -- and the rule
+that DM rows never reach room activity, Timeline, or the operator transcript
+even while DMs are enabled.
 """
 
+import json
 import sqlite3
 import subprocess
 import zipfile
@@ -437,7 +445,7 @@ def test_v2_sessions_migrate_to_enrollment_purpose(tmp_path):
         assert bind(client, legacy_token, "sender").status_code == 200
         error(console_rooms(client, legacy_token), 401, "unauthorized")
         with closing(sqlite3.connect(db_path)) as connection:
-            assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
+            assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
             purposes = dict(
                 connection.execute("SELECT token_digest, purpose FROM account_sessions")
             )
@@ -971,7 +979,7 @@ _V3_HISTORY_DATABASE = """
 """
 
 
-def test_v3_history_database_upgrades_to_console_v4(tmp_path):
+def test_v3_history_database_upgrades_to_console_v5(tmp_path):
     db_path = tmp_path / "team.sqlite3"
     owner_id = str(uuid4())
     raw = token_bytes(32)
@@ -1024,7 +1032,7 @@ def test_v3_history_database_upgrades_to_console_v4(tmp_path):
     with live_server(db_path, legacy=False) as (client, _):
         assert bind(client, legacy_token, "sender").status_code == 200
         with closing(sqlite3.connect(db_path)) as connection:
-            assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
+            assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
             purposes = dict(
                 connection.execute("SELECT token_digest, purpose FROM account_sessions")
             )
@@ -1110,3 +1118,579 @@ def test_v3_history_database_upgrades_to_console_v4(tmp_path):
         )
         assert sent.status_code == 200, sent.text
         assert sent.json()["message_id"] == 42
+
+
+_V3_PREVIEW_DATABASE = """
+    PRAGMA user_version = 3;
+    CREATE TABLE members (
+        member_id TEXT PRIMARY KEY,
+        owner_id TEXT NOT NULL,
+        harness_instance_id TEXT NOT NULL,
+        session_key TEXT NOT NULL,
+        role_description TEXT NOT NULL,
+        token_digest BLOB NOT NULL UNIQUE,
+        UNIQUE (owner_id, harness_instance_id, session_key)
+    );
+    CREATE TABLE rooms (
+        room_id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        version INTEGER NOT NULL CHECK (version > 0),
+        rules TEXT NOT NULL,
+        protocol TEXT NOT NULL
+    );
+    CREATE TABLE room_members (
+        room_id TEXT NOT NULL REFERENCES rooms(room_id),
+        member_id TEXT NOT NULL REFERENCES members(member_id),
+        joined_after INTEGER NOT NULL,
+        read_board_version INTEGER,
+        acked_board_version INTEGER,
+        PRIMARY KEY (room_id, member_id)
+    );
+    CREATE TABLE messages (
+        message_id INTEGER PRIMARY KEY,
+        room_id TEXT NOT NULL REFERENCES rooms(room_id),
+        sender_member_id TEXT NOT NULL REFERENCES members(member_id),
+        client_message_id TEXT NOT NULL,
+        text TEXT NOT NULL,
+        mention_member_id TEXT REFERENCES members(member_id),
+        UNIQUE (sender_member_id, client_message_id)
+    );
+    CREATE INDEX room_history ON messages (room_id, message_id);
+    CREATE TABLE inbox_events (
+        event_id INTEGER PRIMARY KEY,
+        member_id TEXT NOT NULL REFERENCES members(member_id),
+        message_id INTEGER NOT NULL REFERENCES messages(message_id),
+        kind TEXT NOT NULL CHECK (kind IN ('message', 'mention')),
+        acknowledged INTEGER NOT NULL DEFAULT 0 CHECK (acknowledged IN (0, 1)),
+        UNIQUE (member_id, message_id)
+    );
+    CREATE INDEX pending_inbox ON inbox_events (member_id, event_id)
+        WHERE acknowledged = 0;
+    CREATE TABLE accounts (
+        owner_id TEXT NOT NULL PRIMARY KEY,
+        username TEXT NOT NULL UNIQUE,
+        password_digest TEXT NOT NULL,
+        disabled INTEGER NOT NULL DEFAULT 0 CHECK (disabled IN (0, 1))
+    );
+    CREATE TABLE account_sessions (
+        token_digest BLOB NOT NULL PRIMARY KEY,
+        owner_id TEXT NOT NULL REFERENCES accounts(owner_id),
+        expires_at INTEGER NOT NULL,
+        purpose TEXT NOT NULL DEFAULT 'enrollment'
+            CHECK (purpose IN ('enrollment', 'console'))
+    );
+    CREATE INDEX account_sessions_owner ON account_sessions (owner_id);
+    CREATE TABLE operator_grants (
+        owner_id TEXT NOT NULL REFERENCES accounts(owner_id),
+        scope TEXT NOT NULL CHECK (scope IN ('console_read', 'transcript_read')),
+        room_id TEXT REFERENCES rooms(room_id),
+        CHECK (
+            (scope = 'console_read' AND room_id IS NULL)
+            OR (scope = 'transcript_read' AND room_id IS NOT NULL)
+        )
+    );
+    CREATE UNIQUE INDEX operator_grant_identity
+        ON operator_grants (owner_id, scope, ifnull(room_id, ''));
+    CREATE INDEX operator_grants_owner ON operator_grants (owner_id);
+"""
+
+
+def test_v3_auth_preview_database_upgrades_to_console_v5_preserving_grants(tmp_path):
+    """The published #5 auth preview v3 (e495544) is a supported v5 start.
+
+    The preview carries ``purpose`` sessions and ``operator_grants`` but no
+    #6 history columns. The migration applies the missing history layer and
+    seeds durable IDs before the DM rebuild, then adds only the console read
+    schema: the preview's purposes, sessions, grants and room data survive.
+    """
+    db_path = tmp_path / "team.sqlite3"
+    owner_id = str(uuid4())
+    console_raw = token_bytes(32)
+    preview_console_token = urlsafe_b64encode(console_raw).decode().rstrip("=")
+    console_digest = sha256(console_raw).digest()
+    enroll_raw = token_bytes(32)
+    preview_enroll_token = urlsafe_b64encode(enroll_raw).decode().rstrip("=")
+    enroll_digest = sha256(enroll_raw).digest()
+    old_member = "c876568e-8819-40fe-a5f9-da904dcb45a3"
+    late_member = "6f6d3b93-2c2e-4d5f-9a54-6d0f4f65ab21"
+    room_id = "3cb9cbf2-aaf5-459b-a69f-4e256c300454"
+    with closing(sqlite3.connect(db_path)) as connection, connection:
+        connection.executescript(_V3_PREVIEW_DATABASE)
+        connection.execute(
+            "INSERT INTO accounts (owner_id, username, password_digest) "
+            "VALUES (?, 'alice', ?)",
+            (owner_id, PasswordHasher().hash(PASSWORD)),
+        )
+        connection.execute(
+            "INSERT INTO account_sessions (token_digest, owner_id, expires_at, purpose) "
+            "VALUES (?, ?, ?, 'console')",
+            (console_digest, owner_id, int(time()) + 3600),
+        )
+        connection.execute(
+            "INSERT INTO account_sessions (token_digest, owner_id, expires_at, purpose) "
+            "VALUES (?, ?, ?, 'enrollment')",
+            (enroll_digest, owner_id, int(time()) + 3600),
+        )
+        connection.execute(
+            "INSERT INTO operator_grants (owner_id, scope, room_id) "
+            "VALUES (?, 'console_read', NULL)",
+            (owner_id,),
+        )
+        connection.execute(
+            "INSERT INTO operator_grants (owner_id, scope, room_id) "
+            "VALUES (?, 'transcript_read', ?)",
+            (owner_id, room_id),
+        )
+        for member_id, session, role, seed in (
+            (old_member, "old-session", "Old role", b"old"),
+            (late_member, "late-session", "Late role", b"late"),
+        ):
+            connection.execute(
+                "INSERT INTO members VALUES (?, 'legacy-owner', 'old-harness', "
+                "?, ?, ?)",
+                (member_id, session, role, sha256(sha256(seed).digest()).digest()),
+            )
+        connection.execute(
+            "INSERT INTO rooms VALUES (?, 'Preview room', 1, 'Rules', 'Protocol')",
+            (room_id,),
+        )
+        connection.execute(
+            "INSERT INTO room_members VALUES (?, ?, 0, 1, 1)", (room_id, old_member)
+        )
+        connection.execute(
+            "INSERT INTO room_members VALUES (?, ?, 41, 1, 1)", (room_id, late_member)
+        )
+        connection.execute(
+            "INSERT INTO messages VALUES (41, ?, ?, 'old-1', 'Preview body', NULL)",
+            (room_id, old_member),
+        )
+        connection.execute(
+            "INSERT INTO inbox_events VALUES (17, ?, 41, 'message', 0)",
+            (late_member,),
+        )
+
+    with live_server(db_path, legacy=False) as (client, _):
+        # The preview's enrollment session still binds agents after the merge.
+        assert bind(client, preview_enroll_token, "preview-agent").status_code == 200
+        with closing(sqlite3.connect(db_path)) as connection:
+            assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
+            purposes = dict(
+                connection.execute("SELECT token_digest, purpose FROM account_sessions")
+            )
+            grants = sorted(
+                connection.execute("SELECT scope, room_id FROM operator_grants")
+            )
+        assert purposes[console_digest] == "console"
+        assert purposes[enroll_digest] == "enrollment"
+        assert grants == [("console_read", None), ("transcript_read", room_id)]
+
+        # Preserved grants authorize the console session without re-granting.
+        assert console_rooms(client, preview_console_token).status_code == 200
+        detail = console_room_detail(client, preview_console_token, room_id)
+        assert detail.status_code == 200, detail.text
+        assert detail.json()["transcript_allowed"] is True
+        page = console_transcript(client, preview_console_token, room_id).json()
+        assert page == {
+            "messages": [
+                {
+                    "message_id": 41,
+                    "room_id": room_id,
+                    "sender_member_id": old_member,
+                    "sender_role_description": "Old role",
+                    "text": "Preview body",
+                    "mention_member_id": None,
+                    "created_at": None,
+                }
+            ],
+            "has_more": False,
+        }
+        assert len(audit_rows(db_path)) == 1
+
+        # Room data survives; the history layer defaults existing rooms and
+        # the backfilled projection covers only the preview's room rows.
+        history = get(client, "old", f"/rooms/{room_id}/messages").json()["messages"]
+        assert [message["message_id"] for message in history] == [41]
+        assert history[0]["created_at"] is None
+        timeline = console_timeline(client, preview_console_token, room_id).json()
+        assert timeline == {
+            "activities": [
+                {
+                    "activity_id": 1,
+                    "room_id": room_id,
+                    "kind": "member_joined",
+                    "at": None,
+                    "message_id": None,
+                    "actor_member_id": old_member,
+                },
+                {
+                    "activity_id": 2,
+                    "room_id": room_id,
+                    "kind": "member_joined",
+                    "at": None,
+                    "message_id": None,
+                    "actor_member_id": late_member,
+                },
+                {
+                    "activity_id": 3,
+                    "room_id": room_id,
+                    "kind": "board_acknowledged",
+                    "at": None,
+                    "message_id": None,
+                    "actor_member_id": late_member,
+                },
+                {
+                    "activity_id": 4,
+                    "room_id": room_id,
+                    "kind": "board_acknowledged",
+                    "at": None,
+                    "message_id": None,
+                    "actor_member_id": old_member,
+                },
+                {
+                    "activity_id": 5,
+                    "room_id": room_id,
+                    "kind": "message",
+                    "at": None,
+                    "message_id": 41,
+                    "actor_member_id": old_member,
+                },
+            ]
+        }
+
+        # The DM rebuild applied: the pair can message privately, and the
+        # seeded allocators continue past the pre-upgrade maxima.
+        dm = post(client, "old", "/dms", json={"member_id": late_member})
+        assert dm.status_code == 200, dm.text
+        dm_id = dm.json()["dm_id"]
+        private = post(
+            client,
+            "old",
+            f"/dms/{dm_id}/messages",
+            json={"client_message_id": "old-1", "text": "same key, other family"},
+        )
+        assert private.status_code == 200, private.text
+        assert private.json()["message_id"] == 42
+        dm_events = get(client, "late", "/inbox?kinds=dm").json()["events"]
+        assert [event["event_id"] for event in dm_events] == [18]
+        room_events = get(client, "late", "/inbox").json()["events"]
+        assert [event["event_id"] for event in room_events] == [17]
+
+
+_V4_DM_DATABASE = """
+    PRAGMA user_version = 4;
+    CREATE TABLE members (
+        member_id TEXT PRIMARY KEY,
+        owner_id TEXT NOT NULL,
+        harness_instance_id TEXT NOT NULL,
+        session_key TEXT NOT NULL,
+        role_description TEXT NOT NULL,
+        token_digest BLOB NOT NULL UNIQUE,
+        UNIQUE (owner_id, harness_instance_id, session_key)
+    );
+    CREATE TABLE rooms (
+        room_id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        version INTEGER NOT NULL CHECK (version > 0),
+        rules TEXT NOT NULL,
+        protocol TEXT NOT NULL,
+        history_policy TEXT NOT NULL DEFAULT 'since_joining'
+            CHECK (history_policy IN ('retained', 'since_joining'))
+    );
+    CREATE TABLE room_members (
+        room_id TEXT NOT NULL REFERENCES rooms(room_id),
+        member_id TEXT NOT NULL REFERENCES members(member_id),
+        joined_after INTEGER NOT NULL,
+        read_board_version INTEGER,
+        acked_board_version INTEGER,
+        PRIMARY KEY (room_id, member_id)
+    );
+    CREATE TABLE dms (
+        dm_id TEXT PRIMARY KEY,
+        member_low TEXT NOT NULL REFERENCES members(member_id),
+        member_high TEXT NOT NULL REFERENCES members(member_id),
+        UNIQUE (member_low, member_high),
+        CHECK (member_low < member_high)
+    );
+    CREATE TABLE messages (
+        message_id INTEGER PRIMARY KEY,
+        room_id TEXT REFERENCES rooms(room_id),
+        dm_id TEXT REFERENCES dms(dm_id),
+        sender_member_id TEXT NOT NULL REFERENCES members(member_id),
+        client_message_id TEXT NOT NULL,
+        text TEXT NOT NULL,
+        mention_member_id TEXT REFERENCES members(member_id),
+        created_at TEXT,
+        CHECK ((room_id IS NULL) <> (dm_id IS NULL))
+    );
+    CREATE INDEX room_history ON messages (room_id, message_id);
+    CREATE INDEX dm_history ON messages (dm_id, message_id);
+    CREATE UNIQUE INDEX room_message_retry ON messages (sender_member_id, client_message_id)
+        WHERE room_id IS NOT NULL;
+    CREATE UNIQUE INDEX dm_message_retry ON messages (dm_id, sender_member_id, client_message_id)
+        WHERE dm_id IS NOT NULL;
+    CREATE TABLE inbox_events (
+        event_id INTEGER PRIMARY KEY,
+        member_id TEXT NOT NULL REFERENCES members(member_id),
+        message_id INTEGER NOT NULL REFERENCES messages(message_id),
+        kind TEXT NOT NULL CHECK (kind IN ('message', 'mention', 'dm')),
+        acknowledged INTEGER NOT NULL DEFAULT 0 CHECK (acknowledged IN (0, 1)),
+        UNIQUE (member_id, message_id)
+    );
+    CREATE INDEX pending_inbox ON inbox_events (member_id, event_id)
+        WHERE acknowledged = 0;
+    CREATE TABLE id_counters (
+        counter TEXT PRIMARY KEY CHECK (counter IN ('message_id', 'event_id')),
+        last_id INTEGER NOT NULL CHECK (last_id >= 0)
+    );
+    CREATE TABLE accounts (
+        owner_id TEXT NOT NULL PRIMARY KEY,
+        username TEXT NOT NULL UNIQUE,
+        password_digest TEXT NOT NULL,
+        disabled INTEGER NOT NULL DEFAULT 0 CHECK (disabled IN (0, 1))
+    );
+    CREATE TABLE account_sessions (
+        token_digest BLOB NOT NULL PRIMARY KEY,
+        owner_id TEXT NOT NULL REFERENCES accounts(owner_id),
+        expires_at INTEGER NOT NULL
+    );
+    CREATE INDEX account_sessions_owner ON account_sessions (owner_id);
+"""
+
+
+def test_v4_dm_database_upgrades_to_console_v5_without_dm_activity(tmp_path):
+    """The #3 DM v4 schema is a supported v5 start.
+
+    The console layer adds purpose, grants and the read projection on top of
+    the DM schema. DM rows (``messages.room_id`` is NULL) never enter the
+    backfilled room activity, and the DM history stays participant-only.
+    """
+    db_path = tmp_path / "team.sqlite3"
+    owner_id = str(uuid4())
+    raw = token_bytes(32)
+    legacy_token = urlsafe_b64encode(raw).decode().rstrip("=")
+    legacy_digest = sha256(raw).digest()
+    old_member = "c876568e-8819-40fe-a5f9-da904dcb45a3"
+    late_member = "6f6d3b93-2c2e-4d5f-9a54-6d0f4f65ab21"
+    room_id = "3cb9cbf2-aaf5-459b-a69f-4e256c300454"
+    dm_id = "b6a4d1e2-3f4a-4b5c-8d7e-9f0a1b2c3d4e"
+    with closing(sqlite3.connect(db_path)) as connection, connection:
+        connection.executescript(_V4_DM_DATABASE)
+        connection.execute(
+            "INSERT INTO accounts (owner_id, username, password_digest) "
+            "VALUES (?, 'alice', ?)",
+            (owner_id, PasswordHasher().hash(PASSWORD)),
+        )
+        connection.execute(
+            "INSERT INTO account_sessions VALUES (?, ?, ?)",
+            (legacy_digest, owner_id, int(time()) + 3600),
+        )
+        for member_id, session, role, seed in (
+            (old_member, "old-session", "Old role", b"old"),
+            (late_member, "late-session", "Late role", b"late"),
+        ):
+            connection.execute(
+                "INSERT INTO members VALUES (?, 'legacy-owner', 'old-harness', "
+                "?, ?, ?)",
+                (member_id, session, role, sha256(sha256(seed).digest()).digest()),
+            )
+        connection.execute(
+            "INSERT INTO rooms VALUES (?, 'DM room', 1, 'Rules', 'Protocol', 'retained')",
+            (room_id,),
+        )
+        connection.execute(
+            "INSERT INTO room_members VALUES (?, ?, 0, 1, 1)", (room_id, old_member)
+        )
+        connection.execute(
+            "INSERT INTO room_members VALUES (?, ?, 41, 1, 1)", (room_id, late_member)
+        )
+        connection.execute(
+            "INSERT INTO dms VALUES (?, ?, ?)",
+            (dm_id, min(old_member, late_member), max(old_member, late_member)),
+        )
+        connection.execute(
+            """
+            INSERT INTO messages (
+                message_id, room_id, dm_id, sender_member_id, client_message_id,
+                text, mention_member_id, created_at
+            ) VALUES (41, ?, NULL, ?, 'old-1', 'Room body', NULL, NULL)
+            """,
+            (room_id, old_member),
+        )
+        connection.execute(
+            """
+            INSERT INTO messages (
+                message_id, room_id, dm_id, sender_member_id, client_message_id,
+                text, mention_member_id, created_at
+            ) VALUES (42, NULL, ?, ?, 'dm-1', 'DM secret body', NULL, NULL)
+            """,
+            (dm_id, old_member),
+        )
+        connection.execute(
+            "INSERT INTO inbox_events VALUES (17, ?, 41, 'message', 1)",
+            (late_member,),
+        )
+        connection.execute(
+            "INSERT INTO inbox_events VALUES (18, ?, 42, 'dm', 1)",
+            (late_member,),
+        )
+        connection.execute(
+            "INSERT INTO id_counters (counter, last_id) "
+            "VALUES ('message_id', 42), ('event_id', 18)"
+        )
+
+    with live_server(db_path, legacy=False) as (client, _):
+        assert bind(client, legacy_token, "sender").status_code == 200
+        with closing(sqlite3.connect(db_path)) as connection:
+            assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
+            purposes = dict(
+                connection.execute("SELECT token_digest, purpose FROM account_sessions")
+            )
+        assert purposes[legacy_digest] == "enrollment"
+
+        admin(db_path, "grant-console", "alice")
+        admin(db_path, "grant-transcript", "alice", room_id)
+        console = console_token(client, "alice", PASSWORD)
+
+        # The acknowledged DM delivery (event 18, message 42) created no room
+        # activity: only the room message projection appears.
+        timeline = console_timeline(client, console, room_id).json()
+        assert [
+            (activity["kind"], activity["message_id"], activity["actor_member_id"])
+            for activity in timeline["activities"]
+        ] == [
+            ("member_joined", None, old_member),
+            ("member_joined", None, late_member),
+            ("board_acknowledged", None, late_member),
+            ("board_acknowledged", None, old_member),
+            ("message", 41, old_member),
+            ("delivery", 41, late_member),
+        ]
+        assert "DM secret body" not in timeline
+        rooms_payload = console_rooms(client, console).json()
+        assert rooms_payload["rooms"][0]["last_activity"]["message_id"] == 41
+        page = console_transcript(client, console, room_id).json()
+        assert [message["text"] for message in page["messages"]] == ["Room body"]
+        assert page["has_more"] is False
+
+        # The DM history stays readable only for the two participants.
+        dm_history = get(client, "late", f"/dms/{dm_id}/messages").json()["messages"]
+        assert [message["message_id"] for message in dm_history] == [42]
+        assert dm_history[0]["text"] == "DM secret body"
+        error(get(client, "sender", f"/dms/{dm_id}/messages"), 404, "not_found")
+
+        # Durable IDs keep counting past the pre-upgrade maxima.
+        room_next = post(
+            client,
+            "old",
+            f"/rooms/{room_id}/messages",
+            json={"client_message_id": "old-2", "text": "Fresh room body"},
+        )
+        assert room_next.status_code == 200, room_next.text
+        assert room_next.json()["message_id"] == 43
+
+
+def test_authorized_operator_cannot_trace_dm_text_through_console(tmp_path):
+    """A fully authorized operator never traces DM text through the console.
+
+    Even while DMs are enabled and exchanged, DM sends and acknowledgements
+    create no room activity, and Timeline, roster detail, and the audited
+    transcript expose only room records.
+    """
+    db_path = tmp_path / "team.sqlite3"
+    enter_password(db_path, "create", "alice", PASSWORD)
+    with live_server(db_path) as (client, _):
+        enrollment = login_token(client, "alice", PASSWORD)
+        assert bind(client, enrollment, "target").status_code == 200
+        room_id = console_team_room(client, messages=("room body one",))
+        room_path = f"/rooms/{room_id}"
+        join(client, "target", room_path)
+        confirm(client, "target", room_path)
+        target = member(client, "target")
+        sent = send(client, room_path, "key-1", text="room body two").json()
+        events = get(client, "target", "/inbox").json()["events"]
+        assert [event["message"]["message_id"] for event in events] == [
+            sent["message_id"]
+        ]
+        assert (
+            post(client, "target", f"/inbox/{events[0]['event_id']}/ack").status_code
+            == 200
+        )
+        baseline = room_activity_rows(db_path)
+
+        # DMs are enabled: the pair exchanges private text and the peer
+        # acknowledges the delivery.
+        dm = post(client, "sender", "/dms", json={"member_id": target})
+        assert dm.status_code == 200, dm.text
+        dm_id = dm.json()["dm_id"]
+        secret = "dm-only secret phrase"
+        private = post(
+            client,
+            "sender",
+            f"/dms/{dm_id}/messages",
+            json={"client_message_id": "dm-key-1", "text": secret},
+        )
+        assert private.status_code == 200, private.text
+        dm_message_id = private.json()["message_id"]
+        dm_events = get(client, "target", "/inbox?kinds=dm").json()["events"]
+        assert [event["message"]["message_id"] for event in dm_events] == [
+            dm_message_id
+        ]
+        for event in dm_events:
+            assert (
+                post(client, "target", f"/inbox/{event['event_id']}/ack").status_code
+                == 200
+            )
+
+        # Neither the DM send nor the DM acknowledgement created room activity.
+        assert room_activity_rows(db_path) == baseline
+
+        admin(db_path, "grant-console", "alice")
+        admin(db_path, "grant-transcript", "alice", room_id)
+        console = console_token(client, "alice", PASSWORD)
+
+        rooms_payload = console_rooms(client, console).json()
+        assert (
+            rooms_payload["rooms"][0]["last_activity"]["message_id"]
+            == sent["message_id"]
+        )
+        detail = console_room_detail(client, console, room_id).json()
+        assert detail["transcript_allowed"] is True
+
+        activities = console_timeline(client, console, room_id).json()["activities"]
+        assert activities
+        assert all(activity["message_id"] != dm_message_id for activity in activities)
+        assert [
+            (activity["kind"], activity["message_id"]) for activity in activities
+        ] == [
+            ("member_joined", None),
+            ("board_acknowledged", None),
+            ("message", sent["message_id"] - 1),
+            ("member_joined", None),
+            ("board_acknowledged", None),
+            ("message", sent["message_id"]),
+            ("delivery", sent["message_id"]),
+        ]
+
+        texts = []
+        message_ids = []
+        page = console_transcript(client, console, room_id, limit=1).json()
+        while True:
+            texts.extend(message["text"] for message in page["messages"])
+            message_ids.extend(message["message_id"] for message in page["messages"])
+            if not page["has_more"]:
+                break
+            oldest = page["messages"][0]["message_id"]
+            page = console_transcript(
+                client, console, room_id, before=oldest, limit=1
+            ).json()
+        assert texts == ["room body two", "room body one"]
+        assert dm_message_id not in message_ids
+
+        for payload in (rooms_payload, detail, activities, page):
+            assert secret not in json.dumps(payload)
+        assert all(
+            row["message_id"] != dm_message_id for row in room_activity_rows(db_path)
+        )
+
+        # Each audited transcript page left a body-free audit row only.
+        assert len(audit_rows(db_path)) == 2

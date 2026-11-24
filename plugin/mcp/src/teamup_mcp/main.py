@@ -8,12 +8,17 @@ from mcp.types import CallToolResult, TextContent, Tool
 from teamup_client.ipc import ClientError, call
 
 ROOM = {"room_id": {"type": "string", "format": "uuid"}}
+DM = {"dm_id": {"type": "string", "format": "uuid"}}
+MESSAGE_KEY = {"type": "string", "minLength": 1, "maxLength": 128}
 TEXT = {"type": "string", "minLength": 1, "maxLength": 8_000}
 NAME = {"type": "string", "minLength": 1, "maxLength": 200}
+QUERY = {"type": "string", "minLength": 1, "maxLength": 200}
+HISTORY_POLICY = {"type": "string", "enum": ["retained", "since_joining"]}
 PAGE = {
     "after": {"type": "integer", "minimum": 0, "default": 0},
     "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50},
 }
+HISTORY = PAGE | {"before": {"type": "integer", "minimum": 1}}
 
 
 def tool(
@@ -51,7 +56,7 @@ TOOLS = [
         "Create and join a team-visible task room for three or more agents. "
         "The room has a required board.",
         {"name": NAME},
-        {"rules": TEXT, "protocol": TEXT},
+        {"rules": TEXT, "protocol": TEXT, "history_policy": HISTORY_POLICY},
     ),
     tool("join_room", "Join a team-visible room.", ROOM),
     tool("get_board", "Read the room's current rules, protocol and version.", ROOM),
@@ -70,10 +75,36 @@ TOOLS = [
         },
         {"mention_member_id": {"type": ["string", "null"], "format": "uuid"}},
     ),
-    tool("read_messages", "Read room messages after a message ID.", ROOM, PAGE),
+    tool("read_messages", "Read room messages after a message ID.", ROOM, HISTORY),
+    tool(
+        "search_room",
+        "Search readable room messages for a case-insensitive substring.",
+        ROOM | {"q": QUERY},
+        PAGE,
+    ),
+    tool(
+        "open_dm",
+        "Open the private DM with another member. "
+        "Every open returns the same conversation for the pair.",
+        {"member_id": {"type": "string", "format": "uuid"}},
+    ),
+    tool(
+        "send_dm",
+        "Send a private DM message to the peer. There is no mention field; "
+        "keep the same client_message_id when retrying a message.",
+        DM | {"client_message_id": MESSAGE_KEY, "text": TEXT},
+    ),
+    tool(
+        "read_dm",
+        "Read DM messages after a message ID. "
+        "The response may report that older DM history expired.",
+        DM,
+        PAGE,
+    ),
     tool(
         "notifications",
-        "List received mentions after an event ID. Open room history for their text.",
+        "List received mentions and DM notices after an event ID. "
+        "Open room or DM history for their text.",
         optional=PAGE,
     ),
 ]
@@ -87,9 +118,13 @@ def create_mcp(socket_path: str, binding_key: str) -> Server:
             "who need the same context. If DM tools are unavailable, ask for an "
             "approved private handoff. "
             "Register the approved local session, then find teammates by role. "
+            "Open a pair DM with the teammate's member ID; teamup_open_dm returns "
+            "the same conversation on every repeat. "
             "After joining or creating a room, read and acknowledge its current board. "
-            "To request someone's attention, pass their member ID as mention_member_id. "
+            "To request someone's attention in a room, pass their member ID as "
+            "mention_member_id. "
             "Use a fresh client_message_id for each new message and keep it on retry. "
+            "Keep DM text between the two participants and out of logs and rooms. "
             "Follow local sharing permissions."
         ),
     )

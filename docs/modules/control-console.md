@@ -1,6 +1,6 @@
 # Control Console（只读控制台）
 
-**Stage 3（读路径，已按协调方裁定范围实施）。** 本期在 stage 2（操作员鉴权、账号级/房间级授权、静态托管，commit `e495544`）与 #6 存量基线（存储地基 commit `25fff63`，已并入本分支）之上交付控制台只读读路径：`GET /v1/console/rooms/{room_id}`（roster 详情）、`GET /v1/console/rooms/{room_id}/timeline`（body-free 活动投影）、`GET /v1/console/rooms/{room_id}/transcript`（规范房间记录 + 同事务无正文审计）。本期把两个均未部署的草稿 schema（#6 历史 v3 与 e495544 控制台 v3）合并为 **schema v4**：迁移次序覆盖 fresh、v1、v2 与 #6 历史 v3；e495544 独立鉴权里程碑从未线上部署，不为其单独的 v3 变体提供兼容分支。本期不触碰房间发送与收件路径，不进行线上部署。跟踪于 [Control Console](https://github.com/Jianyu010/TeamUp/issues/5)，产品行为见 [collaboration-surfaces](../specs/collaboration-surfaces.md)，历史与审计依据见 [conversation-history](../specs/conversation-history.md) 与 [会话历史模块契约](conversation-history.md)。本文是控制台的模块契约：操作员鉴权、只读 API、审计、实施与测试步骤。按 [开发协议](../protocols/README.md)，新路由、schema 和权限须先过契约评审再写代码。
+**Stage 3（读路径，已按协调方裁定范围实施）。** 本期在 stage 2（操作员鉴权、账号级/房间级授权、静态托管，commit `e495544`）与 #6 存量基线（存储地基 commit `25fff63`，已并入本分支）之上交付控制台只读读路径：`GET /v1/console/rooms/{room_id}`（roster 详情）、`GET /v1/console/rooms/{room_id}/timeline`（body-free 活动投影）、`GET /v1/console/rooms/{room_id}/transcript`（规范房间记录 + 同事务无正文审计）。已交付的 #3 私聊服务端（`codex/teamup-3-direct-messages`，DM 家族表与收件路径）随后并入本分支：schema 先经 #3 达到 **v4**（`dms`、可空 `messages.room_id` 与恰一非空约束、按家族分域的重试索引、收件 `dm` kind），控制台层在其上收敛为 **v5**。迁移支持 fresh、v1、v2、两种 v3 草稿（#6 历史 v3；已发布的 #5 鉴权预览 `e495544`，以表列在 schema 迁移内判别，见下文）与 #3 DM v4。控制台读路径复用 #6 规范消息记录与所有权，成员端点形状不变；#3 并入的成员 DM 路径见[私聊契约](direct-messages.md)。不进行线上部署。跟踪于 [Control Console](https://github.com/Jianyu010/TeamUp/issues/5)，产品行为见 [collaboration-surfaces](../specs/collaboration-surfaces.md)，历史与审计依据见 [conversation-history](../specs/conversation-history.md) 与 [会话历史模块契约](conversation-history.md)。本文是控制台的模块契约：操作员鉴权、只读 API、审计、实施与测试步骤。按 [开发协议](../protocols/README.md)，新路由、schema 和权限须先过契约评审再写代码。
 
 ## 范围与 owner
 
@@ -13,7 +13,7 @@
 受影响的调用方：Console UI 与账号管理 CLI 子命令（stage 2 已交付）；#6 成员历史读取（共享规范消息记录与所有权，成员端点形状不变）；无其他既有调用方变更。成员 token、登记密钥与 [Client–Server v1](client-server-v1.md) 契约不变。
 
 - 控制台只读：没有 composer、没有 join、没有任何写操作路由。打开控制台不产生任何聊天动作。
-- 控制台只呈现 TeamUp 观察到的团队房间记录。DM 属于参与者私有会话，不出现在控制台 API 与界面；控制台读取不查询任何私聊数据（DM 落地时补契约测试）。
+- 控制台只呈现 TeamUp 观察到的团队房间记录。DM 属于参与者私有会话，不出现在控制台 API 与界面：Timeline 投影与升级回填、roster 的 `last_activity` 与 transcript 读取都只覆盖 `room_id` 非空的规范房间行，DM 发送与 DM 收件确认不产生任何房间活动；即使操作员持有房间 `transcript_read`，也无法经 Timeline 或 transcript 追溯 DM 文本（已随 #3 服务端并入补契约测试）。
 - harness 状态默认显示 **Unknown**。本期没有支持的 harness 报告通道，`harness_state` 固定为 `unknown`；不得用 SSE 或连接状态推断。
 - 投递回执只证明某个 Client 收到事件，不证明 Agent 已看到或处理。
 
@@ -105,46 +105,54 @@ Transcript 翻页不使用 `after`：入口请求省略 `before` 取得最新页
 
 - `room_activity` 表：`activity_id` 全局单调递增（SQLite AUTOINCREMENT，删除后不复用）、`room_id`、`kind` ∈ {`member_joined`,`board_acknowledged`,`message`,`delivery`}、`at`（RFC 3339 文本或 null）、`actor_member_id`、`message_id`（仅消息与投递类活动指向对应消息，其余为 null）。
 - Collaboration 随四类业务写操作在**同一所有者事务**内追加投影行：建房者首加入与成员加入（`member_joined`，actor 为加入成员）、对当前公告版本的首次确认（`board_acknowledged`，actor 为确认成员，按版本去重）、消息受理（`message`，actor 为发送者，`at` 取该消息 `created_at`）、投递首次确认（`delivery`，actor 为确认收件的成员，指向对应消息）。幂等重试（加入冲突、重复确认、同键同文重发、重复确认收件）不追加行，投影与授权仍以规范成员、公告与消息记录为准。
+- DM 永不进入该投影：DM 消息的 `messages.room_id` 为 NULL，发送与 DM 收件确认都不追加 `room_activity` 行；升级回填的消息与投递语句同样以 `room_id IS NOT NULL` 过滤。房间消息收件确认照旧记录 `delivery`。
 - 该投影只服务呈现，不是授权依据；授权一律回查规范成员、公告与消息记录。消息与投递活动不含正文。
-- 升级存量库时按规范行回填可推导的历史活动，回填次序为：成员加入 → 公告确认 → 消息（按 `message_id`）→ 投递确认（按 `event_id`）；无时间证据的旧行 `at` 为 null（消息行有 `created_at` 时如实取值）。回填行同样只含元数据。
+- 升级存量库时按规范行回填可推导的历史活动，回填次序为：成员加入 → 公告确认 → 消息（按 `message_id`）→ 投递确认（按 `event_id`）；无时间证据的旧行 `at` 为 null（消息行有 `created_at` 时如实取值）。回填行同样只含元数据，且不含任何 DM 行。
 
 ## 审计存储
 
 `transcript_access_audit` 表：`owner_id`、`room_id`、`action`（固定 `transcript_read`）、`at`（RFC 3339 文本）、`page_before`（可空整数）、`page_limit`（整数）。由 Collaboration 在 transcript 读取的同一事务内写入，每次成功响应一行；不暴露查询路由，不含正文。租户数据除该无正文审计外不受控制台写入影响。
 
-## Schema 与迁移（v4）
+## Schema 与迁移（v5）
 
-Collaboration schema 版本为 **4**。两个 v3 草稿均未部署，在 v4 合并：`purpose` 会话、`operator_grants`（原 e495544 v3）与 `history_policy`/`created_at`/`id_counters`（原 #6 历史 v3）。迁移次序：
+Collaboration schema 版本为 **5**。分层构成：v1/v2 为已发布基线；#6 历史层（`history_policy`/`created_at`/`id_counters`）叠加后为 v3 草稿；#3 DM 层（`dms` 表、可空 `messages.room_id` 与恰一非空约束、按家族分域的重试唯一索引、`inbox_events.kind` 扩展 `dm`）叠加为 **v4**；控制台层（`purpose` 会话列、`operator_grants`、`room_activity`、`transcript_access_audit`）收敛为 **v5**。两种 v3 草稿都报告 `user_version` 3，仅在 schema 迁移内以表列判别，运行时不依赖该判别：`account_sessions` 带 `purpose` 列且存在 `operator_grants` 表即已发布的 #5 鉴权预览 v3（`e495544`，无历史列）；存在 `rooms.history_policy` 而无操作员列即 #6 历史 v3；`messages` 带 DM 列即 #3 v4。迁移次序（每行按序在同一个写事务内执行，最后统一回填活动投影并写 `user_version = 5`）：
 
 | 起始版本 | 步骤 |
 | --- | --- |
-| 0（fresh） | 完整 schema（含历史列、计数器、`purpose`、授权、投影与审计表）直接建到 v4 |
-| 1 | 账号 schema → 历史 schema（列 + 计数器播种）→ 控制台 schema（授权表；`account_sessions` 已随账号 schema 带 `purpose` 列）→ v4 |
-| 2 | 历史 schema → `account_sessions` 补 `purpose` 列（存量行记为登记用途）→ 控制台 schema → v4 |
-| 3（#6 历史 v3 草稿） | `account_sessions` 补 `purpose` 列 → 控制台 schema → v4 |
+| 0（fresh） | 完整 schema（含 DM 表、历史列、计数器、`purpose`、授权、投影与审计表）直接建到 v5；空库空回填 |
+| 1 | 账号 schema（`account_sessions` 自带 `purpose`）→ 历史 schema（列 + 计数器播种）→ DM 重建 → 控制台 schema → v5 |
+| 2 | 历史 schema（列 + 计数器播种）→ DM 重建 → `account_sessions` 补 `purpose` 列（存量行记为登记用途）→ 控制台 schema → v5 |
+| 3（#6 历史 v3 草稿） | DM 重建 → `account_sessions` 补 `purpose` 列 → 控制台 schema → v5 |
+| 3（#5 鉴权预览 v3，`e495544`） | 先补缺失的 #6 历史 schema（列 + 计数器播种，早于 DM 重建）→ DM 重建 → 只补读 schema（投影与审计表）；`purpose` 列、既有会话、`operator_grants` 与房间数据原样保留，不重授、不重置 → v5 |
+| 4（#3 DM v4） | `account_sessions` 补 `purpose` 列 → 控制台 schema → v5 |
 
-所有升级路径随后执行活动回填（fresh 为空库即空回填）。不为 e495544 独立 v3 草稿形态（有 purpose/授权而无历史列）提供兼容分支：该里程碑从未部署。v4 之后的版本递增由后续阶段（清理、搜索等）继续。
+DM 重建沿用 #3 契约：消息表重建为 `room_id`/`dm_id` 恰一非空并改挂按家族分域的重试索引，存量行保持 ID、顺序与各列值；预览 v3 的回补历史列使房间缺省 `since_joining`，与旧版建房语义一致。所有升级路径随后执行活动回填，回填与运行期采集都排除 `room_id IS NULL` 的 DM 行；v5 之后的版本递增由后续阶段（清理、到期等）继续。#6 到期清理与 `expired_through_message_id` 边界尚未并入本分支。
 
 ## 实施步骤
 
 ### stage 2（已实施，e495544）
 
-1. ~~Collaboration schema v3：`purpose` 列、`operator_grants`。~~（本期并入 v4）
+1. ~~Collaboration schema v3：`purpose` 列、`operator_grants`。~~（并入 v5）
 2. 账号管理 CLI 四个子命令。
 3. `list_console_rooms` 单事务鉴权路径。
 4. `POST /v1/auth/login` 可选 `purpose:"console"`；`GET /v1/console/rooms`；403 `forbidden` 入错误表；静态三路径托管。
 
 ### 本期（stage 3，已实施）
 
-5. v4 schema 与迁移（见上表）；`room_activity`、`transcript_access_audit` 两表与存量回填。
+5. ~~v4 schema 与迁移（见上表）；`room_activity`、`transcript_access_audit` 两表与存量回填。~~（随 #3 并入改述为 v5，见下节）
 6. 四类所有者事务内的投影写入（join/ack/send/delivery），幂等重试不重复。
 7. Collaboration 读路径：`console_room_detail`（roster + `transcript_allowed`）、`console_timeline`（`after`/`limit` 递增分页）、`console_transcript`（`before`/`limit` 最新页与更早页、`has_more`、同事务审计）。房间列表 `last_activity` 改为真实投影。
-8. Gateway 挂载三个路由；`/v1/console/*` 成功响应统一 `Cache-Control: no-store`；transcript 读取复用 #6 规范消息记录与所有权（同一 SQL 投影 + 读取时角色），成员端点形状不变。
+8. Gateway 挂载三个路由；`/v1/console/*` 成功响应统一 `Cache-Control: no-store`；transcript 读取复用 #6 规范消息记录与所有权（同一 SQL 投影 + 读取时角色，恒以 `m.room_id = ?` 过滤），成员端点形状不变。
+
+### #3 服务端并入（本合并，已实施）
+
+9. v5 schema 与迁移（见上表）：在 #3 DM v4 之上收敛控制台层，覆盖 fresh/v1/v2/两种 v3/#3 v4；预览 v3 先补 #6 历史列并播种计数器，再做 DM 重建；预览的 `purpose`、会话、授权与房间数据原样保留。
+10. DM 行排除出活动投影：升级回填与运行期事件活动采集都按 `room_id IS NOT NULL` 过滤，DM 发送与 DM 收件确认不追加 `room_activity` 行；transcript 维持 `m.room_id = ?` 过滤、`before`/`has_more` 翻页、独立的 `transcript_read` 授权与无正文读审计不变。
 
 ### 后续（另行契约修订）
 
-9. DM 落地时补“DM 不进控制台”的契约测试。
-10. #6 搜索 worker 的房间成员分页、到期清理对投影与审计的影响。
+11. #6 搜索 worker 的房间成员分页、到期清理对投影与审计的影响。
+12. #6 到期清理（`--room-retention-hours`/`--dm-retention-hours`、`expired_through_message_id`）与本契约的集成。
 
 ## 测试步骤
 
@@ -152,7 +160,7 @@ Server 契约测试（`server/tests/test_console_server.py`；stage 2 项保持�
 
 1. （stage 2）无 `console_read` 的账号以 `purpose:"console"` 登录后访问 `/v1/console/rooms` 返回 403 `forbidden`；无效、过期、被撤销（停用/重置口令）的 console 会话返回 401。
 2. （stage 2）跨用途隔离双向验证：console 会话 token 不能登记（`POST /v1/members` 401）、不能调用普通成员 API（401）、不能作为 `member_token`（422）；登记用途登录 token、成员 token、旧登记密钥调用控制台路由 401；省略 `purpose` 的登录保持既有行为。
-3. （stage 2→本期更新）v2 存量库迁移：升级后旧会话按登记用途继续可用，控制台拒绝之；`user_version` 升至 **4**。
+3. （stage 2→本期更新）v2 存量库迁移：升级后旧会话按登记用途继续可用，控制台拒绝之；`user_version` 升至 **5**。
 4. （stage 2）`grant-console`/`revoke-console` 经 CLI 生效（403↔200 幂等往返）；`grant-transcript`/`revoke-transcript` CLI 幂等、对缺失账号/房间报错。
 5. （本期更新）rooms 载荷：按 `room_id` 稳定排序，字段恰为 `room_id`/`name`/`member_count`/`last_activity`，`last_activity` 为最新活动投影（无活动为 null）；读房间不产生收件事件、SSE 提示或房间写入。
 6. （stage 2）静态托管三路径与安全响应头；其余 `/console/…` 404、方法不符 405。
@@ -160,8 +168,10 @@ Server 契约测试（`server/tests/test_console_server.py`；stage 2 项保持�
 8. （本期）Timeline：四类活动字段精确且不含正文；`after`/`limit` 递增分页、短页即尾；加入/确认/重发/重复确认收件幂等重试不产生重复投影行。
 9. （本期）Transcript：省略 `before` 取最新页（页内递增）、`before` 取更早页、`has_more` 如实；`sender_role_description` 为读取时登记角色；存量无时间戳消息 `created_at` 为 null；每次成功响应在同一事务写入一条审计（owner、room、action、分页参数、时间），审计行不含正文。
 10. （本期）授权边界：仅元数据授权的操作员读不到消息正文（timeline 无正文、无 transcript 权限 403）；房间级 `transcript_read` 只对授权房间生效，跨房间 403；撤销后携旧游标翻页 403、停用/过期会话 401；控制台读取不产生收件事件或 SSE 提示。
-11. （本期）迁移：v2 样本与 #6 历史 v3 样本升级到 v4 后回投活动（次序与 null `at` 如契约）；消息 ID 与既有 #6 语义不受影响。
+11. （本期）迁移：v2 样本与 #6 历史 v3 样本升级到 v5 后回投活动（次序与 null `at` 如契约）；消息 ID 与既有 #6 语义不受影响。
 12. （本期）成功响应统一 `Cache-Control: no-store`。
+13. （#3 并入）迁移：已发布的 #5 鉴权预览 v3（`e495544` 形态：`purpose` 列、`operator_grants`、无历史列）以代表性样本升级到 v5——预览的 `console`/`enrollment` purpose、既有会话、`console_read` 与 `transcript_read` 授权与房间数据保留，预置授权无需重授即可登录读房与读 transcript；补入的历史层使既有房间缺省 `since_joining`，DM 重建后即可私聊，ID 播种续旧最大值。#3 DM v4 样本升级到 v5：已确认的 DM 投递不回填房间活动，transcript 只含房间行，DM 历史仍仅参与者可读，ID 续旧最大值。
+14. （#3 并入）DM 隔离：即使操作员同时持有 `console_read` 与该房间 `transcript_read`、且 DM 正常启用并交换、收件确认完毕，rooms/roster/Timeline/transcript 任何响应都不含 DM 文本或 DM `message_id`；DM 发送与确认不新增 `room_activity` 行。
 
 Console UI 静态回归测试（`server/tests/test_console_ui.py`，stage 2 已交付，本期不变）。
 
@@ -178,11 +188,8 @@ Console UI 静态回归测试（`server/tests/test_console_ui.py`，stage 2 已�
 - 控制台在 Timeline 呈现房间活动（body-free），在 Chats 呈现所选房间会话（按授权）。
 - 缺 transcript 授权的操作员读不到消息正文；元数据授权不隐含正文授权；每次正文读取留下无正文审计。
 - 撤销/停用对下一页生效；控制台读取不影响成员收件、SSE 与写路径语义。
-- 迁移覆盖 fresh/v1/v2/历史 v3；`user_version` 为 4。
-
-### 后续
-
-- DM 不出现在控制台（DM 落地时补契约测试）。
+- 迁移覆盖 fresh/v1/v2/两种 v3（#6 历史草稿与已发布的 #5 鉴权预览）/#3 DM v4；`user_version` 为 5。
+- DM 不进入控制台：授权操作员无法经 Timeline/transcript 追溯 DM 文本或 DM `message_id`，DM 发送与确认不产生房间活动（已随 #3 并入交付并测试）。
 
 ## 待跨 owner 评审的选择
 
