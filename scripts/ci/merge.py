@@ -51,6 +51,7 @@ from scripts.ci.gate import (
     OVERRIDE_SUCCESS,
     GitHub,
     load_policy,
+    referenced_numbers,
     required_checks,
     tier1_problems,
 )
@@ -73,6 +74,8 @@ class Pull:
     conflicts: bool = False
     override: bool = False
     """The green gate is the owner's ``ready`` (it still merges while auto-merge is frozen)."""
+    refs: frozenset[int] = frozenset()
+    """Issue and PR numbers its title or body refers to; one naming a freeze issue repairs it."""
 
     def blocked(self) -> str | None:
         """Why the merger leaves this PR alone, or ``None`` when it is eligible."""
@@ -95,11 +98,14 @@ class Step:
     reason: str
 
 
-def plan(pulls: list[Pull], frozen: bool = False) -> list[Step]:
+def plan(
+    pulls: list[Pull], frozen: bool = False, freeze_issues: frozenset[int] = frozenset()
+) -> list[Step]:
     """The steps of one run, in order; see the module docstring.
 
     While ``frozen`` (an open ``ci/freeze`` issue: ``main`` or the nightly is red), only PRs the
-    owner passed with ``ready`` merge, so the fix or revert can land and nothing else piles on.
+    owner passed with ``ready`` merge, and green PRs that refer to an open freeze issue
+    (``freeze_issues``): the fix or revert can land, and nothing else piles on.
     """
     ordered = sorted(pulls, key=lambda p: p.number)
     steps = [
@@ -108,12 +114,15 @@ def plan(pulls: list[Pull], frozen: bool = False) -> list[Step]:
         if pull.conflicts and not pull.draft and not HOLD_NAMES & pull.labels
     ]
     for pull in ordered:
-        if (
-            pull.blocked() is None
-            and pull.gate == "success"
-            and (pull.override or not frozen)
-        ):
-            steps.append(Step("merge", pull.number, pull.sha, f"`{CONTEXT}` green"))
+        if pull.blocked() is not None or pull.gate != "success":
+            continue
+        reason = f"`{CONTEXT}` green"
+        repairs = sorted(pull.refs & freeze_issues)
+        if frozen and not pull.override:
+            if not repairs:
+                continue
+            reason += f"; repairs freeze #{repairs[0]}"
+        steps.append(Step("merge", pull.number, pull.sha, reason))
     return steps
 
 
@@ -129,13 +138,14 @@ def gate_description(gh: GitHub, sha: str) -> str:
     return str(newest.get("description") or "")
 
 
-def frozen(gh: GitHub, label: str) -> str:
-    """The title of an open freeze issue ("" when auto-merge is not frozen)."""
+def freezes(gh: GitHub, label: str) -> list[tuple[int, str]]:
+    """The open freeze issues as (number, title); empty when auto-merge is not frozen."""
     quoted = urllib.parse.quote(label, safe="")
-    for issue in gh.pages(f"/issues?state=open&labels={quoted}", limit=2):
-        if "pull_request" not in issue:
-            return str(issue.get("title") or label)
-    return ""
+    return [
+        (int(issue.get("number") or 0), str(issue.get("title") or label))
+        for issue in gh.pages(f"/issues?state=open&labels={quoted}", limit=2)
+        if "pull_request" not in issue
+    ]
 
 
 def gate_state(gh: GitHub, sha: str) -> str:
@@ -206,6 +216,8 @@ def facts(gh: GitHub, required: list[str], checks: GitHub | None = None) -> list
     for item in gh.pages(f"/pulls?state=open&base={BASE}"):
         number, sha = int(item["number"]), str(item["head"]["sha"])
         labels = frozenset(label["name"] for label in item.get("labels", []))
+        text = f"{item.get('title') or ''}\n{item.get('body') or ''}"
+        refs = frozenset(referenced_numbers(text, gh.repo)) - {number}
         if item.get("draft") or HOLD_NAMES & labels:
             pulls.append(Pull(number, sha, labels, bool(item.get("draft")), "skipped"))
             continue
@@ -228,6 +240,7 @@ def facts(gh: GitHub, required: list[str], checks: GitHub | None = None) -> list
                 gate,
                 conflicts=pull.get("mergeable") is False,
                 override=gate_description(checks, sha) == OVERRIDE_SUCCESS,
+                refs=refs,
             )
         )
     return pulls
@@ -364,12 +377,21 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     reader = os.environ.get("CHECKS_TOKEN")
     checks = GitHub(gh.repo, reader) if reader else gh
-    freeze = frozen(checks, str(load_policy().get("freeze_label") or "ci/freeze"))
-    if freeze:
+    open_freezes = freezes(
+        checks, str(load_policy().get("freeze_label") or "ci/freeze")
+    )
+    if open_freezes:
+        titles = "; ".join(title for _n, title in open_freezes)
+        numbers = ", ".join(f"#{n}" for n, _t in open_freezes)
         print(
-            f"merge: auto-merge is frozen ({freeze}); only PRs the owner passed with `ready` merge"
+            f"merge: auto-merge is frozen ({titles}); only PRs the owner passed with `ready` "
+            f"or that refer to {numbers} merge"
         )
-    steps = plan(facts(gh, required, checks), frozen=bool(freeze))
+    steps = plan(
+        facts(gh, required, checks),
+        frozen=bool(open_freezes),
+        freeze_issues=frozenset(n for n, _t in open_freezes),
+    )
     for step in steps:
         print(
             f"{'would ' if args.dry_run else ''}{step.action} #{step.number} "

@@ -452,6 +452,34 @@ def test_a_freeze_lets_only_the_owners_ready_merge() -> None:
     assert [step.number for step in plan([auto, owner], frozen=True)] == [6]
 
 
+def test_a_freeze_also_lets_a_green_pr_that_refers_to_it_merge() -> None:
+    fix = Pull(5, "a" * 40, frozenset(), False, "success", refs=frozenset({40}))
+    other = Pull(6, "b" * 40, frozenset(), False, "success", refs=frozenset({3}))
+    red = Pull(7, "c" * 40, frozenset(), False, "pending", refs=frozenset({40}))
+    steps = plan([fix, other, red], frozen=True, freeze_issues=frozenset({40}))
+    assert [(s.number, s.reason) for s in steps] == [
+        (5, "`merge-gate` green; repairs freeze #40")
+    ]
+    # Not frozen: the reference changes nothing.
+    assert [s.number for s in plan([fix, other, red])] == [5, 6]
+
+
+def test_the_merger_merges_a_pr_that_refers_to_the_freeze_issue(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    gh = FakeGitHub([{**_api_pull(5), "body": "Refs #40"}, _api_pull(6)])
+    gh.freeze = [{"title": "CI freeze: main is red", "number": 40}]
+    monkeypatch.setattr(ci_merge, "GitHub", lambda repo, token: gh)
+    monkeypatch.setattr(ci_merge, "hold_label_exists", lambda _gh: True)
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    monkeypatch.setenv("GITHUB_TOKEN", "t")
+    assert ci_merge.main(["--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert "or that refer to #40 merge" in out
+    assert "would merge #5" in out and "repairs freeze #40" in out
+    assert "would merge #6" not in out
+
+
 def test_the_merger_reads_the_freeze_issue(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
