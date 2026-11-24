@@ -47,7 +47,7 @@
 
 | 名称 | JSON 字段 |
 | --- | --- |
-| Activity | `kind` 为 `message`、`member_joined`、`board_acknowledged` 或 `delivery`；`at` 为 Server 记录的 Unix 秒时间戳（整数）或 null（存量行无时间证据）；`message_id` 为正整数或 null（消息与投递类活动指向对应消息） |
+| Activity | `kind` 为 `message`、`member_joined`、`board_acknowledged` 或 `delivery`；`at` 为 Server 记录的 Unix 秒时间戳（整数）或 null（存量行无时间证据）；`message_id` 为正整数或 null（消息与投递类活动指向对应消息；消息被 #6 到期清理删除后链接清为 null，事件本身保留） |
 | ConsoleRoom | `room_id` UUID 字符串，`name` 字符串，`member_count` 正整数，`last_activity` 为 Activity 或 null |
 | ConsoleMember | `member_id` UUID 字符串，`role_description` 字符串，`board_state` 为 `awaiting` 或 `acknowledged`（相对当前公告版本），`last_activity` 为 Activity 或 null，`harness_state` 为 `unknown` |
 | ConsoleActivity | `activity_id` 正整数，`room_id`，Activity 各字段，`actor_member_id`（投递活动的 actor 为确认收件的成员） |
@@ -64,7 +64,7 @@
 | --- | --- | --- | --- |
 | `GET /v1/console/rooms` | — | `{"rooms":[ConsoleRoom]}`，按 `room_id` 稳定排序。只含团队房间，不含 DM。`last_activity` 为该房间最新一条 `room_activity` 投影（无活动为 null） | stage 2/3（本期起 `last_activity` 为真实投影） |
 | `GET /v1/console/rooms/{room_id}` | — | `{"room":ConsoleRoom,"members":[ConsoleMember],"transcript_allowed":boolean}`，`members` 按 `member_id` 稳定排序；`transcript_allowed` 表示该账号当前是否持有此房间的 `transcript_read`，界面据此决定是否显示 Chats 数据与是否发起 transcript 请求 | **本期（stage 3）** |
-| `GET /v1/console/rooms/{room_id}/timeline` | `after`、`limit` | `{"activities":[ConsoleActivity]}`，按 `activity_id` 递增；界面用 `after` 向后翻页，页行数小于 `limit` 即到尾。只含元数据，不含消息正文；`message_id` 字段照常返回，界面只在 `transcript_allowed` 为真时提供到 Chats 的跳转 | **本期（stage 3）** |
+| `GET /v1/console/rooms/{room_id}/timeline` | `after`、`limit` | `{"activities":[ConsoleActivity]}`，按 `activity_id` 递增；界面用 `after` 向后翻页，页行数小于 `limit` 即到尾。只含元数据，不含消息正文；`message_id` 字段照常返回（到期清理清空链接的事件为 null，无跳转目标），界面只在 `transcript_allowed` 为真时提供到 Chats 的跳转 | **本期（stage 3）** |
 | `GET /v1/console/rooms/{room_id}/transcript` | `before`（可选，正整数排他上界）、`limit` | `TranscriptPage`。省略 `before` 返回**最新一页**（页内仍按 `message_id` 递增）并如实给出 `has_more`；携带 `before`（取当前已展示最旧消息的 `message_id`）返回更早的一页。按 `message_id` 递增读取规范房间记录；每次成功响应在同一事务写入一条审计。要求目标房间的 `transcript_read` | **本期（stage 3）** |
 
 鉴权助手在使用的同一事务内重查 console 会话有效性与所需授权（`console_read` 全路由；transcript 路由另查该房间的 `transcript_read`），授权不缓存、不作为投影使用。授权与持久化语义保持 stage 2 形态。
@@ -103,7 +103,8 @@ Transcript 翻页不使用 `after`：入口请求省略 `before` 取得最新页
 
 ## 活动投影（Timeline 数据来源）
 
-- `room_activity` 表：`activity_id` 全局单调递增（SQLite AUTOINCREMENT，删除后不复用）、`room_id`、`kind` ∈ {`member_joined`,`board_acknowledged`,`message`,`delivery`}、`at`（RFC 3339 文本或 null）、`actor_member_id`、`message_id`（仅消息与投递类活动指向对应消息，其余为 null）。
+- `room_activity` 表：`activity_id` 全局单调递增（SQLite AUTOINCREMENT，删除后不复用）、`room_id`、`kind` ∈ {`member_joined`,`board_acknowledged`,`message`,`delivery`}、`at`（RFC 3339 文本或 null）、`actor_member_id`、`message_id`（消息与投递类活动指向对应消息，加入与确认活动恒为 null）。
+- **到期兼容（#5/#6）**：`message_id` 外键保留并带 `ON DELETE SET NULL`；加入与确认活动仍由 schema CHECK 要求 `message_id` 为 null。#6 到期清理在同一清理事务内删去到期消息及其投递引用时，指向该消息的消息与投递活动把链接清为 null，body-free 事件行及其 `kind`、`at`、actor 照常保留；存活消息的链接与既有可见行为不变。正文的不可读由消息删除本身保证，活动行不因到期而删除。
 - Collaboration 随四类业务写操作在**同一所有者事务**内追加投影行：建房者首加入与成员加入（`member_joined`，actor 为加入成员）、对当前公告版本的首次确认（`board_acknowledged`，actor 为确认成员，按版本去重）、消息受理（`message`，actor 为发送者，`at` 取该消息 `created_at`）、投递首次确认（`delivery`，actor 为确认收件的成员，指向对应消息）。幂等重试（加入冲突、重复确认、同键同文重发、重复确认收件）不追加行，投影与授权仍以规范成员、公告与消息记录为准。
 - DM 永不进入该投影：DM 消息的 `messages.room_id` 为 NULL，发送与 DM 收件确认都不追加 `room_activity` 行；升级回填的消息与投递语句同样以 `room_id IS NOT NULL` 过滤。房间消息收件确认照旧记录 `delivery`。
 - 该投影只服务呈现，不是授权依据；授权一律回查规范成员、公告与消息记录。消息与投递活动不含正文。
@@ -151,7 +152,7 @@ DM 重建沿用 #3 契约：消息表重建为 `room_id`/`dm_id` 恰一非空并
 
 ### 后续（另行契约修订）
 
-11. #6 搜索 worker 的房间成员分页、到期清理对投影与审计的影响。
+11. #6 搜索 worker 的房间成员分页、到期清理对审计的影响（到期清理对 Timeline 链接的清空语义已随本期契约化，见活动投影）。
 12. #6 到期清理（`--room-retention-hours`/`--dm-retention-hours`、`expired_through_message_id`）与本契约的集成。
 
 ## 测试步骤
@@ -172,6 +173,7 @@ Server 契约测试（`server/tests/test_console_server.py`；stage 2 项保持�
 12. （本期）成功响应统一 `Cache-Control: no-store`。
 13. （#3 并入）迁移：已发布的 #5 鉴权预览 v3（`e495544` 形态：`purpose` 列、`operator_grants`、无历史列）以代表性样本升级到 v5——预览的 `console`/`enrollment` purpose、既有会话、`console_read` 与 `transcript_read` 授权与房间数据保留，预置授权无需重授即可登录读房与读 transcript；补入的历史层使既有房间缺省 `since_joining`，DM 重建后即可私聊，ID 播种续旧最大值。#3 DM v4 样本升级到 v5：已确认的 DM 投递不回填房间活动，transcript 只含房间行，DM 历史仍仅参与者可读，ID 续旧最大值。
 14. （#3 并入）DM 隔离：即使操作员同时持有 `console_read` 与该房间 `transcript_read`、且 DM 正常启用并交换、收件确认完毕，rooms/roster/Timeline/transcript 任何响应都不含 DM 文本或 DM `message_id`；DM 发送与确认不新增 `room_activity` 行。
+15. （本期，#5/#6 兼容）到期清理兼容：临时库内写入房间消息与活动（含投递确认）后，以测试内直连 SQL（开启外键、先清收件引用，模拟 #6 清理事务）删除消息；删除成功，Timeline 仍呈现该事件的 `kind`、`at` 与 actor 且 `message_id` 为 null，存活消息的链接不受影响；带 `message_id` 的加入/确认活动插入仍被 schema CHECK 拒绝。
 
 Console UI 静态回归测试（`server/tests/test_console_ui.py`，stage 2 已交付，本期不变）。
 
