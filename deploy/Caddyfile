@@ -1,0 +1,17 @@
+{
+	admin off
+	auto_https disable_redirects
+}
+
+https://{$TEAMUP_HTTPS_HOST}:{$TEAMUP_HTTPS_PORT} {
+	bind {$TEAMUP_HTTPS_BIND}
+	tls {$TEAMUP_TLS_CERT} {$TEAMUP_TLS_KEY}
+
+	handle /v1/* {
+		reverse_proxy 127.0.0.1:{$TEAMUP_UPSTREAM_PORT}
+	}
+
+	handle {
+		respond 404
+	}
+}
