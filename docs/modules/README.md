@@ -15,3 +15,5 @@
 | [Claude Code 桌面唤醒验证](claude-code-wake.md) | 本机 socket 入口与实际 turn 证据 |
 | [Local Client Console](client-console.md) | 本机控制台、数据权限与联合验收 |
 | [Room tasks proposal](room-tasks-proposal.md) | 房间任务、参与人、进度与停滞追踪契约提案 |
+| [Client console reads proposal](client-console-read-proposal.md) | 公告、房间目录、私聊列表与 Presence 读取提案 |
+| [Maintenance console proposal](maintenance-console-proposal.md) | 操作员权限、指标、房间负载与日志提案 |
