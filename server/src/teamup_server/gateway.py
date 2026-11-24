@@ -103,6 +103,7 @@ class _Room(_Body):
     name: _Name
     rules: _LongText | None = None
     protocol: _LongText | None = None
+    history_policy: Literal["retained", "since_joining"] = "since_joining"
 
     @field_validator("rules", "protocol")
     @classmethod
@@ -245,7 +246,7 @@ class Gateway:
         @app.post("/v1/rooms", dependencies=[Depends(_require_utf8)])
         def create_room(token: _Bearer, body: _Room) -> dict:
             return collaboration.create_room(
-                token, body.name, body.rules, body.protocol
+                token, body.name, body.rules, body.protocol, body.history_policy
             )
 
         @app.post("/v1/rooms/{room_id}/join", dependencies=[Depends(_reject_body)])
