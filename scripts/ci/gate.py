@@ -102,7 +102,9 @@ WAITING = "waiting for tier 1 and the AI review on this commit"
 DEFAULT_BRANCH = "main"
 REVIEW_WORKFLOW = "opencode-review.yml"
 REVIEW_AUTHOR = "github-actions[bot]"
-REVIEW_JOB = "review"  # opencode-review.yml's job that posts the review
+REVIEW_JOB = (
+    "3 · AI Review"  # the name of opencode-review.yml's job that posts the review
+)
 # opencode-review.yml's run-name; it ties a dispatched run (whose own head is main) to a PR head.
 REVIEW_RUN_NAME = re.compile(r"#(\d+) at ([0-9a-f]{40})$")
 REVIEW_MARKER = re.compile(r"<!--\s*opencode-review:sha=([0-9a-f]{40})\s*-->")

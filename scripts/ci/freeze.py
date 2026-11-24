@@ -3,7 +3,7 @@
 A freeze is an open issue labelled ``ci/freeze`` whose title starts with ``[ci:<source>]``.
 While one is open the merger merges only PRs the owner passed with ``ready`` (scripts/ci/merge.py),
 so a fix or revert can land and nothing else piles onto a red ``main``. Each source owns its own
-issue: ``main`` (PR checks on a push to main) and ``nightly``. The same source clears it when it
+issue: ``main`` (CI on a push to main) and ``nightly``. The same source clears it when it
 is green again; a person can also close the issue. ``weekly`` uses the same mechanics with the
 ``weekly-failure`` label instead: real-agent runs can be flaky, so a red weekly reports but never
 freezes.

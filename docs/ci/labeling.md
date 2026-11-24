@@ -156,15 +156,15 @@ PR 的标签描述状态，`type/*` 从关联的 issue 继承。
 | `area/contracts` | `docs/modules/`、`docs/protocols/`、`docs/architecture/`、`docs/specs/`：公开契约 | 是 |
 | `area/ci` | `.github/`、`scripts/ci/`、`tests/scenarios/`、`dashboards/` | 是 |
 
-`gate/*` 对应第 2–3 层的必需检查，每种失败一个标签：
+`gate/*` 对应第 2–3 层的检查，每种失败一个标签，名称取自 job 名的短横线形式：
 
 | 标签 | 失败的检查 |
 | --- | --- |
-| `gate/lint-failed` | `2 · lint`（ruff） |
-| `gate/arch-failed` | `2 · architecture`（依赖方向） |
-| `gate/unit-failed` | `2 · unit` |
-| `gate/system-failed` | `3 · system` |
-| `gate/review-failed` | OpenCode 审查运行失败 |
+| `gate/lint-failed` | `2 · Lint`（ruff） |
+| `gate/architecture-failed` | `2 · Architecture`（依赖方向） |
+| `gate/linux-ut-failed` | `3 · Linux UT` |
+| `gate/linux-st-failed` | `3 · Linux ST` |
+| `gate/ai-review-failed` | `3 · AI Review` 运行失败 |
 
 ## 清单
 
@@ -222,7 +222,7 @@ PR 的标签描述状态，`type/*` 从关联的 issue 继承。
 | area/contracts | C5DEF5 | 公开契约、协议与架构文档 |
 | area/ci | C5DEF5 | CI、场景套件与看板 |
 | gate/lint-failed | E99695 | lint 检查失败 |
-| gate/arch-failed | E99695 | 依赖方向检查失败 |
-| gate/unit-failed | E99695 | 单元测试失败 |
-| gate/system-failed | E99695 | 系统测试失败 |
-| gate/review-failed | E99695 | OpenCode 审查失败 |
+| gate/architecture-failed | E99695 | 依赖方向检查失败 |
+| gate/linux-ut-failed | E99695 | Linux 单元测试失败 |
+| gate/linux-st-failed | E99695 | Linux 系统测试失败 |
+| gate/ai-review-failed | E99695 | AI 审查失败 |

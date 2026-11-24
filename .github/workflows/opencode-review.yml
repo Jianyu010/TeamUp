@@ -12,7 +12,7 @@
 #   validated before it is posted as a COMMENT review carrying the head's marker.
 # - No third-party actions, no secrets, no ${{ }} inside `run:`; inputs reach it through env.
 # - The run-name carries the PR head: the gate ties a review to the run that produced it.
-name: OpenCode Review
+name: AI Review
 run-name: "OpenCode review of #${{ inputs.pr }} at ${{ inputs.sha }}"
 
 on:
@@ -40,8 +40,9 @@ concurrency:
 
 jobs:
   review:
+    name: 3 · AI Review
     if: github.ref == 'refs/heads/main'
-    runs-on: [self-hosted, opencode-review]
+    runs-on: [self-hosted, ai-review]
     timeout-minutes: 35
     steps:
       - name: Review with OpenCode
@@ -65,7 +66,7 @@ jobs:
   wake-gate:
     needs: review
     if: always() && github.ref == 'refs/heads/main'
-    runs-on: [self-hosted, teamup-merge]
+    runs-on: [self-hosted, merge-gate]
     timeout-minutes: 3
     continue-on-error: true
     permissions:

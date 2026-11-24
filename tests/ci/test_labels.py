@@ -267,9 +267,9 @@ def test_linked_issues() -> None:
 
 def test_gate_failures_follow_required_checks_and_the_latest_review() -> None:
     checks = [
-        {"name": "2 · lint", "status": "completed", "conclusion": "failure"},
-        {"name": "2 · unit", "status": "completed", "conclusion": "success"},
-        {"name": "3 · system", "status": "in_progress", "conclusion": None},
+        {"name": "2 · Lint", "status": "completed", "conclusion": "failure"},
+        {"name": "3 · Linux UT", "status": "completed", "conclusion": "success"},
+        {"name": "3 · Linux ST", "status": "in_progress", "conclusion": None},
         {"name": "something else", "status": "completed", "conclusion": "failure"},
     ]
     reviews = [
@@ -300,13 +300,13 @@ def test_gate_failures_follow_required_checks_and_the_latest_review() -> None:
 
 def test_plan_pr_adds_and_clears_only_what_it_manages() -> None:
     add, remove = labels.plan_pr(
-        ["gate/unit-failed", "pr/hold", "type/docs"],
+        ["gate/linux-ut-failed", "pr/hold", "type/docs"],
         {"gate/lint-failed"},
         ["type/bug"],
         linked=True,
     )
     assert add == ["gate/lint-failed", "type/bug"]
-    assert remove == ["gate/unit-failed"]  # pr/hold and a hand-set type/* stay
+    assert remove == ["gate/linux-ut-failed"]  # pr/hold and a hand-set type/* stay
     add, remove = labels.plan_pr([], set(), [], linked=False)
     assert (add, remove) == ([labels.NO_ISSUE], [])
     add, remove = labels.plan_pr([labels.NO_ISSUE], set(), [], linked=True)
@@ -315,24 +315,24 @@ def test_plan_pr_adds_and_clears_only_what_it_manages() -> None:
 
 def test_label_pr_mirrors_issue_types_and_gate_failures() -> None:
     gh = FakeGitHub(
-        ["gate/unit-failed"], linked={12: ["type/feature", "priority/high"]}
+        ["gate/linux-ut-failed"], linked={12: ["type/feature", "priority/high"]}
     )
     gh.checks = [
-        {"name": "2 · architecture", "status": "completed", "conclusion": "failure"}
+        {"name": "2 · Architecture", "status": "completed", "conclusion": "failure"}
     ]
     pull = {
         "number": 9,
         "head": {"sha": "a" * 40},
         "body": "Closes #12",
-        "labels": [{"name": "gate/unit-failed"}],
+        "labels": [{"name": "gate/linux-ut-failed"}],
     }
     labels.label_pr(gh, pull)
     assert (
         "POST",
         "/issues/9/labels",
-        {"labels": ["gate/arch-failed", "type/feature"]},
+        {"labels": ["gate/architecture-failed", "type/feature"]},
     ) in gh.writes
-    assert ("DELETE", "/issues/9/labels/gate%2Funit-failed", None) in gh.writes
+    assert ("DELETE", "/issues/9/labels/gate%2Flinux-ut-failed", None) in gh.writes
 
 
 # ---- release notes ------------------------------------------------------------------------

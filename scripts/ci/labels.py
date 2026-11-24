@@ -34,12 +34,12 @@ AGENT_OK = "agent/ok"
 NO_ISSUE = "pr/no-issue"
 # Required check (job name) → the gate label it sets while failing.
 GATE_LABELS = {
-    "2 · lint": "gate/lint-failed",
-    "2 · architecture": "gate/arch-failed",
-    "2 · unit": "gate/unit-failed",
-    "3 · system": "gate/system-failed",
+    "2 · Lint": "gate/lint-failed",
+    "2 · Architecture": "gate/architecture-failed",
+    "3 · Linux UT": "gate/linux-ut-failed",
+    "3 · Linux ST": "gate/linux-st-failed",
 }
-REVIEW_LABEL = "gate/review-failed"
+REVIEW_LABEL = "gate/ai-review-failed"
 FAILED = frozenset({"failure", "timed_out", "startup_failure"})
 LINKS = re.compile(
     r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+#(\d+)\b", re.IGNORECASE

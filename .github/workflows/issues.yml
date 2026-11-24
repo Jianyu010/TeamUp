@@ -7,7 +7,7 @@
 #                 Repository variable AUTOLABEL_MODE: apply (default) | suggest | off.
 #   3. lint     – a missing type/source/priority adds status/triage and one comment; a pass clears it.
 # Any later label change runs only the lint. Every step runs main's scripts on the trusted
-# teamup-merge runner; the issue text reaches only the model, as data, and only the issue number
+# utility runner; the issue text reaches only the model, as data, and only the issue number
 # passes through the shell. Labels written with the workflow token start no workflow.
 # Re-run by hand: gh workflow run issues.yml -f issue=<n>
 name: Issues
@@ -32,8 +32,9 @@ env:
 
 jobs:
   issue:
+    name: Issue Labels
     if: ${{ github.event_name != 'push' }}
-    runs-on: [self-hosted, teamup-merge]
+    runs-on: [self-hosted, utility]
     timeout-minutes: 10
     concurrency:
       group: issue-${{ github.event.issue.number || inputs.issue }}
@@ -83,9 +84,10 @@ jobs:
         run: python3 -E -s -m scripts.ci.labels lint --issue "$ISSUE"
 
   sync:
+    name: Label Sync
     # The manifest changed on main: create or update the labels it lists (never deletes one).
     if: ${{ github.event_name == 'push' }}
-    runs-on: [self-hosted, teamup-merge]
+    runs-on: [self-hosted, utility]
     timeout-minutes: 5
     permissions:
       contents: read
