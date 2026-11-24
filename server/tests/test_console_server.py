@@ -562,7 +562,8 @@ def test_console_static_package_ships_in_built_wheel(tmp_path):
     pytest.importorskip("hatchling", reason="Building the wheel requires hatchling")
     from hatchling.builders.wheel import WheelBuilder
 
-    wheel = Path(WheelBuilder(str(Path(__file__).parents[1])).build(str(tmp_path)))
+    builder = WheelBuilder(str(Path(__file__).parents[1]))
+    (wheel,) = builder.build(directory=str(tmp_path), versions=["standard"])
     with zipfile.ZipFile(wheel) as archive:
         names = set(archive.namelist())
     for name in ("index.html", "console.css", "console.js"):
