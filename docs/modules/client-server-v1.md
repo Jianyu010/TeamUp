@@ -10,7 +10,7 @@ JSON API 前缀为 `/v1`。请求与响应是 UTF-8 JSON。内网使用 HTTPS。
 
 管理员为每位开发者分配登记密钥，Server 将其映射到稳定的 `owner_id`。登记后，其他请求一律使用 `Authorization: Bearer <member_token>`。登记密钥和成员 token 都是各自独立的 32 随机字节经无填充 base64url 编码的 43 字符串。Client 为每个本机绑定生成并保留独立成员 token。Server 只保存成员 token 的摘要。Server 根据凭证决定当前成员，客户端字段不能替换发起方身份。
 
-Server 启动读取 `TEAMUP_ENROLLMENT_KEYS` JSON 对象，键为 owner ID，值为登记密钥。支持命令 `teamup-server --db PATH [--host 127.0.0.1] [--port 8765] [--tls-cert PATH --tls-key PATH]`。声明非回环监听地址时需要 TLS。反向代理在同主机终止 TLS 时可连回环。
+Server 启动读取 `TEAMUP_ENROLLMENT_KEYS` JSON 对象，键为 owner ID，值为登记密钥。支持命令 `teamup-server --db PATH [--host 127.0.0.1] [--port 8765] [--tls-cert PATH --tls-key PATH] [--room-retention-hours HOURS]`。声明非回环监听地址时需要 TLS。反向代理在同主机终止 TLS 时可连回环。`--room-retention-hours` 必须是 1–876000（含）之间的整数小时，省略时不做任何自动清理；清理运行节奏见 [会话历史、搜索与保留](conversation-history.md)。
 
 ## 数据形状
 
@@ -39,8 +39,8 @@ Server 启动读取 `TEAMUP_ENROLLMENT_KEYS` JSON 对象，键为 owner ID，值
 | `GET /v1/rooms/{room_id}/board` | 无正文 | Board。加入后即可读取，Server 记录该成员取到的版本 |
 | `POST /v1/rooms/{room_id}/board/ack` | `{"version":1}` | `{"version":1}`。确认限房间成员，要求当前版本，且该成员已先读取该版本 |
 | `POST /v1/rooms/{room_id}/messages` | `client_message_id`、`text`、可选 `mention_member_id` | Message。定向 @ 由独立目标字段表达，目标必须是房间内其他成员 |
-| `GET /v1/rooms/{room_id}/messages` | `after`、`limit`、可选 `before`（正整数高位排他边界） | `{"messages":[Message]}`。按房间历史策略读取：`retained` 在确认公告后可读加入前的保留消息，`since_joining` 只读本次加入后的消息。给出 `before` 时返回该边界之下最近一页，仍按 ID 递增；`after` 与 `before` 同时给出时两条边界都生效 |
-| `GET /v1/rooms/{room_id}/search` | `q`（1–200 个非全空白字符）、`after`、`limit` | `{"matches":[Match]}`。对已按历史规则获准的消息做大小写不敏感的字面子串匹配，先授权后过滤，按 ID 递增，空页合法 |
+| `GET /v1/rooms/{room_id}/messages` | `after`、`limit`、可选 `before`（正整数高位排他边界） | `{"messages":[Message]}`。按房间历史策略读取：`retained` 在确认公告后可读加入前的保留消息，`since_joining` 只读本次加入后的消息。给出 `before` 时返回该边界之下最近一页，仍按 ID 递增；`after` 与 `before` 同时给出时两条边界都生效。已发生清理的房间另含 `expired_through_message_id` 与 `history_truncated`，语义见 [会话历史、搜索与保留](conversation-history.md) |
+| `GET /v1/rooms/{room_id}/search` | `q`（1–200 个非全空白字符）、`after`、`limit` | `{"matches":[Match]}`。对已按历史规则获准的消息做大小写不敏感的字面子串匹配，先授权后过滤，按 ID 递增，空页合法。已发生清理的房间另含 `expired_through_message_id` 与 `history_truncated` |
 | `GET /v1/inbox` | `after`、`limit` | `{"events":[Event]}`。仅返回本人未确认且当前可读事件 |
 | `POST /v1/inbox/{event_id}/ack` | 无正文 | `{"event_id":42}`。重复确认同一条已授权事件成功 |
 | `GET /v1/events` | Bearer 成员 token，`Accept: text/event-stream` | SSE。就绪和保活可用注释。变更通知为 `event: inbox_changed`，`data: {}` |
