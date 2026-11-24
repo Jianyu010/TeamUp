@@ -1,7 +1,7 @@
 """The merger: merge every PR with a green ``merge-gate``, oldest first (ported from PPMA's
 scripts/ci_merge.py).
 
-Runs as the ``merge`` job of ``.github/workflows/gate-queue.yml`` (main's code, a ``teamup-merge``
+Runs as the ``merge`` job of ``.github/workflows/gate-queue.yml`` (main's code, a ``merge``
 runner) after every gate event, on the 15-minute sweep and on a dispatch, from the fetched
 scripts' root: ``python3 -m scripts.ci_merge [--dry-run]``. Standard library only; the rules that
 decide what counts as a green tier 1 come from ``scripts/ci_gate.py``.

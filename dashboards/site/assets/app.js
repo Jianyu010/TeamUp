@@ -973,10 +973,10 @@ async function initCi() {
       data: {
         labels,
         datasets: [
-          lineDataset("PR checks", days.map((r) => seriesRate(r, "pr_checks")), PALETTE[0]),
-          dashed(lineDataset("PR checks 首次", days.map((r) => seriesRate(r, "pr_checks", "first")), PALETTE[0])),
+          lineDataset("CI · PR", days.map((r) => seriesRate(r, "pr_checks")), PALETTE[0]),
+          dashed(lineDataset("CI · PR 首次", days.map((r) => seriesRate(r, "pr_checks", "first")), PALETTE[0])),
           lineDataset("main", days.map((r) => seriesRate(r, "main_checks")), PALETTE[1]),
-          lineDataset("AI review", days.map((r) => seriesRate(r, "review")), PALETTE[3]),
+          lineDataset("AI Review", days.map((r) => seriesRate(r, "review")), PALETTE[3]),
         ],
       },
       options: chartOptions({ yTitle: "%", maxY: 100 }),

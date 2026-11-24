@@ -1,7 +1,10 @@
-# Layers 2 and 3 of TeamUp CI (docs/ci/README.md): the checks that run the PR's code.
+# Layers 2 and 3 of TeamUp CI (docs/ci/README.md). Names follow DigitalMate's scheme: job
+# `<layer> · <Name>`, runner label = the name in kebab case, runners `<label>-NN`.
 #
-# Every job runs on a `teamup-gate` runner on hp-laptop (GitHub-hosted runners are billing-blocked)
-# inside its bwrap sandbox. They run PR code, so they hold only the read-only workflow token and no
+# Layer 2 (static: lint, import boundaries) runs on every push, drafts included. Layer 3 (code runs:
+# Linux UT, Linux ST; the gate then dispatches the AI review) waits until the PR is ready for review.
+#
+# Every job runs on hp-laptop (GitHub-hosted runners are billing-blocked) inside its bwrap sandbox. They run PR code, so they hold only the read-only workflow token and no
 # secret, and nothing here writes to the repository. An outside contributor's PR needs a maintainer
 # to approve its workflow runs first (repository setting), and the gate never dispatches the AI
 # review for one.
@@ -10,7 +13,7 @@
 # The tree comes from the API tarball (hp-laptop often reaches api.github.com while github.com
 # times out), at github.sha: for a PR, the merge commit with main, as actions/checkout would take.
 # PyPI is reachable only through the Tsinghua mirror, so the job rewrites its own copy of uv.lock.
-name: PR checks
+name: CI
 
 on:
   pull_request:
@@ -19,7 +22,7 @@ on:
     branches: [main]
 
 concurrency:
-  group: pr-checks-${{ github.ref }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -31,9 +34,8 @@ env:
 
 jobs:
   lint:
-    name: 2 · lint
-    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
-    runs-on: [self-hosted, teamup-gate]
+    name: 2 · Lint
+    runs-on: [self-hosted, lint]
     timeout-minutes: 10
     steps:
       - name: Fetch the tree (API tarball, no git)
@@ -58,9 +60,8 @@ jobs:
         run: uv run --no-sync ruff check .
 
   architecture:
-    name: 2 · architecture
-    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
-    runs-on: [self-hosted, teamup-gate]
+    name: 2 · Architecture
+    runs-on: [self-hosted, architecture]
     timeout-minutes: 10
     steps:
       - name: Fetch the tree (API tarball, no git)
@@ -84,10 +85,10 @@ jobs:
       - name: Import boundaries
         run: uv run --no-sync pytest -q tests/test_boundaries.py
 
-  unit:
-    name: 2 · unit
+  linux-ut:
+    name: 3 · Linux UT
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
-    runs-on: [self-hosted, teamup-gate]
+    runs-on: [self-hosted, linux-ut]
     timeout-minutes: 15
     steps:
       - name: Fetch the tree (API tarball, no git)
@@ -111,11 +112,11 @@ jobs:
       - name: Component and CI unit tests
         run: uv run --no-sync pytest -q server/tests client/tests tests/ci
 
-  system:
-    name: 3 · system
-    needs: [lint, architecture, unit]
+  linux-st:
+    name: 3 · Linux ST
+    needs: [lint, architecture]
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
-    runs-on: [self-hosted, teamup-gate]
+    runs-on: [self-hosted, linux-st]
     timeout-minutes: 20
     steps:
       - name: Fetch the tree (API tarball, no git)
