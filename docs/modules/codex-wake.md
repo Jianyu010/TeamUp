@@ -12,7 +12,7 @@
 
 隔离 App Server 通过自己的私有 Unix socket 完成了空闲、忙碌和确认为 `notLoaded` 的三个场景。对于未加载的隔离会话，普通排队时保持 `notLoaded`。使用 `--resume` 后，同一测试线程执行排队标记。该结果对应自管 App Server 的后端。
 
-对已加载的桌面 chat，TeamUp 后续可评估经所有者授权调用 CLI 排队。本次实测直接调用 harness 入口。TeamUp v1 的 @ 路径只发通知。 [Codex CLI 参考](https://learn.chatgpt.com/docs/cli/reference#codex-queue) · [Codex App Server](https://learn.chatgpt.com/docs/app-server) · [跨进程队列实现](https://github.com/openai/codex/pull/39034)
+对已加载的桌面 chat，TeamUp 的 Codex Driver 现在在主人设置唤醒许可后用同一 CLI 命令排队，契约见 [MCP–Client v1](mcp-client-v1.md#唤醒)，实现记录见 [Harness 投递设计](harness-delivery.md#2026-11-24-codex-driver)。本节实测直接调用 harness 入口。 [Codex CLI 参考](https://learn.chatgpt.com/docs/cli/reference#codex-queue) · [Codex App Server](https://learn.chatgpt.com/docs/app-server) · [跨进程队列实现](https://github.com/openai/codex/pull/39034)
 
 ## 复验步骤
 

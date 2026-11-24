@@ -4,10 +4,20 @@ import asyncio
 import json
 import os
 import stat
+import sys
 from contextlib import suppress
+from functools import partial
 from pathlib import Path
 
+from ._protocol import is_uuid
+
 SUBMIT_TIMEOUT = 5
+CODEX_TIMEOUT = 15
+# The ChatGPT desktop build; other installs may lack `queue --resume`.
+BUNDLED_CODEX = Path(
+    "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app"
+    "/Contents/MacOS/codex"
+)
 
 
 def owned_socket(address):
@@ -51,7 +61,56 @@ async def submit_claude_code(address, token, text):
     return True
 
 
-DRIVERS = {"claude-code": submit_claude_code}
+def default_codex_command(platform=sys.platform):
+    if platform == "darwin" and os.access(BUNDLED_CODEX, os.X_OK):
+        return (str(BUNDLED_CODEX),)
+    return ()
+
+
+async def submit_codex(command, address, token, text):
+    """Queue one user message on a Codex thread through the Codex CLI.
+
+    Returns True when the CLI queued it, False when it did not, and None when
+    it timed out and the result is unknown.
+    """
+    if not command or not is_uuid(address):
+        return False
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            "queue",
+            "--disable",
+            "daemon_auto_start",
+            "--resume",
+            "--thread",
+            address,
+            "--message",
+            text,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+    except (OSError, ValueError):
+        return False
+    try:
+        async with asyncio.timeout(CODEX_TIMEOUT):
+            return await process.wait() == 0
+    except TimeoutError:
+        return None
+    finally:
+        # Also on cancellation: never leave a CLI that may still queue the text.
+        if process.returncode is None:
+            with suppress(ProcessLookupError):
+                process.kill()
+            await process.wait()
+
+
+def drivers(codex_command):
+    """Driver per endpoint kind: submit(address, token, text) -> True/False/None."""
+    return {
+        "claude-code": submit_claude_code,
+        "codex": partial(submit_codex, tuple(codex_command)),
+    }
 
 
 def wake_prompt(notice, sender_role, room_name, message, board):

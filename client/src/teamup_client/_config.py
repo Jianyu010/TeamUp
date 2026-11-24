@@ -46,6 +46,7 @@ class ClientConfig:
     tls: ssl.SSLContext
     notify_command: tuple[str, ...] | None = None
     installs: tuple[Install, ...] = ()
+    codex_command: tuple[str, ...] | None = None
 
 
 def _server_origin(value):
@@ -99,6 +100,7 @@ def _read(path):
         "account_token",
         "enrollment_key",
         "notify_command",
+        "codex_command",
         "installs",
     }
     if not isinstance(data, dict) or not required <= data.keys() <= required | optional:
@@ -185,14 +187,9 @@ def _parse(path, data):
         tls = ssl.create_default_context(cafile=ca_file)
     except (OSError, ValueError):
         raise ConfigError("Could not load the TLS trust configuration") from None
-    notify_command = None
-    if "notify_command" in data:
-        command = data["notify_command"]
-        if not isinstance(command, list) or not all(
-            is_string(part, 4096) and "\0" not in part for part in command
-        ):
-            raise ConfigError("notify_command must be a list of strings")
-        notify_command = tuple(command)
+    notify_command, codex_command = (
+        _argv(data, name) for name in ("notify_command", "codex_command")
+    )
     return ClientConfig(
         server_url,
         socket_path,
@@ -202,7 +199,19 @@ def _parse(path, data):
         tls,
         notify_command,
         tuple(installs),
+        codex_command,
     )
+
+
+def _argv(data, name):
+    if name not in data:
+        return None
+    command = data[name]
+    if not isinstance(command, list) or not all(
+        is_string(part, 4096) and "\0" not in part for part in command
+    ):
+        raise ConfigError(f"{name} must be a list of strings")
+    return tuple(command)
 
 
 def owner_key(config):
