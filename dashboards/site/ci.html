@@ -26,7 +26,7 @@
 
       <section class="tiles" aria-label="通过率概况">
         <article class="tile">
-          <span class="tile-label">PR checks · 7 天</span>
+          <span class="tile-label">CI · PR · 7 天</span>
           <strong id="ci-pr-rate">—</strong>
           <small id="ci-pr-count">—</small>
         </article>
@@ -59,12 +59,12 @@
 
       <section class="card">
         <h2>每日通过率</h2>
-        <p class="note">PR checks（pull_request）、main（push）与 AI review。虚线为首次尝试即通过的比例。</p>
+        <p class="note">CI 在 PR（pull_request）与 main（push）上的结果，以及 AI Review。虚线为首次尝试即通过的比例。</p>
         <div class="chart-frame"><canvas id="ci-rate-chart"></canvas></div>
       </section>
 
       <section class="card">
-        <h2>PR checks 每日运行</h2>
+        <h2>PR 上的 CI 每日运行</h2>
         <div class="chart-frame"><canvas id="ci-runs-chart"></canvas></div>
       </section>
 
