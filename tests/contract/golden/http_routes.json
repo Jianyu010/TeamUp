@@ -1,0 +1,16 @@
+[
+  "GET /v1/events",
+  "GET /v1/inbox",
+  "GET /v1/members",
+  "GET /v1/members/me",
+  "GET /v1/rooms",
+  "GET /v1/rooms/{room_id}/board",
+  "GET /v1/rooms/{room_id}/messages",
+  "POST /v1/auth/login",
+  "POST /v1/inbox/{event_id}/ack",
+  "POST /v1/members",
+  "POST /v1/rooms",
+  "POST /v1/rooms/{room_id}/board/ack",
+  "POST /v1/rooms/{room_id}/join",
+  "POST /v1/rooms/{room_id}/messages"
+]

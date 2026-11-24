@@ -154,6 +154,8 @@ class GitHub:
         self.deadline: float | None = (
             None  # ``time.monotonic()`` after which no call is made
         )
+        # Reads shared within one judgement (``judging``); None outside one.
+        self.memo: dict[tuple[Any, ...], Any] | None = None
 
     def call(self, method: str, path: str, body: Any = None) -> Any:
         """One REST call; returns parsed JSON (None for an empty body)."""
@@ -450,13 +452,32 @@ class GitHub:
         """Comment on the PR."""
         self.call("POST", f"/issues/{number}/comments", {"body": text})
 
+    def status_of(self, sha: str, context: str) -> tuple[str, str]:
+        """The latest (state, description) of commit status ``context`` on ``sha`` ("", "" if none)."""
+        data = _memo(
+            self,
+            ("status", sha),
+            lambda: self.call("GET", f"/commits/{sha}/status?per_page=100") or {},
+        )
+        for status in data.get("statuses") or []:
+            if status.get("context") == context:
+                return str(status.get("state") or ""), str(
+                    status.get("description") or ""
+                )
+        return "", ""
+
     def status(
-        self, sha: str, state: str, description: str, url: str | None = None
+        self,
+        sha: str,
+        state: str,
+        description: str,
+        url: str | None = None,
+        context: str = CONTEXT,
     ) -> None:
-        """Set the ``merge-gate`` commit status on ``sha``."""
+        """Set commit status ``context`` (default ``merge-gate``) on ``sha``."""
         body: dict[str, str] = {
             "state": state,
-            "context": CONTEXT,
+            "context": context,
             "description": description[:140],
         }
         if url:
@@ -636,6 +657,149 @@ def routing_problems(
             f"{ROUTING}adds a skip or xfail in {listed}; the owner adds `{LABEL}`"
         )
     return problems
+
+
+# Layer-1 statuses: informational, never required. They say why a PR is held; ``merge-gate`` alone
+# decides. Posted by the gate wherever it judges a head, and only when their text changes.
+ROUTE_STATUS = "1 · PR Routing"
+PROTECTED_STATUS = "1 · Protected Changes"
+LIMITS_STATUS = "1 · Automation Limits"
+NO_LIMIT = 10**9
+
+
+def _short(problem: str) -> str:
+    """A routing problem without its prefix and its instruction to the owner."""
+    return problem.removeprefix(ROUTING).split(";")[0]
+
+
+def _memo(gh: Any, key: tuple[Any, ...], read: Callable[[], Any]) -> Any:
+    """``read()``, shared with the rest of the current judgement (``judging``)."""
+    memo = getattr(gh, "memo", None)
+    if memo is None:
+        return read()
+    if key not in memo:
+        memo[key] = read()
+    return memo[key]
+
+
+class judging:
+    """Within the block, ``gh``'s file, review and status reads are made once.
+
+    One judgement (``auto_problems`` and then ``layer1``) reads the same snapshot; a new
+    judgement, such as a re-judge after GitHub recomputed ``mergeable``, reads afresh.
+    """
+
+    def __init__(self, gh: Any) -> None:
+        self.gh = gh
+
+    def __enter__(self) -> None:
+        self.gh.memo = {}
+
+    def __exit__(self, *_: object) -> None:
+        self.gh.memo = None
+
+
+def _file_entries(gh: Any, number: int) -> list[dict[str, Any]]:
+    return _memo(gh, ("files", number), lambda: gh.file_entries(number))
+
+
+def _reviews(gh: Any, number: int) -> list[dict[str, Any]]:
+    return _memo(gh, ("reviews", number), lambda: gh.reviews(number))
+
+
+def _review_runs(gh: Any, sha: str) -> list[dict[str, Any]]:
+    return _memo(gh, ("review_runs", sha), lambda: gh.review_runs(sha))
+
+
+def layer1_verdicts(
+    gh: GitHub, pull: dict[str, Any], ready: bool
+) -> dict[str, tuple[str, str]]:
+    """The three layer-1 statuses (context -> (state, description)) for the PR's head.
+
+    ``ready`` is True when a valid maintainer ``ready`` covers the head. Reads the changed files
+    as data; nothing of the PR runs.
+    """
+    number, sha = int(pull["number"]), pull["head"]["sha"]
+    policy = load_policy()
+    entries = _file_entries(gh, number)
+    limit = int(policy.get("max_changed_files") or 300)
+    problems = routing_problems(entries, {**policy, "max_changed_files": NO_LIMIT})
+    paths = sorted({str(e.get("filename") or "") for e in entries})
+    exempt = review_exempt(paths, policy)
+    labels = {label["name"] for label in pull.get("labels", [])}
+
+    limits: list[str] = []
+    if len(entries) >= limit:
+        limits.append(f"the PR changes {len(entries)} files or more (limit {limit})")
+    if not exempt and str(pull.get("author_association") or "") not in TRUSTED_AUTHORS:
+        limits.append("the author is not trusted, so no review is dispatched")
+    if (
+        not exempt
+        and not pull.get("draft")
+        and not _own_reviews(sha, _reviews(gh, number))
+    ):
+        runs = _review_runs(gh, sha)
+        latest = max(
+            runs,
+            key=lambda r: str(r.get("run_started_at") or r.get("created_at") or ""),
+            default=None,
+        )
+        if (
+            latest
+            and latest.get("status") == "completed"
+            and latest.get("conclusion") in ("success", "failure", "timed_out")
+            and int(latest.get("run_attempt") or 1) >= REVIEW_RERUNS
+        ):
+            limits.append(f"the review re-ran {REVIEW_RERUNS} times without a verdict")
+
+    if ready and (problems or limits):
+        route = f"owner route: `{LABEL}` accepted"
+    elif ready:
+        route = "automatic route (`ready` set)"
+    elif pull.get("draft"):
+        route = "draft: layer 2 only"
+    elif HOLD_NAMES & labels:
+        route = f"held: the PR is on `{HOLD}`"
+    elif problems or limits:
+        reason = _short((problems + limits)[0])
+        route = f"waits for the owner's `{LABEL}`: {reason}"
+    else:
+        route = "automatic route"
+
+    if not problems:
+        guarded = ("success", "no protected path, deleted test or new skip/xfail")
+    elif ready:
+        guarded = ("success", f"passed by `{LABEL}`: {_short(problems[0])}")
+    else:
+        guarded = ("failure", _short(problems[0]))
+    if limits:
+        capped = ("failure", limits[0])
+    else:
+        capped = ("success", "within the automation limits")
+    return {
+        ROUTE_STATUS: ("success", route),
+        PROTECTED_STATUS: guarded,
+        LIMITS_STATUS: capped,
+    }
+
+
+def layer1(gh: GitHub, pull: dict[str, Any], run_url: str, ready: bool = False) -> None:
+    """Post the layer-1 statuses on the PR's head that differ from what it already shows.
+
+    Informational: a failure here never stops the gate (only the deadline does).
+    """
+    if pull.get("state", "open") != "open":
+        return
+    sha = pull["head"]["sha"]
+    try:
+        for context, (state, description) in layer1_verdicts(gh, pull, ready).items():
+            description = description[:140]
+            if gh.status_of(sha, context) != (state, description):
+                gh.status(sha, state, description, run_url, context=context)
+    except BudgetSpent:
+        raise
+    except Exception as exc:  # noqa: BLE001 - these statuses only report
+        print(f"layer 1: statuses of {sha[:7]} not posted: {exc}")
 
 
 def _epoch(stamp: str) -> float | None:
@@ -902,13 +1066,13 @@ def auto_problems(gh: GitHub, pull: dict[str, Any], required: list[str]) -> list
         return ["tier 1 ran before the PR's base changed; push to run it again"]
     problems = tier1_problems(runs, required)
     policy = load_policy()
-    entries = gh.file_entries(number)
+    entries = _file_entries(gh, number)
     problems += routing_problems(entries, policy)
     paths = sorted({str(e.get("filename") or "") for e in entries})
     if review_exempt(paths, policy):
         return problems
-    reviews = gh.reviews(number)
-    review_runs = gh.review_runs(sha) if _own_reviews(sha, reviews) else []
+    reviews = _reviews(gh, number)
+    review_runs = _review_runs(gh, sha) if _own_reviews(sha, reviews) else []
     review_issues = review_problems(sha, reviews, review_runs, gh.review_jobs, since)
     if not review_issues:
         review_issues = review_finding_problems(gh, pull, reviews)
@@ -950,9 +1114,11 @@ def _judge(
         and pull.get("mergeable") is None
         and pull.get("state", "open") == "open"
     )
-    problems = auto_problems(
-        gh, {**pull, "mergeable": True} if unknown else pull, required
-    )
+    with judging(gh):
+        problems = auto_problems(
+            gh, {**pull, "mergeable": True} if unknown else pull, required
+        )
+        layer1(gh, pull, run_url)
     routing = [p for p in problems if p.startswith(ROUTING)]
     rest = [p for p in problems if not p.startswith(ROUTING)]
     if rest in ([NO_REVIEW], [UNATTRIBUTED]):
@@ -1173,6 +1339,7 @@ def override(
             gh.status(sha, "pending", description, run_url)
     elif gh.gate_description(sha) != OVERRIDE_SUCCESS:
         gh.status(sha, "success", OVERRIDE_SUCCESS, run_url)
+    layer1(gh, pull, run_url, ready=not problems)
     return problems
 
 
@@ -1202,10 +1369,12 @@ def guard(gh: GitHub, event: dict[str, Any], required: list[str], run_url: str) 
     labels = {label["name"] for label in pr.get("labels", [])}
     if action == "opened":
         gh.status(sha, "pending", WAITING)
+        layer1(gh, pr, run_url)
         return False
     if action in ("synchronize", "reopened", "edited") and LABEL in labels:
         # The override vouched for one title, body, base and head; any change voids it.
         gh.status(sha, "pending", WAITING)
+        layer1(gh, pr, run_url)
         gh.remove_label(number)
         what = (
             "The title, body or base changed"
@@ -1239,6 +1408,7 @@ def guard(gh: GitHub, event: dict[str, Any], required: list[str], run_url: str) 
         return False
     if action in ("synchronize", "reopened"):
         gh.status(sha, "pending", WAITING)
+        layer1(gh, pr, run_url)
         return False
     if action in ("converted_to_draft", "ready_for_review"):
         auto(gh, number, required, run_url)

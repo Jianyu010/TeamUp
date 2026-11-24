@@ -1,0 +1,25 @@
+{
+  "content_type": "text/event-stream; charset=utf-8",
+  "frames": [
+    [
+      ": ready"
+    ],
+    [
+      "event: inbox_changed",
+      "data: {}"
+    ],
+    [
+      "event: inbox_changed",
+      "data: {}"
+    ]
+  ],
+  "status": 200,
+  "unauthorized": [
+    401,
+    "unauthorized"
+  ],
+  "without_accept": [
+    422,
+    "invalid_request"
+  ]
+}
