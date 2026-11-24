@@ -91,7 +91,7 @@ def _remove_stale_socket(path):
 
 
 @contextmanager
-def lock_endpoint(path):
+def lock_endpoint(path, *, remove_stale_socket):
     private_directory(path.parent, create=True)
     fd = private_file(path.with_name(f"{path.name}.lock"), create=True)
     try:
@@ -99,7 +99,8 @@ def lock_endpoint(path):
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise LocalError("Client socket is already in use") from None
-        _remove_stale_socket(path)
+        if remove_stale_socket:
+            _remove_stale_socket(path)
         yield
     finally:
         os.close(fd)

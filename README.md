@@ -8,6 +8,8 @@
 
 **Available in `v0`** Rooms, required boards, room history, and @ notices with offline recovery.
 
+[Team account pilot](docs/modules/team-pilot.md)
+
 <details>
 <summary>Client–Server sequence</summary>
 

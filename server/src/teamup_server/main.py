@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import socket
+import sys
 from collections.abc import Mapping
 from ipaddress import ip_address
 from pathlib import Path
@@ -11,12 +12,15 @@ from pathlib import Path
 import uvicorn
 from fastapi import FastAPI
 
+from . import account_cli
 from .collaboration import Collaboration
 from .gateway import Gateway
 
 
-def create_app(db_path: str | Path, enrollment_keys: Mapping[str, str]) -> FastAPI:
-    return _compose(db_path, enrollment_keys).app
+def create_app(
+    db_path: str | Path, enrollment_keys: Mapping[str, str] | None = None
+) -> FastAPI:
+    return _compose(db_path, enrollment_keys or {}).app
 
 
 def _compose(db_path: str | Path, enrollment_keys: Mapping[str, str]) -> Gateway:
@@ -42,7 +46,7 @@ def _loopback(host: str) -> bool:
 
 def _enrollment_keys() -> dict[str, str]:
     try:
-        keys = json.loads(os.environ.get("TEAMUP_ENROLLMENT_KEYS", ""))
+        keys = json.loads(os.environ.get("TEAMUP_ENROLLMENT_KEYS", "{}"))
     except ValueError:
         raise ValueError("TEAMUP_ENROLLMENT_KEYS must be a JSON object") from None
     if isinstance(keys, dict):
@@ -51,7 +55,19 @@ def _enrollment_keys() -> dict[str, str]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run the TeamUp server")
+    if sys.argv[1:2] == ["accounts"]:
+        parser = account_cli.parser()
+        args = parser.parse_args(sys.argv[2:])
+        try:
+            account_cli.run(args, Collaboration(args.db, {}))
+        except ValueError as exc:
+            parser.error(str(exc))
+        return
+
+    parser = argparse.ArgumentParser(
+        description="Run the TeamUp server",
+        epilog="Use 'teamup-server accounts --help' to administer accounts.",
+    )
     parser.add_argument("--db", required=True, type=Path)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", default=8765, type=int)

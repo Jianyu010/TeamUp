@@ -1,4 +1,5 @@
 import asyncio
+import getpass
 import json
 import os
 import re
@@ -13,6 +14,8 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 
 ENROLLMENT = "A" * 43
+ACCOUNT_TOKEN = "F" * 42 + "A"
+ACCOUNT_PASSWORD = "  correctly spelled password  "
 BINDINGS = [
     {
         "binding_key": "B" * 42 + "A",
@@ -42,6 +45,7 @@ class TeamupGateway:
         self.events = {}
         self.ack_failures = Counter()
         self.streams = {}
+        self.account_valid = True
 
     async def respond(self, reader, writer):
         try:
@@ -55,13 +59,38 @@ class TeamupGateway:
                 headers[name.lower()] = value.strip()
             length = int(headers.get("content-length", 0))
             body = json.loads(await reader.readexactly(length)) if length else None
-            token = headers["authorization"].removeprefix("Bearer ")
+            authorization = headers.get("authorization")
+            token = authorization.removeprefix("Bearer ") if authorization else None
             url = urlsplit(target)
             path = url.path
             query = parse_qs(url.query, keep_blank_values=True)
             self.calls.append((method, path, query, token, body))
 
-            if path == "/v1/members" and method == "POST" and token == ENROLLMENT:
+            if path == "/v1/auth/login" and method == "POST":
+                if body == {"username": "alice", "password": ACCOUNT_PASSWORD}:
+                    await self.json_response(
+                        writer,
+                        {"access_token": ACCOUNT_TOKEN, "expires_at": 1780000000},
+                    )
+                else:
+                    await self.json_response(
+                        writer,
+                        {
+                            "error": {
+                                "code": "unauthorized",
+                                "message": body["password"],
+                            }
+                        },
+                        401,
+                    )
+            elif (
+                path == "/v1/members"
+                and method == "POST"
+                and (
+                    token == ENROLLMENT
+                    or (token == ACCOUNT_TOKEN and self.account_valid)
+                )
+            ):
                 binding_index = [item["session_key"] for item in BINDINGS].index(
                     body["session_key"]
                 )
@@ -241,6 +270,185 @@ def test_init_binding_and_reject_untrusted_config():
                 assert process.returncode != 0 and stdout == b"" and stderr
                 assert ENROLLMENT.encode() not in stderr
                 assert not socket.exists()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_login_atomically_saves_a_private_account_token(legacy, monkeypatch, capsys):
+    from teamup_client.main import main
+
+    monkeypatch.setattr(getpass, "getpass", lambda prompt: ACCOUNT_PASSWORD)
+
+    async def scenario():
+        with tempfile.TemporaryDirectory(dir="/tmp") as name:
+            async with gateway() as (upstream, server_url):
+                config, _ = write_config(Path(name), server_url)
+                original = json.loads(config.read_bytes())
+                if not legacy:
+                    del original["enrollment_key"]
+                    config.write_text(json.dumps(original), encoding="utf-8")
+                config.chmod(0o400)
+                with config.open("rb") as previous:
+                    result = await asyncio.to_thread(
+                        main, ["login", "--config", str(config), "--username", "alice"]
+                    )
+                    assert result == 0
+                    assert json.load(previous) == original
+                    assert config.stat().st_ino != os.fstat(previous.fileno()).st_ino
+
+                original.pop("enrollment_key", None)
+                assert json.loads(config.read_bytes()) == {
+                    **original,
+                    "account_token": ACCOUNT_TOKEN,
+                }
+                assert stat.S_IMODE(config.stat().st_mode) == 0o600
+                assert upstream.calls == [
+                    (
+                        "POST",
+                        "/v1/auth/login",
+                        {},
+                        None,
+                        {"username": "alice", "password": ACCOUNT_PASSWORD},
+                    )
+                ]
+
+    asyncio.run(scenario())
+    output = capsys.readouterr()
+    assert output.out and not output.err
+    assert ACCOUNT_PASSWORD not in output.out and ACCOUNT_TOKEN not in output.out
+
+
+def test_failed_login_preserves_the_configuration(monkeypatch, capsys):
+    from teamup_client.main import main
+
+    password = "incorrect password"
+    monkeypatch.setattr(getpass, "getpass", lambda prompt: password)
+
+    async def scenario():
+        with tempfile.TemporaryDirectory(dir="/tmp") as name:
+            async with gateway() as (upstream, server_url):
+                config, _ = write_config(Path(name), server_url)
+                original = config.read_bytes()
+                result = await asyncio.to_thread(
+                    main, ["login", "--config", str(config), "--username", "alice"]
+                )
+                assert result == 1
+                assert config.read_bytes() == original
+                assert len(upstream.calls) == 1
+
+    asyncio.run(scenario())
+    output = capsys.readouterr()
+    assert not output.out
+    assert json.loads(output.err)["error"]["code"] == "unauthorized"
+    assert password not in output.err
+
+
+@pytest.mark.parametrize("phase", ["prompt", "response"])
+def test_login_preserves_edits_made_during_authentication(phase, monkeypatch, capsys):
+    from teamup_client.main import main
+
+    async def scenario():
+        with tempfile.TemporaryDirectory(dir="/tmp") as name:
+            async with gateway() as (upstream, server_url):
+                config, _ = write_config(Path(name), server_url)
+                updated = {
+                    **json.loads(config.read_bytes()),
+                    "server_url": "https://localhost:9443",
+                    "ca_file": "replacement-ca.pem",
+                    "bindings": [],
+                }
+                edited_config = json.dumps(updated, indent=4)
+
+                def prompt(_prompt):
+                    if phase == "prompt":
+                        config.write_text(edited_config, encoding="utf-8")
+                    return ACCOUNT_PASSWORD
+
+                async def respond(writer, payload, status=200):
+                    config.write_text(edited_config, encoding="utf-8")
+                    await TeamupGateway.json_response(writer, payload, status)
+
+                monkeypatch.setattr(getpass, "getpass", prompt)
+                if phase == "response":
+                    monkeypatch.setattr(upstream, "json_response", respond)
+
+                result = await asyncio.to_thread(
+                    main, ["login", "--config", str(config), "--username", "alice"]
+                )
+                assert config.read_text(encoding="utf-8") == edited_config
+                assert result == 1
+                assert len(upstream.calls) == (0 if phase == "prompt" else 1)
+
+    asyncio.run(scenario())
+    output = capsys.readouterr()
+    assert not output.out
+    assert "configuration changed" in output.err
+    assert ACCOUNT_PASSWORD not in output.err and ACCOUNT_TOKEN not in output.err
+
+
+def test_login_requires_the_client_to_stop(monkeypatch, capsys):
+    from teamup_client.main import main
+
+    def unexpected_prompt(prompt):
+        pytest.fail("Login prompted for a password while the Client was running")
+
+    monkeypatch.setattr(getpass, "getpass", unexpected_prompt)
+
+    async def scenario():
+        with tempfile.TemporaryDirectory(dir="/tmp") as name:
+            async with gateway() as (_, server_url):
+                config, socket = write_config(Path(name), server_url)
+                original = config.read_bytes()
+                async with daemon(config, socket):
+                    result = await asyncio.to_thread(
+                        main, ["login", "--config", str(config), "--username", "alice"]
+                    )
+                    assert result == 1
+                    assert config.read_bytes() == original
+                    assert socket.exists()
+
+    asyncio.run(scenario())
+    assert "already in use" in capsys.readouterr().err
+
+
+def test_account_registration_reuses_the_member_after_login_expires():
+    from teamup_client.ipc import ClientError, call
+
+    async def scenario():
+        with tempfile.TemporaryDirectory(dir="/tmp") as name:
+            async with gateway() as (upstream, server_url):
+                config, socket = write_config(Path(name), server_url)
+                settings = json.loads(config.read_bytes())
+                del settings["enrollment_key"]
+                settings["account_token"] = ACCOUNT_TOKEN
+                config.write_text(json.dumps(settings), encoding="utf-8")
+                key_a, key_b = (binding["binding_key"] for binding in BINDINGS)
+                params = {"role_description": "developer"}
+
+                async with daemon(config, socket):
+                    member = await call(socket, key_a, "register", params)
+                    assert member == {
+                        "member_id": MEMBERS[0],
+                        "role_description": "developer",
+                    }
+                assert [
+                    entry[3]
+                    for entry in upstream.calls
+                    if entry[:2] == ("POST", "/v1/members")
+                ] == [ACCOUNT_TOKEN]
+
+                upstream.account_valid = False
+                upstream.calls.clear()
+                async with daemon(config, socket):
+                    assert await call(socket, key_a, "register", params) == member
+                    assert await call(socket, key_a, "find_members", {}) == {
+                        "members": [member]
+                    }
+                    assert all(entry[3] != ACCOUNT_TOKEN for entry in upstream.calls)
+                    with pytest.raises(ClientError) as error:
+                        await call(socket, key_b, "register", params)
+                    assert error.value.code == "unauthorized"
 
     asyncio.run(scenario())
 
