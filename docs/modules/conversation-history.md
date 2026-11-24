@@ -23,7 +23,7 @@ Collaboration 在 SQLite 保存规范消息和收件箱引用。Gateway 提供 H
 | `POST /v1/rooms/{room_id}/messages` | Message 增加 `created_at`。保留现有消息 ID 和重试语义。 |
 | `GET /v1/rooms/{room_id}/messages` | 现有 `after` 低位排他边界，新增可选 `before` 高位排他边界。给出 `before` 时从其之前取最近一页，按 ID 递增展示；大于 SQLite 最大 ID 的 `before` 作为无上界处理，不排除合法的最大 ID。默认 limit 50，最大 100。Message 增加 `created_at`。 |
 | `GET /v1/rooms/{room_id}/search` | `q` 为 1–200 个字符且不能全为空白。对房间内已获准的消息按大小写折叠做字面子串匹配（不使用 FTS），授权先于过滤和分页。按 ID 递增，`after` 和 `limit` 同历史；结果 `{"matches":[Match]}`，空页合法。 |
-| Match | `message_id`、`sender_member_id`、`created_at` 和最多 200 个原文字符的普通文本 `snippet`。片段引用原始正文，保留原大小写与 Unicode（如 Straße 保持 Straße），围绕首次折叠匹配截取并包含被匹配的原始字符；折叠扩展（如 ß、İ）的偏移安全映射回原文字符。授权房间的过滤与限量先在 SQL 内完成，再为结果行生成片段；正文不随结果复制。可用稳定消息 ID 读取上下文。 |
+| Match | `message_id`、`sender_member_id`、`created_at` 和最多 200 个原文字符的普通文本 `snippet`。片段引用原始正文，保留原大小写与 Unicode（如 Straße 保持 Straße），围绕首次折叠匹配截取并包含被匹配的原始字符；大小写折叠可把查询字符扩展为多个字符（如 ß 折叠为 ss），使一次匹配映射回超过 200 个原文字符，此时片段从该匹配的原文起点引用至 200 个原文字符的上限，未引用的尾部不随片段返回。折叠扩展（如 ß、İ）的偏移安全映射回原文字符。授权房间的过滤与限量先在 SQL 内完成，再为结果行生成片段；正文不随结果复制。可用稳定消息 ID 按当前授权读取完整正文与上下文。 |
 
 MCP/IPC 在既有 `teamup_create_room` / `create_room` 增加可选 `history_policy`，在 `teamup_read_messages` / `read_messages` 增加可选 `before`，并增加 `teamup_search_room` / `search_room`，参数为 `room_id`、`q`、可选 `after` 与 `limit`。按 v1 返回验证、授权及公告错误。API 和 IPC 均使用已发布成员凭证边界。
 
