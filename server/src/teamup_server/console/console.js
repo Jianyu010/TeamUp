@@ -210,11 +210,32 @@ function logout() {
   showLogin("Signed out. The in-memory token was cleared.");
 }
 
+function clearRoomPanes() {
+  els.roomList.replaceChildren();
+  els.roomEmpty.hidden = false;
+  els.roomDetail.hidden = true;
+  els.roomTitle.textContent = "";
+  els.roomMeta.textContent = "";
+  els.roomId.textContent = "";
+  els.rosterBody.replaceChildren();
+  els.timelineStatus.className = "pane-status";
+  els.timelineStatus.textContent = "";
+  els.timelineList.replaceChildren();
+  els.timelineMore.hidden = true;
+  els.chatsDenied.hidden = true;
+  els.chatsDenied.textContent = "";
+  els.chatsStatus.className = "pane-status";
+  els.chatsStatus.textContent = "";
+  els.chatsList.replaceChildren();
+  els.chatsMore.hidden = true;
+}
+
 function showLogin(message) {
   state.session = null;
   state.room = null;
   state.rooms = [];
   state.roomsPane = { loading: false, denied: false, error: "" };
+  clearRoomPanes();
   els.mainView.hidden = true;
   els.loginView.hidden = false;
   els.sessionActions.hidden = true;
@@ -422,35 +443,22 @@ function refreshAll() {
 }
 
 function renderDetailShell() {
+  clearRoomPanes();
   els.roomEmpty.hidden = true;
   els.roomDetail.hidden = false;
   els.roomTitle.textContent = "Loading room…";
-  els.roomMeta.textContent = "";
-  els.roomId.textContent = "";
-  els.rosterBody.replaceChildren();
-  els.chatsDenied.hidden = true;
-  els.chatsDenied.textContent = "";
-  els.chatsStatus.className = "pane-status";
   els.chatsStatus.textContent = "Waiting for room details…";
-  els.chatsList.replaceChildren();
-  els.chatsMore.hidden = true;
   renderTimeline();
 }
 
 function renderDetailError(message) {
+  clearRoomPanes();
+  els.roomEmpty.hidden = true;
+  els.roomDetail.hidden = false;
   els.roomTitle.textContent = "Room unavailable";
-  els.roomMeta.textContent = "";
-  els.roomId.textContent = "";
-  els.rosterBody.replaceChildren();
   els.timelineStatus.className = "pane-status error";
   els.timelineStatus.textContent = message;
-  els.timelineList.replaceChildren();
-  els.timelineMore.hidden = true;
-  els.chatsDenied.hidden = true;
-  els.chatsStatus.className = "pane-status";
   els.chatsStatus.textContent = "Room details unavailable.";
-  els.chatsList.replaceChildren();
-  els.chatsMore.hidden = true;
 }
 
 async function loadRoomDetail(epoch) {
