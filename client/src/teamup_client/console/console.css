@@ -133,7 +133,7 @@ button:focus-visible, select:focus-visible, input:focus-visible {
   transition: opacity 120ms var(--ease), visibility 0s linear 120ms;
 }
 #copy-room:is(:hover,:focus-visible) + .copy-tip { opacity: 1; visibility: visible; transition-delay: 1.5s; }
-.copy-control[data-feedback] .copy-tip { opacity: 1; visibility: visible; transition-delay: 0s; }
+.copy-control[data-feedback] .copy-tip { opacity: 1; visibility: visible; transition: none; }
 .chat-heading { padding: 9px 0; border-bottom: 1px solid var(--line); }
 .chat-heading label { color: var(--muted); font-size: 12px; }
 #chat-status { padding: 5px; }
