@@ -108,34 +108,62 @@ def uv():
     return found
 
 
+def create_venv(venv):
+    """Create an empty venv with the running interpreter; return its python."""
+    venv = Path(venv)
+    created = run_process(
+        [uv(), "venv", "--python", sys.executable, str(venv)],
+        capture_output=True,
+        text=True,
+        env=clean_env(),
+        timeout=120,
+    )
+    assert created.returncode == 0, created.stderr[-1500:]
+    return venv / "bin" / "python"
+
+
+def pip_install(venv, requirements, *options):
+    """``uv pip install`` into ``venv``; requirements are paths or wheel files."""
+    installed = run_process(
+        [uv(), "pip", "install", "--python", str(Path(venv) / "bin" / "python")]
+        + [*options, *map(str, requirements)],
+        capture_output=True,
+        text=True,
+        env=clean_env(),
+        timeout=600,
+        cwd=ROOT,
+    )
+    assert installed.returncode == 0, installed.stderr[-1500:]
+
+
+def build_wheels(out_dir, packages=("server", "client", "plugin/mcp")):
+    """Build one wheel per package directory; return {package: wheel path}."""
+    out_dir = Path(out_dir)
+    wheels = {}
+    for package in packages:
+        target = out_dir / package.replace("/", "-")
+        built = run_process(
+            [uv(), "build", "--wheel", "--out-dir", str(target), str(ROOT / package)],
+            capture_output=True,
+            text=True,
+            env=clean_env(),
+            timeout=300,
+            cwd=ROOT,
+        )
+        assert built.returncode == 0, built.stderr[-1500:]
+        [wheels[package]] = target.glob("*.whl")
+    return wheels
+
+
 def install_venv(venv, packages):
     """Create an empty venv with the running interpreter and install local paths.
 
     ``UV_DEFAULT_INDEX`` / ``UV_INDEX_URL`` are inherited from the environment.
     Returns the venv's bin directory.
     """
-    venv = Path(venv)
-    env = clean_env()
-    created = run_process(
-        [uv(), "venv", "--python", sys.executable, str(venv)],
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=120,
-    )
-    assert created.returncode == 0, created.stderr[-1500:]
-    python = venv / "bin" / "python"
-    installed = run_process(
-        [uv(), "pip", "install", "--python", str(python)]
-        + [str(ROOT / package) for package in packages],
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=600,
-        cwd=ROOT,
-    )
-    assert installed.returncode == 0, installed.stderr[-1500:]
-    return venv / "bin"
+    create_venv(venv)
+    pip_install(venv, [ROOT / package for package in packages])
+    return Path(venv) / "bin"
 
 
 # Processes and workspace -----------------------------------------------------
