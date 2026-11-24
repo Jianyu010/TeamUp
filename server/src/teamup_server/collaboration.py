@@ -1123,16 +1123,30 @@ class Collaboration:
                 """,
                 (room_id,),
             ).fetchall()
-            activity_rows = connection.execute(
+            room_last = connection.execute(
                 """
-                SELECT kind, at, message_id, actor_member_id FROM room_activity
-                WHERE room_id = ? ORDER BY activity_id
+                SELECT kind AS last_kind, at AS last_at, message_id AS last_message_id
+                FROM room_activity
+                WHERE room_id = ? ORDER BY activity_id DESC LIMIT 1
                 """,
                 (room_id,),
-            ).fetchall()
-            latest = {}
-            for row in activity_rows:
-                latest[row["actor_member_id"]] = row
+            ).fetchone()
+            latest = {
+                row["actor_member_id"]: row
+                for row in connection.execute(
+                    """
+                    SELECT a.actor_member_id, a.kind AS last_kind, a.at AS last_at,
+                        a.message_id AS last_message_id
+                    FROM room_activity AS a
+                    JOIN (
+                        SELECT actor_member_id, MAX(activity_id) AS activity_id
+                        FROM room_activity WHERE room_id = ?
+                        GROUP BY actor_member_id
+                    ) AS recent ON recent.activity_id = a.activity_id
+                    """,
+                    (room_id,),
+                )
+            }
             granted = connection.execute(
                 """
                 SELECT 1 FROM operator_grants
@@ -1145,9 +1159,7 @@ class Collaboration:
                     "room_id": room_id,
                     "name": room["name"],
                     "member_count": len(member_rows),
-                    "last_activity": (
-                        _activity_summary(activity_rows[-1]) if activity_rows else None
-                    ),
+                    "last_activity": _activity_summary(room_last, "last_"),
                 },
                 "members": [
                     {
@@ -1159,7 +1171,7 @@ class Collaboration:
                             else "awaiting"
                         ),
                         "last_activity": _activity_summary(
-                            latest.get(row["member_id"])
+                            latest.get(row["member_id"]), "last_"
                         ),
                         "harness_state": "unknown",
                     }
@@ -1193,8 +1205,9 @@ class Collaboration:
             self._require_grant(connection, owner_id, "console_read")
             self._require_grant(connection, owner_id, "transcript_read", room_id)
             self._console_room(connection, room_id)
-            boundary = "" if before is None else "AND m.message_id < ?"
-            parameters = (room_id,) if before is None else (room_id, before)
+            cursor = None if before is None or before > _SQLITE_MAX_ID else before
+            boundary = "" if cursor is None else "AND m.message_id < ?"
+            parameters = (room_id,) if cursor is None else (room_id, cursor)
             rows = connection.execute(
                 f"""
                 SELECT {_MESSAGE}, mem.role_description AS sender_role_description
@@ -1213,7 +1226,7 @@ class Collaboration:
                     owner_id, room_id, action, at, page_before, page_limit
                 ) VALUES (?, ?, 'transcript_read', ?, ?, ?)
                 """,
-                (owner_id, room_id, _rfc3339_utc_now(), before, limit),
+                (owner_id, room_id, _rfc3339_utc_now(), cursor, limit),
             )
             return {
                 "messages": [

@@ -65,7 +65,7 @@
 | `GET /v1/console/rooms` | — | `{"rooms":[ConsoleRoom]}`，按 `room_id` 稳定排序。只含团队房间，不含 DM。`last_activity` 为该房间最新一条 `room_activity` 投影（无活动为 null） | stage 2/3（本期起 `last_activity` 为真实投影） |
 | `GET /v1/console/rooms/{room_id}` | — | `{"room":ConsoleRoom,"members":[ConsoleMember],"transcript_allowed":boolean}`，`members` 按 `member_id` 稳定排序；`transcript_allowed` 表示该账号当前是否持有此房间的 `transcript_read`，界面据此决定是否显示 Chats 数据与是否发起 transcript 请求 | **本期（stage 3）** |
 | `GET /v1/console/rooms/{room_id}/timeline` | `after`、`limit` | `{"activities":[ConsoleActivity]}`，按 `activity_id` 递增；界面用 `after` 向后翻页，页行数小于 `limit` 即到尾。只含元数据，不含消息正文；`message_id` 字段照常返回（到期清理清空链接的事件为 null，无跳转目标），界面只在 `transcript_allowed` 为真时提供到 Chats 的跳转 | **本期（stage 3）** |
-| `GET /v1/console/rooms/{room_id}/transcript` | `before`（可选，正整数排他上界）、`limit` | `TranscriptPage`。省略 `before` 返回**最新一页**（页内仍按 `message_id` 递增）并如实给出 `has_more`；携带 `before`（取当前已展示最旧消息的 `message_id`）返回更早的一页。按 `message_id` 递增读取规范房间记录；每次成功响应在同一事务写入一条审计。要求目标房间的 `transcript_read` | **本期（stage 3）** |
+| `GET /v1/console/rooms/{room_id}/transcript` | `before`（可选，正整数排他上界）、`limit` | `TranscriptPage`。省略 `before` 返回**最新一页**（页内仍按 `message_id` 递增）并如实给出 `has_more`；携带 `before`（取当前已展示最旧消息的 `message_id`）返回更早的一页。大于 SQLite 最大 ID 的正 `before` 作为无上界处理（等同省略 `before`，不排除合法的最大 ID，与成员历史端点的既有边界一致），不报错。按 `message_id` 递增读取规范房间记录；每次成功响应在同一事务写入一条审计。要求目标房间的 `transcript_read` | **本期（stage 3）** |
 
 鉴权助手在使用的同一事务内重查 console 会话有效性与所需授权（`console_read` 全路由；transcript 路由另查该房间的 `transcript_read`），授权不缓存、不作为投影使用。授权与持久化语义保持 stage 2 形态。
 
@@ -78,7 +78,7 @@ Transcript 翻页不使用 `after`：入口请求省略 `before` 取得最新页
 ## 授权、审计与错误
 
 - Collaboration 在每次 Transcript 请求上重查 `transcript_read`；撤销后携旧游标继续翻页返回 `forbidden`。停用/重置口令撤销会话后下一页返回 401。
-- 审计行由 Collaboration 在读取事务内持久化：操作员 `owner_id`、`room_id`、`action`（`transcript_read`）、分页参数 `before`（可空）与 `limit`、Server 记录时间。审计不含消息正文，也不可从审计反推内容。
+- 审计行由 Collaboration 在读取事务内持久化：操作员 `owner_id`、`room_id`、`action`（`transcript_read`）、分页参数 `before`（可空；记录实际生效的排他上界，省略与超界开放上界均记 null）与 `limit`、Server 记录时间。审计不含消息正文，也不可从审计反推内容。
 - 房间列表、roster 与 Timeline 读取不写审计。
 - 错误沿用 `{"error":{"code":"...","message":"..."}}`。403 `forbidden`（凭证有效但缺少所需授权）已在 Gateway 错误表，仅控制台路由使用。401 `unauthorized`、404 `not_found`、422 `invalid_request`、429 `rate_limited` 沿用既有语义。
 - 界面错误语义（消费方契约）：任一控制台路由返回 401 即清除内存会话并回到登录页；403 在对应区域显示无权限状态（rooms 区域显示账号无 `console_read`，Chats 显示无 `transcript_read`），不自动重试；404 显示房间不存在；429 与网络错误显示可重试的友好错误。
@@ -167,7 +167,7 @@ Server 契约测试（`server/tests/test_console_server.py`；stage 2 项保持�
 6. （stage 2）静态托管三路径与安全响应头；其余 `/console/…` 404、方法不符 405。
 7. （本期）roster 详情：`room`/`members`/`transcript_allowed` 字段精确（`board_state` 随确认状态、`harness_state` 恒 `unknown`、`member_id` 稳定排序、`last_activity` 为该成员最新活动）；房间不存在 404。
 8. （本期）Timeline：四类活动字段精确且不含正文；`after`/`limit` 递增分页、短页即尾；加入/确认/重发/重复确认收件幂等重试不产生重复投影行。
-9. （本期）Transcript：省略 `before` 取最新页（页内递增）、`before` 取更早页、`has_more` 如实；`sender_role_description` 为读取时登记角色；存量无时间戳消息 `created_at` 为 null；每次成功响应在同一事务写入一条审计（owner、room、action、分页参数、时间），审计行不含正文。
+9. （本期）Transcript：省略 `before` 取最新页（页内递增）、`before` 取更早页、`has_more` 如实；大于 SQLite 整数上界的 `before` 按无上界返回最新一页（非 500），审计 `page_before` 记 null；`sender_role_description` 为读取时登记角色；存量无时间戳消息 `created_at` 为 null；每次成功响应在同一事务写入一条审计（owner、room、action、分页参数、时间），审计行不含正文。
 10. （本期）授权边界：仅元数据授权的操作员读不到消息正文（timeline 无正文、无 transcript 权限 403）；房间级 `transcript_read` 只对授权房间生效，跨房间 403；撤销后携旧游标翻页 403、停用/过期会话 401；控制台读取不产生收件事件或 SSE 提示。
 11. （本期）迁移：v2 样本与 #6 历史 v3 样本升级到 v5 后回投活动（次序与 null `at` 如契约）；消息 ID 与既有 #6 语义不受影响。
 12. （本期）成功响应统一 `Cache-Control: no-store`。

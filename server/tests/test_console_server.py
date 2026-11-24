@@ -1044,6 +1044,158 @@ def test_console_transcript_pages_scoped_grants_audit_and_revocation(tmp_path):
         error(console_timeline(client, console, room_a), 401, "unauthorized")
 
 
+def test_console_transcript_before_above_sqlite_max_is_an_unbounded_upper_edge(
+    tmp_path,
+):
+    """An oversized positive before cursor is an open upper bound, not a 500.
+
+    The member history endpoint already treats a before above SQLite's 64-bit
+    integer maximum as an unbounded edge that keeps the legitimate maximum ID
+    eligible; the console transcript route does the same instead of failing
+    the SQLite binding with an unhandled OverflowError. The room grant still
+    gates such requests first, and the audit row records the effective bound
+    (null) rather than the oversized cursor.
+    """
+    db_path = tmp_path / "team.sqlite3"
+    enter_password(db_path, "create", "alice", PASSWORD)
+    with live_server(db_path) as (client, _):
+        room_id = console_team_room(
+            client, messages=("edge one", "edge two"), prefix="edge"
+        )
+        console = console_token(client, "alice", PASSWORD)
+        admin(db_path, "grant-console", "alice")
+        # The room grant gates oversized cursors before any SQL runs.
+        error(
+            console_transcript(client, console, room_id, before=2**70),
+            403,
+            "forbidden",
+        )
+        assert audit_rows(db_path) == []
+        admin(db_path, "grant-transcript", "alice", room_id)
+
+        latest = console_transcript(client, console, room_id).json()
+        assert [message["text"] for message in latest["messages"]] == [
+            "edge one",
+            "edge two",
+        ]
+        assert latest["has_more"] is False
+        # Oversized positive cursors page the latest window unbounded; the
+        # largest representable SQLite ID stays a normal exclusive bound.
+        for before in (2**63 - 1, 2**63, 2**70, 2**70 + 5):
+            response = console_transcript(client, console, room_id, before=before)
+            assert response.status_code == 200, response.text
+            assert response.json() == latest
+        rows = audit_rows(db_path)
+        assert [row["page_before"] for row in rows] == [
+            None,
+            2**63 - 1,
+            None,
+            None,
+            None,
+        ]
+        assert all(row["page_limit"] == 50 for row in rows)
+        assert all("edge" not in str(value) for row in rows for value in row.values())
+
+
+def test_console_room_detail_latest_activity_per_actor_and_room(tmp_path):
+    """Roster detail derives the room's and each member's latest activity.
+
+    The latest rows are aggregated in SQL -- one per actor plus the room's
+    overall latest -- instead of folding the whole activity history in
+    Python; the payload shape, field sets, and member ordering stay exactly
+    as published, and a room without recorded activity reports nulls.
+    """
+    db_path = tmp_path / "team.sqlite3"
+    enter_password(db_path, "create", "alice", PASSWORD)
+    with live_server(db_path) as (client, _):
+        enrollment = login_token(client, "alice", PASSWORD)
+        assert bind(client, enrollment, "reader").status_code == 200
+        room_id = console_team_room(client)
+        room_path = f"/rooms/{room_id}"
+        join(client, "target", room_path)
+        join(client, "reader", room_path)
+        for label in ("target", "reader"):
+            confirm(client, label, room_path)
+        first = send(client, room_path, "sql-0", text="first body").json()
+        events = get(client, "target", "/inbox").json()["events"]
+        assert [event["message"]["message_id"] for event in events] == [
+            first["message_id"]
+        ]
+        assert (
+            post(client, "target", f"/inbox/{events[0]['event_id']}/ack").status_code
+            == 200
+        )
+        second = send(client, room_path, "sql-1", text="second body").json()
+        sender = member(client, "sender")
+        target = member(client, "target")
+        reader = member(client, "reader")
+
+        console = console_token(client, "alice", PASSWORD)
+        admin(db_path, "grant-console", "alice")
+        payload = console_room_detail(client, console, room_id).json()
+        assert set(payload) == {"room", "members", "transcript_allowed"}
+        assert payload["transcript_allowed"] is False
+        room = payload["room"]
+        assert (room["room_id"], room["name"], room["member_count"]) == (
+            room_id,
+            "Console room",
+            3,
+        )
+        assert set(room["last_activity"]) == {"kind", "at", "message_id"}
+        assert isinstance(room["last_activity"]["at"], int) and (
+            room["last_activity"]["at"] > 0
+        )
+        assert (room["last_activity"]["kind"], room["last_activity"]["message_id"]) == (
+            "message",
+            second["message_id"],
+        )
+
+        members = payload["members"]
+        assert [entry["member_id"] for entry in members] == sorted(
+            (sender, target, reader)
+        )
+        for entry in members:
+            assert set(entry) == {
+                "member_id",
+                "role_description",
+                "board_state",
+                "last_activity",
+                "harness_state",
+            }
+            assert entry["board_state"] == "acknowledged"
+            assert entry["harness_state"] == "unknown"
+            assert set(entry["last_activity"]) == {"kind", "at", "message_id"}
+            assert isinstance(entry["last_activity"]["at"], int) and (
+                entry["last_activity"]["at"] > 0
+            )
+        # Each actor's latest is its own newest activity, not its first: the
+        # sender ends on the last message, the target on the delivery ack of
+        # the first message, and the join-only reader on its board ack.
+        latest = {entry["member_id"]: entry["last_activity"] for entry in members}
+        assert set(latest) == {sender, target, reader}
+        assert (latest[sender]["kind"], latest[sender]["message_id"]) == (
+            "message",
+            second["message_id"],
+        )
+        assert (latest[target]["kind"], latest[target]["message_id"]) == (
+            "delivery",
+            first["message_id"],
+        )
+        assert (latest[reader]["kind"], latest[reader]["message_id"]) == (
+            "board_acknowledged",
+            None,
+        )
+
+        # A room without recorded activity reports null latest summaries.
+        with closing(sqlite3.connect(db_path)) as connection, connection:
+            connection.execute(
+                "DELETE FROM room_activity WHERE room_id = ?", (room_id,)
+            )
+        payload = console_room_detail(client, console, room_id).json()
+        assert payload["room"]["last_activity"] is None
+        assert all(entry["last_activity"] is None for entry in payload["members"])
+
+
 _V3_HISTORY_DATABASE = """
     PRAGMA user_version = 3;
     CREATE TABLE members (
