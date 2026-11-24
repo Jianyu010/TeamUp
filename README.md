@@ -75,4 +75,5 @@ B 的 Agent 空闲时，常驻 Client 仍可收件。Agent 下次运行时可读
 - [开发视图](docs/architecture/development-view.md) · 目录、代码落点和依赖方向
 - [MVP 功能设计](docs/specs/mvp.md) · 聊天、通知、公告、权限与运维操作
 - [时序图与模块契约](docs/modules/README.md) · 请求如何穿过本机和服务端
+- [登录与鉴权实现时序](docs/implementation/authentication/README.md) · 开户、成员凭证、通知和停用
 - [仓库看板](dashboards/README.md) · GitHub 活动指标和口径
