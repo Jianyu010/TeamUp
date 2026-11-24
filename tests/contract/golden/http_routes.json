@@ -6,6 +6,7 @@
   "GET /v1/rooms",
   "GET /v1/rooms/{room_id}/board",
   "GET /v1/rooms/{room_id}/messages",
+  "GET /v1/rooms/{room_id}/search",
   "POST /v1/auth/login",
   "POST /v1/inbox/{event_id}/ack",
   "POST /v1/members",
