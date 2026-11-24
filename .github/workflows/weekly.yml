@@ -1,0 +1,145 @@
+# Layer 4 · Weekly (docs/ci/README.md): real agents (OpenCode on the csi gateway, through the
+# hp-laptop relay that holds the key) collaborate through TeamUp: direct exchange, three-agent room,
+# @mention while offline, board change. Then the report: results to ci-data (dashboards), a
+# `weekly-failure` issue while red (no freeze: real-agent runs can be flaky), and a minor release
+# `vX.(Y+1).0` when green and something was merged since `vX.Y.0`.
+#
+# No schedule here: gate-tick.yml dispatches it once its slot (Sunday 04:00 Asia/Shanghai,
+# .github/ci/policy.json) has passed. Dispatch it by hand any time.
+name: Weekly
+
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: Cut a minor release when the week is green
+        type: boolean
+        default: true
+
+concurrency:
+  group: suites # nightly and weekly never share the suite runner: perf numbers stay clean
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  suites:
+    name: 4 · weekly agent scenarios
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: [self-hosted, teamup-suite]
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    env:
+      UV_PYTHON_DOWNLOADS: never
+      UV_DEFAULT_INDEX: https://pypi.tuna.tsinghua.edu.cn/simple
+      TEAMUP_SHA: ${{ github.sha }}
+      TEAMUP_HOST: hp-laptop
+      TEAMUP_RESULTS_DIR: results
+    steps:
+      - name: Fetch main (API tarball, no git)
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+          curl -sSfL --connect-timeout 10 --max-time 180 --retry 5 --retry-all-errors \
+            -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            -o "$RUNNER_TEMP/tree.tar.gz" "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/tarball/$GITHUB_SHA"
+          tar -xzf "$RUNNER_TEMP/tree.tar.gz" -C "$GITHUB_WORKSPACE" --strip-components=1 --no-same-owner
+          rm -f "$RUNNER_TEMP/tree.tar.gz"
+      - name: Build version
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: echo "TEAMUP_VERSION=$(python3 -E -s -m scripts.ci.version --sha "$GITHUB_SHA")" >> "$GITHUB_ENV"
+      - name: Python environment (uv, locked, through the mirror)
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          sed -i 's#https://pypi.org/simple#https://pypi.tuna.tsinghua.edu.cn/simple#g; s#https://files.pythonhosted.org/packages/#https://pypi.tuna.tsinghua.edu.cn/packages/#g' uv.lock
+          uv sync --frozen --all-packages --python 3.12 2>&1 | tail -3
+      - name: Agent scenarios (WE)
+        timeout-minutes: 95
+        continue-on-error: true
+        run: uv run --no-sync python -m tests.scenarios.weekly --out results/weekly/summary.json 2>&1 | tail -60
+      - name: Summary
+        if: ${{ always() }}
+        run: |
+          python3 -E -s -m scripts.ci.results merge --suite weekly --out results/weekly/summary.json \
+            results/weekly/summary.json
+          python3 -E -s -m scripts.ci.results status results/weekly/summary.json || true
+      - name: Keep the results
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: weekly-${{ github.sha }}-${{ github.run_attempt }}
+          path: results/
+          retention-days: 90
+          if-no-files-found: warn
+
+  report:
+    name: 4 · weekly report and release
+    needs: [suites]
+    if: ${{ always() && github.ref == 'refs/heads/main' }}
+    runs-on: [self-hosted, teamup-merge] # trusted: main's scripts only, never suite output as code
+    timeout-minutes: 15
+    permissions:
+      contents: write # ci-data branch, the release tag and GitHub Release
+      issues: write # the weekly-failure issue
+    steps:
+      - name: Fetch main's CI scripts (API tarball at the tested commit)
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+          curl -sSfL --connect-timeout 10 --max-time 180 --retry 5 --retry-all-errors \
+            -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            -o "$RUNNER_TEMP/tree.tar.gz" "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/tarball/$GITHUB_SHA"
+          tar -xzf "$RUNNER_TEMP/tree.tar.gz" -C "$GITHUB_WORKSPACE" --strip-components=1 --no-same-owner \
+            --wildcards '*/scripts/ci/*' '*/.github/ci/*' '*/dashboards/site/*'
+          rm -f "$RUNNER_TEMP/tree.tar.gz"
+      - name: Download the results
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: weekly-${{ github.sha }}-${{ github.run_attempt }}
+          path: incoming/
+      - name: Publish and judge
+        id: judge
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TEAMUP_SHA: ${{ github.sha }}
+          URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -uo pipefail
+          # The suite's JSON is data: re-read here by main's code, never executed. A missing file
+          # becomes an `error` scenario, so a crashed suite is red, not silent.
+          python3 -E -s -m scripts.ci.results merge --suite weekly --out summary.json incoming/weekly/summary.json
+          python3 -E -s -m scripts.ci.results publish --kind weekly summary.json \
+            || echo "::warning::could not publish the results to ci-data"
+          python3 -E -s -m scripts.ci.results sync-site dashboards/site \
+            || echo "::warning::could not sync the dashboards to ci-data"
+          if python3 -E -s -m scripts.ci.results status summary.json > status.txt; then
+            echo "green=true" >> "$GITHUB_OUTPUT"
+            python3 -E -s -m scripts.ci.freeze clear --source weekly --url "$URL"
+          else
+            echo "green=false" >> "$GITHUB_OUTPUT"
+            reason=$(grep '^::error::' status.txt | sed 's/^::error:://' | head -8)
+            python3 -E -s -m scripts.ci.freeze set --source weekly --url "$URL" \
+              --reason "Weekly on \`${TEAMUP_SHA:0:7}\` is red: ${reason:-the suite did not report}"
+          fi
+      - name: Minor release
+        if: ${{ steps.judge.outputs.green == 'true' && inputs.release != false }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          python3 -E -s -m scripts.ci.release --kind minor --sha "$GITHUB_SHA" \
+            --evidence summary.json --run-url "$URL" --out release.json
+          if [ -s release.json ]; then
+            python3 -E -s -m scripts.ci.results publish --kind releases release.json
+          fi
