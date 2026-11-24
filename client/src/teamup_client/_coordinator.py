@@ -25,6 +25,7 @@ LIMIT = partial(is_integer, minimum=1, maximum=100)
 PAGE = {"after": AFTER, "limit": LIMIT}
 HISTORY = {"after": AFTER, "before": BEFORE, "limit": LIMIT}
 ROOM = {"room_id": is_uuid}
+DM = {"dm_id": is_uuid}
 HISTORY_POLICIES = ("retained", "since_joining")
 
 
@@ -73,6 +74,13 @@ OPERATIONS = {
     "search_room": Operation(
         "GET", "/rooms/{room_id}/search", {**ROOM, "q": QUERY}, PAGE
     ),
+    "open_dm": Operation("POST", "/dms", {"member_id": is_uuid}),
+    "send_dm": Operation(
+        "POST",
+        "/dms/{dm_id}/messages",
+        {**DM, "client_message_id": MESSAGE_KEY, "text": BOARD_TEXT},
+    ),
+    "read_dm": Operation("GET", "/dms/{dm_id}/messages", DM, PAGE),
     "notifications": Operation(optional=PAGE),
     "mention_status": Operation(),
 }
@@ -308,7 +316,11 @@ class Coordinator:
             return result
 
         path = operation.route.format(**params)
-        fields = {name: value for name, value in params.items() if name != "room_id"}
+        fields = {
+            name: value
+            for name, value in params.items()
+            if f"{{{name}}}" not in operation.route
+        }
         if operation.verb == "GET":
             result = await self._upstream.request(
                 operation.verb, path, binding.member_token, query=fields
@@ -510,7 +522,14 @@ class Coordinator:
         limit = 100
         while True:
             page = await self._upstream.request(
-                "GET", "/inbox", token, query={"after": after, "limit": limit}
+                "GET",
+                "/inbox",
+                token,
+                query={
+                    "after": after,
+                    "limit": limit,
+                    "kinds": "message,mention,dm",
+                },
             )
             events = page.get("events")
             if not isinstance(events, list) or len(events) > limit:
@@ -519,11 +538,17 @@ class Coordinator:
                 if (
                     not isinstance(event, dict)
                     or not is_integer(event.get("event_id"), after + 1, 2**63 - 1)
-                    or event.get("kind") not in ("message", "mention")
+                    or event.get("kind") not in ("message", "mention", "dm")
                 ):
                     raise unavailable()
                 event_id = event["event_id"]
-                if event["kind"] == "mention":
+                if event["kind"] == "dm":
+                    # A DM notice is typed and body-free: no desktop or wake
+                    # pipeline, and no session authorization change.
+                    notice = _dm_notice(event)
+                    if self._notices.record(scope, notice):
+                        self._notice_output.emit(notice)
+                elif event["kind"] == "mention":
                     notice = _notice(event)
                     text = event["message"].get("text")
                     preview = clean(text, PREVIEW_LIMIT) if BOARD_TEXT(text) else ""
@@ -531,7 +556,14 @@ class Coordinator:
                         self._notice_output.emit(notice)
                         for changed in notices_changed:
                             changed.set()
-                await self._upstream.request("POST", f"/inbox/{event_id}/ack", token)
+                try:
+                    await self._upstream.request(
+                        "POST", f"/inbox/{event_id}/ack", token
+                    )
+                except ClientError as exc:
+                    # An expired event is already gone; keep draining the rest.
+                    if exc.code != "not_found":
+                        raise
                 after = event_id
             if len(events) < limit:
                 return
@@ -671,6 +703,24 @@ def _notice(event):
     return {
         "event_id": event["event_id"],
         "room_id": message["room_id"],
+        "message_id": message["message_id"],
+        "sender_member_id": message["sender_member_id"],
+    }
+
+
+def _dm_notice(event):
+    message = event.get("message")
+    if (
+        not isinstance(message, dict)
+        or not is_uuid(message.get("dm_id"))
+        or not is_integer(message.get("message_id"), 1, 2**63 - 1)
+        or not is_uuid(message.get("sender_member_id"))
+    ):
+        raise unavailable()
+    return {
+        "event_id": event["event_id"],
+        "kind": "dm",
+        "dm_id": message["dm_id"],
         "message_id": message["message_id"],
         "sender_member_id": message["sender_member_id"],
     }
