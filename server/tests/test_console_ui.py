@@ -5,8 +5,11 @@ The console ships as three static files under
 section "Console UI 消费方契约"). These tests lock the consumer contract
 without a browser: the exact file set, same-origin-only resources, no
 storage or cookie access, no HTML injection sinks, console-only fetch
-targets, the stale-response guards, and room-scoped DOM clearing on
-sign-out, session expiry, room switch, and access loss.
+targets, the stale-response guards, room-scoped DOM clearing on
+sign-out, session expiry, room switch, and access loss, and the
+transient next-Timeline / older-Chat page semantics of #12 F3: loaded
+rows survive retryable failures, retry re-issues the failed page's
+cursor, and only denial, room change, or sign-out clear private rows.
 """
 
 import re
@@ -217,6 +220,44 @@ def test_js_room_switch_and_access_loss_clear_stale_dom(js):
     for name in ("renderDetailShell", "renderDetailError"):
         body = function_source(js, name)
         assert "clearRoomPanes()" in body, f"{name} must clear stale panes"
+
+
+def test_js_transient_page_failure_preserves_rows_and_retries_same_cursor(js):
+    """#12 F3: retryable next-Timeline / older-Chat failures keep loaded rows.
+
+    Incremental pagination failures must not clear or hide the already
+    loaded rows; retry re-issues the failed page with its own cursor
+    (Timeline ``after`` cursor, Chats ``before``) instead of resetting
+    to the latest page. Denial (403) still clears rows, so only denial,
+    room change, refresh, and sign-out remove private content. The
+    behavioral twin of this lock runs the real script under a stub DOM:
+    server/tests/test_console_ui_behavior.mjs (node, no dependencies).
+    """
+    assert "retryBefore: undefined" in function_source(js, "freshRoom")
+    load_chats = function_source(js, "loadChats")
+    assert "pane.retryBefore = before" in load_chats
+    assert "pane.retryBefore = undefined" in load_chats
+    chats_denied = load_chats.split("result.status === 403")[1]
+    assert "pane.rows = []" in chats_denied.split("renderChats()")[0]
+    chats_failure = load_chats.split("result.status !== 200")[1]
+    assert "pane.rows = []" not in chats_failure.split("renderChats()")[0]
+    retry = function_source(js, "retryChats")
+    assert "rows = []" not in retry
+    assert "loaded = false" not in retry
+    assert "loadChats(state.epoch, room.chats.retryBefore)" in retry
+    render_chats = function_source(js, "renderChats")
+    chats_error = render_chats.split("if (pane.error)")[1].split("return;")[0]
+    assert "for (const message of pane.rows)" in chats_error
+    assert "errorRow(pane.error, retryChats)" in chats_error
+    load_timeline = function_source(js, "loadTimeline")
+    timeline_denied = load_timeline.split("result.status === 403")[1]
+    assert "pane.rows = []" in timeline_denied.split("renderTimeline()")[0]
+    timeline_failure = load_timeline.split("result.status !== 200")[1]
+    assert "pane.rows = []" not in timeline_failure.split("renderTimeline()")[0]
+    render_timeline = function_source(js, "renderTimeline")
+    timeline_error = render_timeline.split("if (pane.error)")[1].split("return;")[0]
+    assert "for (const activity of pane.rows)" in timeline_error
+    assert "errorRow(" in timeline_error
 
 
 def test_html_no_implementation_only_or_redundant_copy(html):

@@ -81,7 +81,7 @@ Transcript 翻页不使用 `after`：入口请求省略 `before` 取得最新页
 - 审计行由 Collaboration 在读取事务内持久化：操作员 `owner_id`、`room_id`、`action`（`transcript_read`）、分页参数 `before`（可空；记录实际生效的排他上界，省略与超界开放上界均记 null）与 `limit`、Server 记录时间。审计不含消息正文，也不可从审计反推内容。
 - 房间列表、roster 与 Timeline 读取不写审计。
 - 错误沿用 `{"error":{"code":"...","message":"..."}}`。403 `forbidden`（凭证有效但缺少所需授权）已在 Gateway 错误表，仅控制台路由使用。401 `unauthorized`、404 `not_found`、422 `invalid_request`、429 `rate_limited` 沿用既有语义。
-- 界面错误语义（消费方契约）：任一控制台路由返回 401 即清除内存会话并回到登录页；403 在对应区域显示无权限状态（rooms 区域显示账号无 `console_read`，Chats 显示无 `transcript_read`），不自动重试；404 显示房间不存在；429 与网络错误显示可重试的友好错误。
+- 界面错误语义（消费方契约）：任一控制台路由返回 401 即清除内存会话并回到登录页；403 在对应区域显示无权限状态（rooms 区域显示账号无 `console_read`，Chats 显示无 `transcript_read`），不自动重试；404 显示房间不存在；429 与网络错误显示可重试的友好错误。分页中途的瞬时失败（429、网络错误等可重试失败）不清空已加载内容：Timeline 下一页或 Chats 更早页取数失败时，已渲染行原样保留，行尾就地显示错误与重试入口；重试按失败请求的同一游标重发（Timeline 用当前 `after`，Chats 用失败请求的 `before`，不回退到最新页），成功后正常续接分页。403 拒绝、切换房间、手动刷新与登出仍然清空此前已加载的私有内容（内存行与 DOM 一并清除）。
 
 ## 静态托管（stage 2 交付）
 
@@ -89,14 +89,14 @@ Transcript 翻页不使用 `after`：入口请求省略 `before` 取得最新页
 - 响应头：`Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`、`X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`、`Cache-Control: no-cache`（无修订机制前避免陈旧资源）；媒体类型分别为 `text/html; charset=utf-8`、`text/css; charset=utf-8`、`text/javascript; charset=utf-8`。
 - 静态路由不需鉴权，页面内容不含任何私有数据（token 只在 API 鉴权后经 `/v1/console/*` 返回）。控制台无写入 UI；静态托管只做装配，不含业务逻辑。
 
-## Console UI 消费方契约（stage 2 确认，本期不变）
+## Console UI 消费方契约（stage 2 确认；分页瞬时失败的重试语义随 #12 F3 修订）
 
 提供方为 Server Gateway（路由与静态托管由 Server 会话实现），消费方为 Console Web UI（本仓库 `server/src/teamup_server/console/` 静态包，已交付）。记录调用场景、双方约定与兼容性：
 
 1. **静态资源**：同源路径 `/console/`（HTML）、`/console/console.css`、`/console/console.js`，三个文件一一对应，不引入任何第三方脚本、样式、图片或字体；HTML 内资源仅以相对路径引用这两个同源文件。静态包内不含任何业务逻辑；Gateway 按上述精确路径装配托管。
 2. **登录**：浏览器向同源 `POST /v1/auth/login` 提交 `{"username","password","purpose":"console"}`，收到 `{"access_token","expires_at"}`。
 3. **token 生命周期**：access token 只存于页面内存（JS 变量），不写 cookie、localStorage、sessionStorage、IndexedDB，不出现在 URL 或查询串；仅以 `Authorization: Bearer` 头调用控制台 GET 路由（及上述登录 POST）；登出、收到 401 或 token 到期即从内存清除并回到登录页。控制台 UI 不持有成员 token 与登记密钥，也不调用登记入口。
-4. **UI 请求纪律**：`transcript_allowed` 为假时不发起任何 transcript 请求，Chats 页签显示无权限；Timeline 以 `after` 翻页；Transcript 省略 `before` 取最新页，以 `before=<当前已展示最旧消息 ID>` 取更早页，`has_more` 为假时不再提供“更早”入口。时间字段（`at`、`created_at`）按 Unix 秒数值渲染，null 显示为未知。
+4. **UI 请求纪律**：`transcript_allowed` 为假时不发起任何 transcript 请求，Chats 页签显示无权限；Timeline 以 `after` 翻页；Transcript 省略 `before` 取最新页，以 `before=<当前已展示最旧消息 ID>` 取更早页，`has_more` 为假时不再提供“更早”入口。时间字段（`at`、`created_at`）按 Unix 秒数值渲染，null 显示为未知。分页请求瞬时失败（429、网络错误等可重试失败）时保留已加载行，重试以失败请求的同一游标重发（不重置、不回退到最新页）；授权拒绝、切换房间、手动刷新与登出仍清空已加载的私有内容。
 5. **陈旧响应防线**：切换房间、手动刷新或登出时中止在途请求，且响应应用前校验所属房间游标，防止把 A 房间/已登出会话的数据渲染进 B 房间或已清空的界面。
 6. **渲染安全**：所有用户文本一律经 `textContent` 渲染，不使用 `innerHTML` 等注入口；无任何站外 fetch 目标。
 7. **状态与布局**：只读；房间列表（名称、成员数、最近活动时间）、roster（角色、公告确认状态、最近活动、harness **Unknown**）、Timeline 与 Chats 两个独立页签（各自含分页与友好的空态、加载态、错误态、无权限态）；键盘可达、响应式密度；内容与布局遵循 [mockup](../assets/teamup-control-console.excalidraw)。
@@ -175,7 +175,7 @@ Server 契约测试（`server/tests/test_console_server.py`；stage 2 项保持�
 14. （#3 并入）DM 隔离：即使操作员同时持有 `console_read` 与该房间 `transcript_read`、且 DM 正常启用并交换、收件确认完毕，rooms/roster/Timeline/transcript 任何响应都不含 DM 文本或 DM `message_id`；DM 发送与确认不新增 `room_activity` 行。
 15. （本期，#5/#6 兼容）到期清理兼容：临时库内写入房间消息与活动（含投递确认）后，以测试内直连 SQL（开启外键、先清收件引用，模拟 #6 清理事务）删除消息；删除成功，Timeline 仍呈现该事件的 `kind`、`at` 与 actor 且 `message_id` 为 null，存活消息的链接不受影响；带 `message_id` 的加入/确认活动插入仍被 schema CHECK 拒绝。
 
-Console UI 静态回归测试（`server/tests/test_console_ui.py`，stage 2 已交付，本期不变）。
+Console UI 回归测试：`server/tests/test_console_ui.py`（stage 2 交付的静态回归；随 #12 F3 追加瞬时失败保留行与同游标重试的静态断言）；`server/tests/test_console_ui_behavior.mjs`（#12 F3 行为回归，`node server/tests/test_console_ui_behavior.mjs` 运行，仅用 Node 内置模块，无新增依赖：在桩 DOM 与受控 fetch 下驱动真实 `console.js`，验证 Timeline 下一页与 Chats 更早页瞬时失败时保留已加载行、重试用同一 `after`/`before` 游标，以及 403 拒绝、切换房间与登出仍清空私有内容）。
 
 ## 验收
 
