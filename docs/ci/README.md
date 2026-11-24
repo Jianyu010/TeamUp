@@ -1,6 +1,6 @@
 # CI、自动合入与发布
 
-TeamUp 的 main 分支只接受合入门禁的自动合入。仓库 owner（`Jianyu010`）可以手动合入，其他人不行。本页说明分层结构、运行位置、维护者操作和发布规则。套件之间的字段、路径和命令以 [共享契约](contract.md) 为准。
+TeamUp 的 main 分支只接受合入门禁的自动合入。仓库 owner（`Jianyu010`）可以手动合入，其他人不行。本页说明分层结构、运行位置、维护者操作和发布规则。套件之间的字段、路径和命令以 [共享契约](contract.md) 为准，issue 与 PR 的标签以 [标签规范](labeling.md) 为准。
 
 ## 分层
 
@@ -96,6 +96,16 @@ GitHub 的 cron 常常推迟 3–5 小时，所以 `gate-tick.yml` 每 15 分钟
 | 仓库 | Stars、Forks、Issue/PR、下载量、距上次发布时间 |
 | 性能 | nightly 性能：私聊延迟、5 Agent 房间三档负载、历史增长下的退化 |
 | Agent | weekly 真实 Agent 场景与指标 |
+
+## 标签
+
+新 issue 由 `issues.yml` 依次处理：
+
+1. 人提交的 issue 标为 `agent/human-only` 和 `status/review-needed`，并指派给 owner；
+2. hp-laptop 上的模型按 [标签规范](labeling.md) 打上 `type`、`source`、`priority`、`area` 和 `size`；
+3. 检查必需的轴，缺少时加上 `status/triage`。
+
+PR 上的 `gate/*-failed`、从 issue 镜像的 `type/*` 和 `pr/no-issue` 由 `gate-queue.yml` 的 `pr-labels` 维护。这些标签只用于提示，门禁不读取它们。发布说明按 `type/*` 分组。
 
 ## 维护者操作
 

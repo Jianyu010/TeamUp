@@ -12,6 +12,7 @@
 #   workflows (PR checks on main) start; without it, with the workflow token, they do not. While
 #   an open `ci/freeze` issue exists only PRs the owner passed with `ready` merge.
 # - main-health: PR checks on a push to main; red freezes auto-merge, green thaws it.
+# - pr-labels: gate/*-failed, mirrored type/* and pr/no-issue (docs/ci/labeling.md); advisory.
 name: Gate queue
 
 on:
@@ -34,7 +35,7 @@ on:
 permissions: {}
 
 env:
-  FETCH: scripts/ci/gate.py scripts/ci/merge.py scripts/ci/freeze.py .github/ci/policy.json
+  FETCH: scripts/ci/gate.py scripts/ci/merge.py scripts/ci/freeze.py scripts/ci/labels.py .github/ci/policy.json docs/ci/labeling.md
 
 jobs:
   revoke:
@@ -120,6 +121,56 @@ jobs:
             python3 -E -s -m scripts.ci.gate auto --pr "$PR"
           else
             python3 -E -s -m scripts.ci.gate auto --sha "$SHA"
+          fi
+
+  pr-labels:
+    # docs/ci/labeling.md: gate/*-failed from the required checks and the review, type/* mirrored
+    # from linked issues, pr/no-issue. Advisory only: the gate never reads these labels.
+    if: >-
+      ${{ github.event_name == 'schedule'
+      || (github.event_name == 'workflow_dispatch'
+          && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
+      || (github.event_name == 'workflow_run'
+          && contains(fromJSON('["pull_request","pull_request_target"]'), github.event.workflow_run.event)) }}
+    runs-on: [self-hosted, teamup-merge]
+    timeout-minutes: 5
+    continue-on-error: true
+    concurrency:
+      group: pr-labels-${{ github.event.workflow_run.head_sha || inputs.pr || 'sweep' }}
+      cancel-in-progress: true
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Fetch main's scripts (contents API, not git)
+        timeout-minutes: 2
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/labels"
+          for f in $FETCH; do
+            mkdir -p "$RUNNER_TEMP/labels/$(dirname "$f")"
+            curl -fsSL --connect-timeout 10 --max-time 15 --retry 3 --retry-delay 2 --retry-max-time 55 --retry-all-errors \
+              -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github.raw" \
+              -o "$RUNNER_TEMP/labels/$f" "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/contents/$f?ref=$REF"
+          done
+      - working-directory: ${{ runner.temp }}/labels
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR: ${{ inputs.pr }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          if [ -n "$PR" ]; then
+            python3 -E -s -m scripts.ci.labels pr --pr "$PR"
+          elif [ -n "$SHA" ]; then
+            python3 -E -s -m scripts.ci.labels pr --sha "$SHA"
+          else
+            python3 -E -s -m scripts.ci.labels pr --all
           fi
 
   merge:

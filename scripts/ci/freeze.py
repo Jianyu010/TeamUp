@@ -26,6 +26,12 @@ from scripts.ci.gate import GitHub, load_policy
 
 SOURCES = ("main", "nightly", "weekly")
 REPORT_ONLY = {"weekly": "weekly-failure"}
+# Axis labels so a freeze issue meets docs/ci/labeling.md (type, source and priority).
+AXIS_LABELS = {
+    "main": ["type/bug", "source/ci", "priority/critical"],
+    "nightly": ["type/bug", "source/nightly", "priority/critical"],
+    "weekly": ["type/bug", "source/weekly", "priority/high"],
+}
 
 
 def title_prefix(source: str) -> str:
@@ -68,7 +74,11 @@ def set_freeze(gh: GitHub, label: str, source: str, reason: str, url: str) -> No
     issue = gh.call(
         "POST",
         "/issues",
-        {"title": title, "labels": [label], "body": f"{body}\n\n{tail}"},
+        {
+            "title": title,
+            "labels": [label, *AXIS_LABELS.get(source, [])],
+            "body": f"{body}\n\n{tail}",
+        },
     )
     print(f"freeze: opened #{(issue or {}).get('number')} for {source}")
 
