@@ -28,15 +28,34 @@ LIMIT = partial(is_integer, minimum=1, maximum=100)
 PAGE = {"after": AFTER, "limit": LIMIT}
 HISTORY = {"after": AFTER, "before": BEFORE, "limit": LIMIT}
 ROOM = {"room_id": is_uuid}
+TASK = {**ROOM, "task_id": is_uuid}
 HISTORY_POLICIES = ("retained", "since_joining")
+TASK_STATUSES = ("open", "finished")
 
 
 def _history_policy(value):
     return value in HISTORY_POLICIES
 
 
+def _task_status(value):
+    return value in TASK_STATUSES
+
+
 def _mention(value):
     return value is None or is_uuid(value)
+
+
+def _optional_text(value):
+    return value is None or BOARD_TEXT(value)
+
+
+def _addresses(value):
+    return (
+        isinstance(value, list)
+        and len(value) <= 100
+        and all(is_uuid(item) for item in value)
+        and len(set(value)) == len(value)
+    )
 
 
 @dataclass(frozen=True)
@@ -75,6 +94,33 @@ OPERATIONS = {
     "read_messages": Operation("GET", "/rooms/{room_id}/messages", ROOM, HISTORY),
     "search_room": Operation(
         "GET", "/rooms/{room_id}/search", {**ROOM, "q": QUERY}, PAGE
+    ),
+    "create_task": Operation(
+        "POST",
+        "/rooms/{room_id}/tasks",
+        {**ROOM, "client_task_id": MESSAGE_KEY, "title": ROLE},
+        {"description": _optional_text, "addressed_member_ids": _addresses},
+    ),
+    "list_tasks": Operation(
+        "GET",
+        "/rooms/{room_id}/tasks",
+        ROOM,
+        {**PAGE, "status": _task_status},
+    ),
+    "get_task": Operation("GET", "/rooms/{room_id}/tasks/{task_id}", TASK),
+    "join_task": Operation(
+        "POST", "/rooms/{room_id}/tasks/{task_id}/join", TASK
+    ),
+    "report_progress": Operation(
+        "POST",
+        "/rooms/{room_id}/tasks/{task_id}/progress",
+        {**TASK, "client_progress_id": MESSAGE_KEY, "note": BOARD_TEXT},
+    ),
+    "finish_task": Operation(
+        "POST", "/rooms/{room_id}/tasks/{task_id}/finish", TASK
+    ),
+    "task_history": Operation(
+        "GET", "/rooms/{room_id}/tasks/{task_id}/events", TASK, PAGE
     ),
     "notifications": Operation(optional=PAGE),
     "mention_status": Operation(),
@@ -311,7 +357,11 @@ class Coordinator:
             return result
 
         path = operation.route.format(**params)
-        fields = {name: value for name, value in params.items() if name != "room_id"}
+        fields = {
+            name: value
+            for name, value in params.items()
+            if name not in ("room_id", "task_id")
+        }
         if operation.verb == "GET":
             result = await self._upstream.request(
                 operation.verb, path, binding.member_token, query=fields

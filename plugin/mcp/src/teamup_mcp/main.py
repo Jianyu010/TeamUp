@@ -19,6 +19,16 @@ PAGE = {
     "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50},
 }
 HISTORY = PAGE | {"before": {"type": "integer", "minimum": 1}}
+RETRY = {"type": "string", "minLength": 1, "maxLength": 128}
+DESCRIPTION = {"type": ["string", "null"], "minLength": 1, "maxLength": 8_000}
+TASK_STATUS = {"type": "string", "enum": ["open", "finished"]}
+ADDRESSED = {
+    "type": "array",
+    "items": {"type": "string", "format": "uuid"},
+    "maxItems": 100,
+    "uniqueItems": True,
+}
+TASK = ROOM | {"task_id": {"type": "string", "format": "uuid"}}
 
 
 def tool(
@@ -85,6 +95,44 @@ TOOLS = [
         "search_room",
         "Search readable room messages for a case-insensitive substring.",
         ROOM | {"q": QUERY},
+        PAGE,
+    ),
+    tool(
+        "create_task",
+        "Create an explicit room task after reading and acknowledging the current "
+        "board. Use a new client_task_id and reuse it when retrying this task.",
+        ROOM | {"client_task_id": RETRY, "title": NAME},
+        {"description": DESCRIPTION, "addressed_member_ids": ADDRESSED},
+    ),
+    tool(
+        "list_tasks",
+        "List authorized room tasks after a task number, optionally filtered by "
+        "status. Read and acknowledge a stale board first.",
+        ROOM,
+        PAGE | {"status": TASK_STATUS},
+    ),
+    tool("get_task", "Read one authorized room task.", TASK),
+    tool(
+        "join_task",
+        "Join an open unaddressed task or an open task addressed to you.",
+        TASK,
+    ),
+    tool(
+        "report_progress",
+        "Record progress on a task you participate in. Use a new "
+        "client_progress_id and reuse it when retrying this update.",
+        TASK | {"client_progress_id": RETRY, "note": TEXT},
+    ),
+    tool(
+        "finish_task",
+        "Finish a task you created or participate in. Finishing is terminal.",
+        TASK,
+    ),
+    tool(
+        "task_history",
+        "Read a task's created, joined, progress and finished events after an "
+        "event number.",
+        TASK,
         PAGE,
     ),
     tool(
@@ -172,8 +220,14 @@ def create_mcp(socket_path: str, binding_key: str, live: dict | None = None) -> 
             "teamup_list_rooms for joined-room discovery. Give a short room "
             "responsibility introduction only when needed, prefer board role "
             "choices, do not repeat it on rejoin, and do not invent a persistent "
-            "room role. Until the task contract is published, treat natural task "
-            "requests as discussion and never invent task tools. "
+            "room role. Turn a natural request to assign work into an explicit room "
+            "task: read and acknowledge the current board, then call "
+            "teamup_create_task with a fresh client_task_id and reuse it on retry. "
+            "Use teamup_join_task to take eligible open work, report progress with "
+            "teamup_report_progress using a fresh client_progress_id reused on "
+            "retry, and finish with teamup_finish_task. Read the current room board "
+            "and task history with teamup_list_tasks, teamup_get_task and "
+            "teamup_task_history; keep ordinary chat and mentions unchanged. "
             "To request someone's attention, pass their member ID as mention_member_id. "
             "Use a fresh client_message_id for each new message and keep it on retry. "
             "Follow local sharing permissions."

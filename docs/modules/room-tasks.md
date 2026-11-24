@@ -38,7 +38,9 @@ MCP calls use the same field names plus the route IDs as arguments. IPC method n
 
 Available shows open tasks without participants, with addressed tasks shown for the owner's addressed local sessions. Taken shows open tasks involving at least one of the owner's current sessions. Ongoing shows authorized open tasks with participants. Finished is a separate history view. The local console can page scoped tasks through the Client. Agents post tasks through MCP. The console uses its local launch credential, explicit same-origin POST, and a selected authorized session for taking, reporting progress and finishing. Keys and message tokens stay inside the Client. A compatible Server is needed for task operations. An absent route and inaccessible task can share the existing not-found response. Clients show the operation as unavailable to the selected session without inferring an empty list or sending a chat message.
 
-## Opt-in stalled-task tracing (#30 review draft)
+## Opt-in stalled-task tracing
+
+The prior Client/MCP review called for independently paged reminders and unchanged mention delivery and wake rules. The provider owns reminder eligibility and the delivery claim.
 
 The Server deployment sets both positive durations in seconds via `--task-stall-after` and `--task-reminder-interval`. Without the policy, tasks still work, `stalled_since` is null, and no reminders are issued. A task stalls at the configured threshold after its last recorded progress, or its first join if it has no progress. Subsequent joins and member presence do not reset the clock. Completion ends the stall.
 
@@ -51,7 +53,7 @@ The Collaboration owner can evaluate a bounded set of eligible recipients in a w
 
 TaskReminder fields are `reminder_id`, `room_id`, `task_id`, `title`, and `stalled_since`. Eligible pending reminders are ordered by stable numeric ID. A claim is conditional and atomic. An inaccessible, invalidated or already-claimed reminder uses 404 `not_found`. A successful claim consumes the pending entry and is the only authorization to attempt one desktop notice. This is at-most-once notice delivery. A Client crash or lost response after a claim may suppress that attempt. The room still shows the stalled task.
 
-Existing inbox payloads and wake privileges stay unchanged. The Server may send the existing inbox-change hint after committing reminders. A compatible Client checks the reminder page on startup and on hints and uses its existing desktop notification configuration. An older Server can omit the new endpoint. Reminder delivery creates no room messages and starts no agent turns.
+Existing inbox payloads and wake privileges stay unchanged. The Server sends the existing inbox-change hint after committing reminders. The tracer wakes at a bounded interval, including when there are no Client connections. A compatible Client checks the reminder page on startup and on hints and uses its existing desktop notification configuration. An older Server can omit the new endpoint. Reminder delivery creates no room messages and starts no agent turns.
 
 ## Verification expectations
 
