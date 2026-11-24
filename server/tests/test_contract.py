@@ -15,7 +15,8 @@ from queue import Empty, Queue
 from stat import S_IMODE
 from threading import Thread
 from time import monotonic, sleep
-from uuid import UUID
+from urllib.parse import urlencode
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -154,6 +155,14 @@ def send(client, room_path, key, text="hello", target=None):
         f"{room_path}/messages",
         json={"client_message_id": key, "text": text, "mention_member_id": target},
     )
+
+
+def find(client, label, room_path, q, **params):
+    response = get(
+        client, label, f"{room_path}/search?{urlencode({'q': q, **params})}"
+    )
+    assert response.status_code == 200, response.text
+    return response.json()["matches"]
 
 
 def error(response, status, code):
@@ -547,6 +556,238 @@ def test_retained_room_reads_pre_join_history_after_board_ack(team):
     assert get(team, "target", f"{room_path}/messages").json() == {
         "messages": [early, later]
     }
+
+
+def test_history_before_pages_backwards_without_duplicates(team):
+    room_path = room(team)
+    join(team, "target", room_path)
+    confirm(team, "sender", room_path)
+    error(
+        get(team, "target", f"{room_path}/messages?before={2**70}"),
+        409,
+        "board_ack_required",
+    )
+    messages = [
+        send(team, room_path, f"note-{index}", text=f"page {index}").json()
+        for index in range(1, 6)
+    ]
+    ids = [message["message_id"] for message in messages]
+    confirm(team, "target", room_path)
+    # Backwards walks page the closest older window in ascending order.
+    walk = [
+        get(team, "sender", f"{room_path}/messages?limit=2&before={cursor}").json()[
+            "messages"
+        ]
+        for cursor in (2**70, ids[3], ids[1], ids[0])
+    ]
+    assert walk == [messages[3:5], messages[1:3], messages[:1], []]
+    # Both bounds apply together and huge supported ints stay bounded.
+    assert get(
+        team, "sender", f"{room_path}/messages?after={ids[0]}&before={ids[4]}&limit=2"
+    ).json()["messages"] == messages[2:4]
+    assert get(
+        team, "sender", f"{room_path}/messages?after={ids[1]}&before={ids[3]}"
+    ).json()["messages"] == messages[2:3]
+    assert get(
+        team, "sender", f"{room_path}/messages?after={2**70}&before={2**70 + 5}"
+    ).json() == {"messages": []}
+    # Legacy forward paging is unchanged.
+    assert get(team, "sender", f"{room_path}/messages?limit=2").json()["messages"] == (
+        messages[:2]
+    )
+    assert get(
+        team, "sender", f"{room_path}/messages?after={ids[1]}&limit=2"
+    ).json()["messages"] == messages[2:4]
+    # A member with the same window reads the same backwards pages.
+    assert get(
+        team, "target", f"{room_path}/messages?limit=2&before={2**70}"
+    ).json()["messages"] == messages[3:5]
+    # A late joiner cannot page backwards past its join floor.
+    join(team, "reader", room_path)
+    confirm(team, "reader", room_path)
+    newcomer = send(team, room_path, "newcomer").json()
+    assert (
+        get(team, "reader", f"{room_path}/messages?before={newcomer['message_id']}")
+        .json()
+        == {"messages": []}
+    )
+    assert (
+        get(
+            team, "reader", f"{room_path}/messages?before={newcomer['message_id'] + 1}"
+        ).json()
+        == {"messages": [newcomer]}
+    )
+    # Third parties and invalid bounds fail like the rest of the contract.
+    assert enroll(team, "outsider").status_code == 200
+    error(
+        get(team, "outsider", f"{room_path}/messages?before={newcomer['message_id']}"),
+        404,
+        "not_found",
+    )
+    for invalid in ("0", "-3", "abc", "true"):
+        error(
+            get(team, "sender", f"{room_path}/messages?before={invalid}"),
+            422,
+            "invalid_request",
+        )
+
+
+def test_search_denies_third_parties_and_unconfirmed_boards(team):
+    room_path = room(team)
+    confirm(team, "sender", room_path)
+    send(team, room_path, "s-1", text="Find the shared needle here")
+    join(team, "target", room_path)
+    error(get(team, "target", f"{room_path}/search?q=needle"), 409, "board_ack_required")
+    error(get(team, "reader", f"{room_path}/search?q=needle"), 404, "not_found")
+    error(get(team, "target", f"/rooms/{uuid4()}/search?q=needle"), 404, "not_found")
+    error(team.get(f"/v1{room_path}/search?q=needle"), 401, "unauthorized")
+    confirm(team, "target", room_path)
+    assert get(team, "target", f"{room_path}/search?q=needle").status_code == 200
+    error(get(team, "sender", f"{room_path}/search"), 422, "invalid_request")
+    error(get(team, "sender", f"{room_path}/search?q="), 422, "invalid_request")
+    error(get(team, "sender", f"{room_path}/search?q=%20%20"), 422, "invalid_request")
+    error(get(team, "sender", f"{room_path}/search?q=%FF"), 422, "invalid_request")
+    error(
+        get(team, "sender", f"{room_path}/search?q=needle&limit=0"),
+        422,
+        "invalid_request",
+    )
+    error(
+        get(team, "sender", f"{room_path}/search?q=needle&limit=101"),
+        422,
+        "invalid_request",
+    )
+    error(
+        get(team, "sender", f"{room_path}/search?q=needle&after=-1"),
+        422,
+        "invalid_request",
+    )
+    error(get(team, "sender", f"{room_path}/search?q={'n' * 201}"), 422, "invalid_request")
+    assert get(
+        team, "sender", f"{room_path}/search?q=needle&after={2**70}"
+    ).json() == {"matches": []}
+    assert get(team, "sender", f"{room_path}/search?q={'n' * 200}").json() == {
+        "matches": []
+    }
+
+
+def test_search_authorizes_like_history_per_room_policy(team):
+    limited = room(team)
+    confirm(team, "sender", limited)
+    early = send(
+        team, limited, "limited-pre", text="needle sent before joining"
+    ).json()
+    join(team, "target", limited)
+    confirm(team, "target", limited)
+    late = send(team, limited, "limited-post", text="needle sent after joining").json()
+
+    kept = room(team, history_policy="retained")
+    confirm(team, "sender", kept)
+    kept_early = send(team, kept, "kept-pre", text="needle sent before joining").json()
+    join(team, "target", kept)
+    confirm(team, "target", kept)
+    kept_late = send(team, kept, "kept-post", text="needle sent after joining").json()
+
+    # since_joining hides pre-join text from search exactly as from history.
+    assert get(team, "target", f"{limited}/messages").json()["messages"] == [late]
+    assert find(team, "target", limited, "NEEDLE") == find(
+        team, "target", limited, "needle", after=0
+    )
+    assert [match["message_id"] for match in find(team, "target", limited, "needle")] == [
+        late["message_id"]
+    ]
+    # retained exposes pre-join text after the board acknowledgment.
+    assert get(team, "target", f"{kept}/messages").json()["messages"] == [
+        kept_early,
+        kept_late,
+    ]
+    assert [
+        match["message_id"] for match in find(team, "target", kept, "needle")
+    ] == [kept_early["message_id"], kept_late["message_id"]]
+    # The creator's own window covers both messages and stays room-scoped.
+    assert [match["message_id"] for match in find(team, "sender", limited, "needle")] == [
+        early["message_id"],
+        late["message_id"],
+    ]
+    assert [
+        match["message_id"]
+        for match in find(team, "sender", limited, "needle sent before joining")
+    ] == [early["message_id"]]
+
+
+def test_search_matches_literals_and_bounded_snippets(team):
+    room_path = room(team)
+    join(team, "target", room_path)
+    confirm(team, "sender", room_path)
+    confirm(team, "target", room_path)
+    sender_id = member(team, "sender")
+    corpus = {
+        "plain": "The needle is here",
+        "meta": "Needles % _ * ? ( ) [ ] ^ $ | done",
+        "escaped": "it's a \"quoted\" C:\\temp path",
+        "unicode": "Der Weg führt über die Straße",
+        "cjk": "会话历史记录 needle",
+        "longneedle": "y" * 10 + "n" * 250,
+        "later": "a" * 300 + "needle" + "b" * 300,
+        "twice": "needle" + "x" * 300 + "needle",
+        "expansive": "z" * 5 + "ß" * 300,
+        "nomatch": "nothing relevant",
+    }
+    sent = {
+        key: send(team, room_path, key, text=text).json() for key, text in corpus.items()
+    }
+
+    found = find(team, "target", room_path, "NEEDLE")
+    expected = [
+        sent[key]["message_id"] for key in ("plain", "meta", "cjk", "later", "twice")
+    ]
+    by_id = {message["message_id"]: message for message in sent.values()}
+    assert [match["message_id"] for match in found] == expected
+    for match in found:
+        assert set(match) == {"message_id", "sender_member_id", "created_at", "snippet"}
+        assert match["sender_member_id"] == sender_id
+        assert match["created_at"] == by_id[match["message_id"]]["created_at"]
+
+    snippets = {match["message_id"]: match["snippet"] for match in found}
+    assert snippets[sent["plain"]["message_id"]] == "the needle is here"
+    # The window holds at most 200 characters and leads the match with context.
+    assert snippets[sent["later"]["message_id"]] == "a" * 80 + "needle" + "b" * 114
+    # The snippet stays around the first of two matches.
+    assert snippets[sent["twice"]["message_id"]] == "needle" + "x" * 194
+    # A full 200-character needle still fits the snippet.
+    (wide,) = find(team, "target", room_path, "n" * 200)
+    assert wide["message_id"] == sent["longneedle"]["message_id"]
+    assert wide["snippet"] == "n" * 200
+    # A needle that casefolds beyond 200 characters stays bounded.
+    (folded,) = find(team, "target", room_path, "ß" * 200)
+    assert folded["message_id"] == sent["expansive"]["message_id"]
+    assert folded["snippet"] == "s" * 200
+    # Case folding matches Unicode text; the snippet keeps the matched form.
+    (strasse,) = find(team, "target", room_path, "STRASSE")
+    assert strasse["message_id"] == sent["unicode"]["message_id"]
+    assert strasse["snippet"] == "der weg führt über die strasse"
+    (cjk,) = find(team, "target", room_path, "历史")
+    assert cjk["message_id"] == sent["cjk"]["message_id"]
+    assert cjk["snippet"] == "会话历史记录 needle"
+    # Pattern metacharacters and quotes match literally.
+    (meta,) = find(team, "target", room_path, "% _ * ? ( ) [ ] ^ $ |")
+    assert meta["message_id"] == sent["meta"]["message_id"]
+    assert meta["snippet"] == "needles % _ * ? ( ) [ ] ^ $ | done"
+    (quoted,) = find(team, "target", room_path, "it's a \"quoted\" C:\\temp")
+    assert quoted["message_id"] == sent["escaped"]["message_id"]
+    assert quoted["snippet"] == "it's a \"quoted\" c:\\temp path"
+    # after and limit page matches exactly like history, empty pages are valid.
+    first = find(team, "target", room_path, "needle", limit=2)
+    assert [match["message_id"] for match in first] == expected[:2]
+    second = find(
+        team, "target", room_path, "needle", after=first[-1]["message_id"], limit=2
+    )
+    assert [match["message_id"] for match in second] == expected[2:4]
+    third = find(team, "target", room_path, "needle", after=second[-1]["message_id"])
+    assert [match["message_id"] for match in third] == expected[4:]
+    assert find(team, "target", room_path, "needle", after=expected[-1]) == []
+    assert find(team, "target", room_path, "absent") == []
+    assert find(team, "target", room_path, "needle", after=0) == found
 
 
 def test_created_at_is_utc_rfc3339_and_shared_across_send_retry_history_inbox(team):
