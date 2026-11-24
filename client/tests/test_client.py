@@ -911,7 +911,11 @@ def test_notice_store_upgrades_and_never_repeats_an_unsettled_attempt():
     store = NoticeStore(db)
     notice = {"room_id": ROOM, "message_id": 2, "sender_member_id": MEMBERS[1]}
     # Pre-upgrade notices count as unread but are not shown again.
-    assert store.state("s", 1) == {"state": "shown", "attempts": 0}
+    assert store.state("s", 1) == {
+        "state": "shown",
+        "attempts": 0,
+        "harness_state": "skipped",
+    }
     assert store.next_pending("s") is None
     assert store.record("s", {**notice, "event_id": 2}, "hi")
     assert not store.record("s", {**notice, "event_id": 2}, "hi")
@@ -919,10 +923,112 @@ def test_notice_store_upgrades_and_never_repeats_an_unsettled_attempt():
     store.begin_attempt("s", 2)
     # The Client stopped before the notifier reported back.
     store.abandon_unsettled("s")
-    assert store.state("s", 2) == {"state": "failed", "attempts": 1}
+    assert store.state("s", 2) == {
+        "state": "failed",
+        "attempts": 1,
+        "harness_state": None,
+    }
     assert store.next_pending("s") is None
     assert store.unread("s") == 2
     store.mark_delivered("s", [1, 2])
     store.settle("s", 2, shown=True)
     assert store.state("s", 2)["state"] == "delivered"
     assert store.unread("s") == 0
+
+
+def test_owner_methods_and_attach_reject_agent_credentials():
+    from teamup_client._config import owner_key, read_config
+    from teamup_client.ipc import ClientError, call
+
+    install = {"binding_key": "G" * 42 + "A", "harness_instance_id": "claude-code@mac"}
+    session = {"id": "session-1", "kind": "claude-code"}
+
+    async def expect(code, *args, **kwargs):
+        with pytest.raises(ClientError) as failure:
+            await call(*args, **kwargs)
+        assert failure.value.code == code
+
+    async def scenario():
+        with tempfile.TemporaryDirectory(dir="/tmp") as name:
+            directory = Path(name)
+            async with gateway() as (_upstream, server_url):
+                config, socket = write_config(
+                    directory, server_url, bindings=[], installs=[install]
+                )
+                owner = owner_key(read_config(config))
+                key = install["binding_key"]
+                async with daemon(config, socket):
+                    # An install key names a harness, not a session.
+                    await expect("invalid_request", socket, key, "find_members", {})
+                    # Agents cannot reach owner operations with their own secret.
+                    await expect(
+                        "invalid_request", socket, key, "sessions", {}, session
+                    )
+                    await expect("unauthorized", socket, "H" * 42 + "A", "sessions", {})
+                    assert await call(socket, owner, "sessions", {}) == {"sessions": []}
+                    # The first call parks the session for the owner.
+                    await expect(
+                        "session_pending", socket, key, "find_members", {}, session
+                    )
+                    report = (await call(socket, owner, "sessions", {}))["sessions"]
+                    assert [
+                        (item["session_key"], item["state"]) for item in report
+                    ] == [("session-1", "pending")]
+                    await expect(
+                        "not_found",
+                        socket,
+                        owner,
+                        "set_wake",
+                        {
+                            "harness_instance_id": "claude-code@mac",
+                            "session_key": "session-1",
+                            "rooms": [ROOM],
+                            "senders": [],
+                        },
+                    )
+                    await call(
+                        socket,
+                        owner,
+                        "decide_session",
+                        {
+                            "harness_instance_id": "claude-code@mac",
+                            "session_key": "session-1",
+                            "state": "rejected",
+                        },
+                    )
+                    await expect(
+                        "unauthorized", socket, key, "find_members", {}, session
+                    )
+
+                    # attach needs a Claude Code session and a socket this user owns.
+                    for bad_session, address in (
+                        ({"id": "session-1", "kind": "codex"}, str(socket)),
+                        (session, str(config)),
+                        (session, "relative.sock"),
+                    ):
+                        await expect(
+                            "invalid_request",
+                            socket,
+                            key,
+                            "attach",
+                            {"address": address, "token": "t"},
+                            bad_session,
+                        )
+
+    asyncio.run(scenario())
+
+
+def test_unsettled_submission_is_never_resent():
+    import sqlite3
+
+    from teamup_client._notices import NoticeStore
+
+    store = NoticeStore(sqlite3.connect(":memory:"))
+    notice = {"room_id": ROOM, "message_id": 2, "sender_member_id": MEMBERS[1]}
+    for event_id in (1, 2, 3):
+        store.record("s", {**notice, "event_id": event_id})
+    store.set_harness_state("s", 1, "submitting")
+    store.set_harness_state("s", 2, "waiting")
+    store.abandon_submitting("s")
+    assert store.state("s", 1)["harness_state"] == "unknown"
+    assert [item["event_id"] for item in store.undecided("s")] == [2, 3]

@@ -1,6 +1,6 @@
 # Harness 投递设计
 
-状态：**提案，未实现。** 对应 [issue #11](https://github.com/Jianyu010/TeamUp/issues/11) 的第二步。已实现的桌面提醒和送达状态见 [MCP–Client v1](mcp-client-v1.md#桌面提醒与送达状态)。
+状态：**部分实现。** 会话表、会话接入与批准、唤醒许可和 Claude Code Driver 已按 [MCP–Client v1](mcp-client-v1.md#会话接入) 实现，并有自动化验收。Codex Driver、频率限制和 turn 标记核对尚未实现。对应 [issue #11](https://github.com/Jianyu010/TeamUp/issues/11) 的第二步。已实现的桌面提醒和送达状态见 [MCP–Client v1](mcp-client-v1.md#桌面提醒与送达状态)。
 
 ## 目标
 

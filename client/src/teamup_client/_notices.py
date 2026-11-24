@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 import sqlite3
 from contextlib import contextmanager
@@ -38,6 +39,8 @@ _DELIVERY_COLUMNS = {
     "CHECK (state IN ('pending', 'shown', 'delivered', 'failed'))",
     "attempts": "INTEGER NOT NULL DEFAULT 0",
     "preview": "TEXT NOT NULL DEFAULT ''",
+    # Earlier notices are never handed to a harness after an upgrade.
+    "harness_state": "TEXT DEFAULT 'skipped'",
 }
 _FIELDS = ("event_id", "room_id", "message_id", "sender_member_id")
 
@@ -71,6 +74,25 @@ class NoticeStore:
                 ) WITHOUT ROWID
             """)
             db.execute("""
+                CREATE TABLE IF NOT EXISTS sessions (
+                    harness_instance_id TEXT NOT NULL,
+                    session_key TEXT NOT NULL,
+                    member_token TEXT NOT NULL UNIQUE,
+                    state TEXT NOT NULL
+                        CHECK (state IN ('pending', 'approved', 'rejected')),
+                    PRIMARY KEY (harness_instance_id, session_key)
+                ) WITHOUT ROWID
+            """)
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS wake_permissions (
+                    harness_instance_id TEXT NOT NULL,
+                    session_key TEXT NOT NULL,
+                    rooms TEXT NOT NULL,
+                    senders TEXT NOT NULL,
+                    PRIMARY KEY (harness_instance_id, session_key)
+                ) WITHOUT ROWID
+            """)
+            db.execute("""
                 CREATE TABLE IF NOT EXISTS member_roles (
                     binding_scope TEXT NOT NULL,
                     member_id TEXT NOT NULL,
@@ -85,10 +107,10 @@ class NoticeStore:
                 """
                 INSERT INTO notices (
                     binding_scope, event_id, room_id, message_id, sender_member_id,
-                    state, attempts, preview
+                    state, attempts, preview, harness_state
                 ) VALUES (
                     :scope, :event_id, :room_id, :message_id, :sender_member_id,
-                    'pending', 0, :preview
+                    'pending', 0, :preview, NULL
                 )
                 ON CONFLICT (binding_scope, event_id) DO NOTHING
                 """,
@@ -127,11 +149,103 @@ class NoticeStore:
 
     def state(self, scope, event_id):
         row = self._db.execute(
-            "SELECT state, attempts FROM notices "
+            "SELECT state, attempts, harness_state FROM notices "
             "WHERE binding_scope = ? AND event_id = ?",
             (scope, event_id),
         ).fetchone()
-        return row and {"state": row[0], "attempts": row[1]}
+        return row and {"state": row[0], "attempts": row[1], "harness_state": row[2]}
+
+    def undecided(self, scope, limit=100):
+        """Notices not yet decided for the harness, oldest first."""
+        cursor = self._db.execute(
+            """
+            SELECT event_id, room_id, message_id, sender_member_id
+            FROM notices
+            WHERE binding_scope = ?
+                AND (harness_state IS NULL OR harness_state = 'waiting')
+            ORDER BY event_id LIMIT ?
+            """,
+            (scope, limit),
+        )
+        return [dict(zip(_FIELDS, row, strict=True)) for row in cursor]
+
+    def set_harness_state(self, scope, event_id, state):
+        with self._db:
+            self._db.execute(
+                "UPDATE notices SET harness_state = ? "
+                "WHERE binding_scope = ? AND event_id = ?",
+                (state, scope, event_id),
+            )
+
+    def abandon_submitting(self, scope):
+        """A submission that never settled has an unknown result: never resend."""
+        with self._db:
+            self._db.execute(
+                "UPDATE notices SET harness_state = 'unknown' "
+                "WHERE binding_scope = ? AND harness_state = 'submitting'",
+                (scope,),
+            )
+
+    def session(self, harness_instance_id, session_key):
+        row = self._db.execute(
+            "SELECT member_token, state FROM sessions "
+            "WHERE harness_instance_id = ? AND session_key = ?",
+            (harness_instance_id, session_key),
+        ).fetchone()
+        return row and {"member_token": row[0], "state": row[1]}
+
+    def add_session(self, harness_instance_id, session_key, member_token, state):
+        with self._db:
+            self._db.execute(
+                "INSERT INTO sessions VALUES (?, ?, ?, ?) "
+                "ON CONFLICT (harness_instance_id, session_key) DO NOTHING",
+                (harness_instance_id, session_key, member_token, state),
+            )
+        return self.session(harness_instance_id, session_key)
+
+    def decide_session(self, harness_instance_id, session_key, state):
+        with self._db:
+            result = self._db.execute(
+                "UPDATE sessions SET state = ? "
+                "WHERE harness_instance_id = ? AND session_key = ?",
+                (state, harness_instance_id, session_key),
+            )
+        return result.rowcount == 1
+
+    def sessions(self):
+        cursor = self._db.execute(
+            "SELECT harness_instance_id, session_key, member_token, state "
+            "FROM sessions ORDER BY harness_instance_id, session_key"
+        )
+        fields = ("harness_instance_id", "session_key", "member_token", "state")
+        return [dict(zip(fields, row, strict=True)) for row in cursor]
+
+    def set_wake(self, harness_instance_id, session_key, rooms, senders):
+        with self._db:
+            if rooms:
+                self._db.execute(
+                    "INSERT OR REPLACE INTO wake_permissions VALUES (?, ?, ?, ?)",
+                    (
+                        harness_instance_id,
+                        session_key,
+                        json.dumps(sorted(rooms)),
+                        json.dumps(sorted(senders)),
+                    ),
+                )
+            else:
+                self._db.execute(
+                    "DELETE FROM wake_permissions "
+                    "WHERE harness_instance_id = ? AND session_key = ?",
+                    (harness_instance_id, session_key),
+                )
+
+    def wake(self, harness_instance_id, session_key):
+        row = self._db.execute(
+            "SELECT rooms, senders FROM wake_permissions "
+            "WHERE harness_instance_id = ? AND session_key = ?",
+            (harness_instance_id, session_key),
+        ).fetchone()
+        return row and {"rooms": json.loads(row[0]), "senders": json.loads(row[1])}
 
     def abandon_unsettled(self, scope):
         """An attempt that never settled has an unknown result: do not repeat it."""

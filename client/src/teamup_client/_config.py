@@ -1,3 +1,6 @@
+import base64
+import hashlib
+import hmac
 import ipaddress
 import json
 import os
@@ -25,6 +28,15 @@ class Binding:
 
 
 @dataclass(frozen=True)
+class Install:
+    """A harness install whose sessions each receive their own member."""
+
+    binding_key: str = field(repr=False)
+    harness_instance_id: str
+    auto_approve: bool = False
+
+
+@dataclass(frozen=True)
 class ClientConfig:
     server_url: str
     socket_path: Path
@@ -33,6 +45,7 @@ class ClientConfig:
     bindings: tuple[Binding, ...]
     tls: ssl.SSLContext
     notify_command: tuple[str, ...] | None = None
+    installs: tuple[Install, ...] = ()
 
 
 def _server_origin(value):
@@ -81,7 +94,13 @@ def _read(path):
         raise ConfigError("Could not read a private JSON configuration file") from None
 
     required = {"server_url", "socket_path", "bindings"}
-    optional = {"ca_file", "account_token", "enrollment_key", "notify_command"}
+    optional = {
+        "ca_file",
+        "account_token",
+        "enrollment_key",
+        "notify_command",
+        "installs",
+    }
     if not isinstance(data, dict) or not required <= data.keys() <= required | optional:
         raise ConfigError("Invalid Client configuration fields")
     return data, contents
@@ -130,6 +149,33 @@ def _parse(path, data):
         sessions.add(identity)
         bindings.append(binding)
 
+    installs = []
+    if not isinstance(data.get("installs", []), list):
+        raise ConfigError("installs must be a list")
+    for item in data.get("installs", []):
+        if not (
+            isinstance(item, dict)
+            and {"binding_key", "harness_instance_id"}
+            <= item.keys()
+            <= {"binding_key", "harness_instance_id", "auto_approve"}
+            and is_secret(item["binding_key"])
+            and is_string(item["harness_instance_id"], 128)
+            and type(item.get("auto_approve", False)) is bool
+        ):
+            raise ConfigError("Invalid install")
+        install = Install(**item)
+        if (
+            install.binding_key in secrets
+            or any(install.harness_instance_id == harness for harness, _ in sessions)
+            or any(
+                install.harness_instance_id == other.harness_instance_id
+                for other in installs
+            )
+        ):
+            raise ConfigError("Install secrets and harness instances must be unique")
+        secrets.add(install.binding_key)
+        installs.append(install)
+
     ca_file = None
     if "ca_file" in data:
         if not is_string(data["ca_file"]) or "\0" in data["ca_file"]:
@@ -155,7 +201,26 @@ def _parse(path, data):
         tuple(bindings),
         tls,
         notify_command,
+        tuple(installs),
     )
+
+
+def owner_key(config):
+    """The owner's IPC credential, derived from the account or enrollment secret.
+
+    Agents hold only binding or install secrets, so they cannot derive it.
+    """
+    secret = config.account_token or config.enrollment_key
+    if secret is None:
+        return None
+    digest = hmac.new(secret.encode(), b"teamup-owner-v1", hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(digest).decode().rstrip("=")
+
+
+def read_config(path):
+    """Parse the configuration without taking the Client lock (read-only use)."""
+    data, _ = _read(path)
+    return _parse(path, data)
 
 
 @contextmanager
@@ -184,7 +249,7 @@ def save_account_token(path, config, data, contents, token):
     if any(
         token in (binding.binding_key, binding.member_token)
         for binding in config.bindings
-    ):
+    ) or any(token == install.binding_key for install in config.installs):
         raise ConfigError("Account token conflicts with an existing binding secret")
     updated = {key: value for key, value in data.items() if key != "enrollment_key"}
     updated["account_token"] = token
