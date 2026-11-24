@@ -234,10 +234,11 @@ _READ_SCHEMA = (
         ),
         at TEXT,
         actor_member_id TEXT NOT NULL REFERENCES members(member_id),
-        message_id INTEGER REFERENCES messages(message_id),
+        message_id INTEGER REFERENCES messages(message_id) ON DELETE SET NULL,
         CHECK (
-            (kind IN ('message', 'delivery') AND message_id IS NOT NULL)
-            OR (kind IN ('member_joined', 'board_acknowledged') AND message_id IS NULL)
+            kind IN ('message', 'delivery')
+            OR (kind IN ('member_joined', 'board_acknowledged')
+                AND message_id IS NULL)
         )
     )
     """,

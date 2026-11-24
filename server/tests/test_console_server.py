@@ -772,6 +772,138 @@ def test_console_timeline_is_body_free_metadata_with_stable_paging(tmp_path):
             )
 
 
+def test_console_timeline_keeps_events_when_message_expiry_clears_links(tmp_path):
+    """#6 expiry may delete a message; the body-free Timeline event survives.
+
+    See docs/modules/control-console.md: room_activity.message_id keeps its
+    foreign key but clears to NULL (ON DELETE SET NULL) when #6's cleanup
+    removes an expired message after its inbox references, and the CHECK
+    permits that null link for message and delivery activities only; join
+    and board-ack activities still require NULL, and live messages keep
+    their links. Retention has no runtime path in this branch, so the
+    cleanup is direct test-only SQL on the temporary fixture with foreign
+    keys enforced.
+    """
+    db_path = tmp_path / "team.sqlite3"
+    enter_password(db_path, "create", "alice", PASSWORD)
+    with live_server(db_path) as (client, _):
+        room_id = console_team_room(client, messages=("old body",), prefix="soon")
+        room_path = f"/rooms/{room_id}"
+        join(client, "target", room_path)
+        confirm(client, "target", room_path)
+        expiring = send(client, room_path, "gone-1", text="expiring body").json()
+        survivor = send(client, room_path, "kept-1", text="kept body").json()
+        events = get(client, "target", "/inbox").json()["events"]
+        assert [event["message"]["message_id"] for event in events] == [
+            expiring["message_id"],
+            survivor["message_id"],
+        ]
+        assert (
+            post(client, "target", f"/inbox/{events[0]['event_id']}/ack").status_code
+            == 200
+        )
+        sender = member(client, "sender")
+        target = member(client, "target")
+
+        console = console_token(client, "alice", PASSWORD)
+        admin(db_path, "grant-console", "alice")
+        live = console_timeline(client, console, room_id, limit=100).json()[
+            "activities"
+        ]
+        assert [(a["kind"], a["message_id"]) for a in live] == [
+            ("member_joined", None),
+            ("board_acknowledged", None),
+            ("message", 1),
+            ("member_joined", None),
+            ("board_acknowledged", None),
+            ("message", expiring["message_id"]),
+            ("message", survivor["message_id"]),
+            ("delivery", expiring["message_id"]),
+        ]
+        assert [a["actor_member_id"] for a in live] == [
+            sender,
+            sender,
+            sender,
+            target,
+            target,
+            sender,
+            sender,
+            target,
+        ]
+
+        with closing(sqlite3.connect(db_path)) as connection:
+            connection.execute("PRAGMA foreign_keys = ON")
+            assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+            # While the inbox still references it, the message delete is
+            # blocked exactly as #6's cleanup must account for.
+            with pytest.raises(sqlite3.IntegrityError), connection:
+                connection.execute(
+                    "DELETE FROM messages WHERE message_id = ?",
+                    (expiring["message_id"],),
+                )
+            # Join and board-ack activities keep requiring a null link.
+            for kind in ("member_joined", "board_acknowledged"):
+                with pytest.raises(sqlite3.IntegrityError), connection:
+                    connection.execute(
+                        """
+                        INSERT INTO room_activity (
+                            room_id, kind, at, actor_member_id, message_id
+                        ) VALUES (?, ?, NULL, ?, ?)
+                        """,
+                        (room_id, kind, target, survivor["message_id"]),
+                    )
+            # #6's cleanup transaction: drop the delivery references, then
+            # the expired message itself.
+            with connection:
+                connection.execute(
+                    "DELETE FROM inbox_events WHERE message_id = ?",
+                    (expiring["message_id"],),
+                )
+                connection.execute(
+                    "DELETE FROM messages WHERE message_id = ?",
+                    (expiring["message_id"],),
+                )
+            assert (
+                connection.execute(
+                    "SELECT 1 FROM messages WHERE message_id = ?",
+                    (expiring["message_id"],),
+                ).fetchone()
+                is None
+            )
+
+        expired = console_timeline(client, console, room_id, limit=100).json()[
+            "activities"
+        ]
+        assert [
+            (a["activity_id"], a["kind"], a["at"], a["actor_member_id"])
+            for a in expired
+        ] == [
+            (a["activity_id"], a["kind"], a["at"], a["actor_member_id"]) for a in live
+        ]
+        assert [a["message_id"] for a in expired] == [
+            None,
+            None,
+            1,
+            None,
+            None,
+            None,
+            survivor["message_id"],
+            None,
+        ]
+
+        # Live messages are untouched: the survivor keeps its pending inbox
+        # event and its link, and members can still send.
+        assert [
+            event["message"]["message_id"]
+            for event in get(client, "target", "/inbox").json()["events"]
+        ] == [survivor["message_id"]]
+        kept = send(client, room_path, "kept-2", text="after expiry").json()
+        tail = console_timeline(client, console, room_id, limit=100).json()[
+            "activities"
+        ][-1]
+        assert (tail["kind"], tail["message_id"]) == ("message", kept["message_id"])
+
+
 def test_console_transcript_pages_scoped_grants_audit_and_revocation(tmp_path):
     db_path = tmp_path / "team.sqlite3"
     enter_password(db_path, "create", "alice", PASSWORD)
