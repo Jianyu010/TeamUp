@@ -1,0 +1,15 @@
+# zizmor configuration (`zizmor --offline .github/workflows`, job `2 · Workflow Lint`).
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        # GitHub's own actions may be pinned by tag; anything else must be pinned to a commit hash.
+        actions/*: ref-pin
+        "*": hash-pin
+  dangerous-triggers:
+    ignore:
+      # pull_request_target never runs PR code: it fetches main's scripts through the contents API
+      # and judges the PR from API data only (docs/ci/README.md, "合入规则").
+      - gate.yml
+      # workflow_run only runs main's scripts and reads the triggering runs' results through the API.
+      - gate-queue.yml

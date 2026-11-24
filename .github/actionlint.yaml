@@ -1,0 +1,21 @@
+# Custom labels of TeamUp's self-hosted runners on hp-laptop (docs/ci/README.md, "运行器" and the
+# contract table). Keep in step with scripts/ci/hp-laptop/register-runners.sh.
+self-hosted-runner:
+  labels:
+    - lint
+    - type-check
+    - secrets
+    - workflow-lint
+    - dependencies
+    - architecture
+    - contract
+    - install
+    - linux-ut
+    - linux-st
+    - linux-st-cross
+    - ai-review
+    - e2e
+    - merge-gate
+    - merge
+    - gate-tick
+    - utility
