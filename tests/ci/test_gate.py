@@ -139,6 +139,8 @@ class FakeGitHub(GitHub):
         self.workflow_run_fail = False
         self.heads = [7]
         self.posted: list[tuple[str, str, str]] = []
+        self.layer1: dict[str, tuple[str, str]] = {}
+        self.layer1_posts: list[tuple[str, str]] = []
         self.base_changed = ""
         self.gates: dict[str, str] = {}
         self.waits: list[bool] = []
@@ -150,6 +152,10 @@ class FakeGitHub(GitHub):
 
     def call(self, method: str, path: str, body: Any = None) -> Any:
         if path.startswith("/statuses/"):
+            if body["context"] != "merge-gate":  # layer-1 reports are kept apart
+                self.layer1[body["context"]] = (body["state"], body["description"])
+                self.layer1_posts.append((body["context"], body["target_url"]))
+                return None
             self.posted.append(
                 (path.removeprefix("/statuses/"), body["state"], body["description"])
             )
@@ -230,6 +236,9 @@ class FakeGitHub(GitHub):
 
     def gate_description(self, sha: str) -> str:
         return self.gates.get(sha, "")
+
+    def status_of(self, sha: str, context: str) -> tuple[str, str]:
+        return self.layer1.get(context, ("", ""))
 
 
 def _event(
@@ -1646,3 +1655,149 @@ def test_the_sweep_leaves_a_ready_pr_alone() -> None:
     gh.gates[SHA] = AUTO_SUCCESS
     sweep(gh, REQUIRED, "run")
     assert gh.posted == []
+
+
+# --- layer-1 statuses (informational; merge-gate alone decides) --------------------------------
+
+ROUTE, PROTECTED, LIMITS = (
+    "1 · PR Routing",
+    "1 · Protected Changes",
+    "1 · Automation Limits",
+)
+
+
+def _l1(gh: FakeGitHub) -> dict[str, tuple[str, str]]:
+    auto(gh, 7, REQUIRED, "run")
+    return gh.layer1
+
+
+def test_a_plain_pr_reports_the_automatic_route() -> None:
+    gh = FakeGitHub()
+    assert _l1(gh) == {
+        ROUTE: ("success", "automatic route"),
+        PROTECTED: ("success", "no protected path, deleted test or new skip/xfail"),
+        LIMITS: ("success", "within the automation limits"),
+    }
+    assert {u for _c, u in gh.layer1_posts} == {"run"}
+
+
+def test_a_protected_path_fails_the_status_and_names_the_path() -> None:
+    gh = FakeGitHub()
+    gh.paths = [".github/ci/policy.json", "src/a.py"]
+    got = _l1(gh)
+    assert got[PROTECTED][0] == "failure"
+    assert ".github/ci/policy.json" in got[PROTECTED][1]
+    assert got[ROUTE][1].startswith("waits for the owner's `ready`: protected path")
+    assert got[LIMITS][0] == "success"
+    assert all(len(d) <= 140 for _s, d in got.values())
+
+
+def test_a_deleted_test_and_an_added_skip_fail_the_status() -> None:
+    gh = FakeGitHub()
+    gh.entries = [{"filename": "tests/ci/test_x.py", "status": "removed"}]
+    assert _l1(gh)[PROTECTED] == ("failure", "deletes test `tests/ci/test_x.py`")
+    gh = FakeGitHub()
+    patch = "@@\n+@pytest.mark.skip\n"
+    gh.entries = [
+        {"filename": "tests/ci/test_y.py", "status": "modified", "patch": patch}
+    ]
+    got = _l1(gh)[PROTECTED]
+    assert got[0] == "failure" and "tests/ci/test_y.py" in got[1]
+
+
+def test_too_many_files_fail_the_limits_not_the_protected_status() -> None:
+    gh = FakeGitHub()
+    gh.entries = [{"filename": f"src/f{i}.py", "status": "added"} for i in range(300)]
+    got = _l1(gh)
+    assert got[LIMITS][0] == "failure" and "300 files" in got[LIMITS][1]
+    assert got[PROTECTED][0] == "success"
+    assert "waits for the owner's `ready`" in got[ROUTE][1]
+
+
+def test_an_untrusted_author_fails_the_limits() -> None:
+    gh = FakeGitHub({"author_association": "CONTRIBUTOR"})
+    assert _l1(gh)[LIMITS] == (
+        "failure",
+        "the author is not trusted, so no review is dispatched",
+    )
+
+
+def test_an_untrusted_author_of_a_docs_only_pr_is_within_the_limits() -> None:
+    gh = FakeGitHub({"author_association": "CONTRIBUTOR"})
+    gh.paths = ["docs/assets/a.png"]
+    assert _l1(gh)[LIMITS][0] == "success"
+
+
+def test_exhausted_review_reruns_fail_the_limits() -> None:
+    gh = FakeGitHub()
+    gh.review_list = []
+    gh.review_run_list = [{**REVIEW_RUN, "run_attempt": ci_gate.REVIEW_RERUNS}]
+    assert _l1(gh)[LIMITS][0] == "failure"
+    assert "re-ran" in gh.layer1[LIMITS][1]
+    gh = FakeGitHub()
+    gh.review_list = []
+    gh.review_run_list = [{**REVIEW_RUN, "run_attempt": 1}]
+    assert _l1(gh)[LIMITS][0] == "success"
+
+
+def test_a_draft_reports_layer_two_only() -> None:
+    gh = FakeGitHub({"draft": True})
+    assert _l1(gh)[ROUTE] == ("success", "draft: layer 2 only")
+
+
+def test_a_valid_ready_passes_the_protected_status() -> None:
+    gh = FakeGitHub({"labels": [{"name": LABEL}]})
+    gh.paths = [".github/ci/policy.json"]
+    gh.labeler = "maintainer"
+    got = _l1(gh)
+    assert got[PROTECTED][0] == "success"
+    assert got[PROTECTED][1].startswith("passed by `ready`")
+    assert got[ROUTE] == ("success", "owner route: `ready` accepted")
+
+
+def test_a_ready_from_a_non_maintainer_does_not_pass_it() -> None:
+    gh = FakeGitHub({"labels": [{"name": LABEL}]})
+    gh.paths = [".github/ci/policy.json"]
+    gh.labeler = "dev"
+    assert _l1(gh)[PROTECTED][0] == "failure"
+
+
+def test_unchanged_statuses_are_not_posted_again() -> None:
+    gh = FakeGitHub()
+    auto(gh, 7, REQUIRED, "run")
+    first = len(gh.layer1_posts)
+    assert first == 3
+    auto(gh, 7, REQUIRED, "run")
+    assert len(gh.layer1_posts) == first
+
+
+def test_a_changed_verdict_is_posted_again_and_the_gate_is_untouched() -> None:
+    plain, held = FakeGitHub(), FakeGitHub()
+    held.paths = ["scripts/ci/gate.py", ".github/ci/policy.json"]
+    auto(plain, 7, REQUIRED, "run")
+    auto(held, 7, REQUIRED, "run")
+    assert plain.posted[-1][1] == "success"
+    assert held.posted[-1][1] == "pending"
+    assert held.posted[-1][2].startswith(AUTO_PENDING)
+    held.paths = ["src/a.py"]
+    auto(held, 7, REQUIRED, "run")
+    assert held.layer1[PROTECTED][0] == "success"
+    assert held.posted[-1][1] == "success"
+
+
+def test_the_guard_reports_layer_one_on_a_new_head() -> None:
+    gh = FakeGitHub()
+    gh.paths = [".github/ci/policy.json"]
+    guard(gh, _event("synchronize"), REQUIRED, "run")
+    assert [p[1] for p in gh.posted] == ["pending"]
+    assert gh.layer1[PROTECTED][0] == "failure"
+
+
+def test_a_failing_report_never_stops_the_gate() -> None:
+    class Broken(FakeGitHub):
+        def status_of(self, sha: str, context: str) -> tuple[str, str]:
+            raise RuntimeError("statuses unreadable")
+
+    gh = Broken()
+    assert _state(gh) in {"success", "pending"}
+    assert gh.layer1 == {}
