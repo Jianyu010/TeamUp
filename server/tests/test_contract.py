@@ -31,14 +31,17 @@ def server_env():
 
 
 @contextmanager
-def live_server(db_path):
+def live_server(db_path, *, legacy=True):
     with socket.socket() as candidate:
         candidate.bind(("127.0.0.1", 0))
         port = candidate.getsockname()[1]
+    env = server_env()
+    if not legacy:
+        env.pop("TEAMUP_ENROLLMENT_KEYS")
     with (
         subprocess.Popen(
             [*server_command(db_path), "--port", str(port)],
-            env=server_env(),
+            env=env,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             text=True,

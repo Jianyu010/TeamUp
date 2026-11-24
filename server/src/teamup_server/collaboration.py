@@ -5,14 +5,21 @@ import os
 import re
 import sqlite3
 from base64 import urlsafe_b64decode, urlsafe_b64encode
+from collections import deque
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import AbstractContextManager, closing, contextmanager, suppress
+from dataclasses import dataclass
 from functools import partial
 from hashlib import sha256
 from hmac import compare_digest
 from pathlib import Path
-from threading import Lock
+from secrets import token_bytes
+from threading import BoundedSemaphore, Lock
+from time import monotonic, time
 from uuid import uuid4
+
+from argon2 import PasswordHasher, Type
+from argon2.exceptions import VerifyMismatchError
 
 _LOGGER = logging.getLogger(__name__)
 _SQLITE_MAX_ID = (1 << 63) - 1
@@ -21,6 +28,14 @@ _DEFAULT_PROTOCOL = (
     "Coordinate work in the room and direct mentions to the intended teammate."
 )
 _CREDENTIAL = re.compile(r"[A-Za-z0-9_-]{43}")
+_USERNAME = re.compile(r"[a-z][a-z0-9_-]{2,63}")
+_SESSION_SECONDS = 8 * 3600
+_LOGIN_WINDOW_SECONDS = 60
+_LOGIN_CHECKS_PER_WINDOW = 60
+_LOGIN_FAILURES_PER_USERNAME = 5
+_PASSWORD_HASHER = PasswordHasher(
+    time_cost=2, memory_cost=19 * 1024, parallelism=1, type=Type.ID
+)
 _MEMBER = "member_id, role_description"
 _MESSAGE = """
     m.message_id, m.room_id, m.sender_member_id, m.client_message_id, m.text, m.mention_member_id
@@ -92,6 +107,25 @@ _SCHEMA = (
     """,
 )
 
+_ACCOUNT_SCHEMA = (
+    """
+    CREATE TABLE accounts (
+        owner_id TEXT NOT NULL PRIMARY KEY,
+        username TEXT NOT NULL UNIQUE,
+        password_digest TEXT NOT NULL,
+        disabled INTEGER NOT NULL DEFAULT 0 CHECK (disabled IN (0, 1))
+    )
+    """,
+    """
+    CREATE TABLE account_sessions (
+        token_digest BLOB NOT NULL PRIMARY KEY,
+        owner_id TEXT NOT NULL REFERENCES accounts(owner_id),
+        expires_at INTEGER NOT NULL
+    )
+    """,
+    "CREATE INDEX account_sessions_owner ON account_sessions (owner_id)",
+)
+
 ChangeListener = Callable[[], None]
 ObserveInbox = Callable[[ChangeListener], AbstractContextManager[None]]
 
@@ -102,6 +136,27 @@ class CollaborationError(Exception):
     def __init__(self, code: str):
         super().__init__(code)
         self.code = code
+
+
+@dataclass
+class _LoginCheck:
+    username: str
+    started: float
+    succeeded: bool = False
+
+
+def _validate_username(username: str) -> None:
+    if _USERNAME.fullmatch(username) is None:
+        raise CollaborationError("invalid_request")
+
+
+def _validate_password(password: str, *, minimum: int = 0) -> None:
+    if not minimum <= len(password) <= 128:
+        raise CollaborationError("invalid_request")
+    try:
+        password.encode("utf-8")
+    except UnicodeEncodeError:
+        raise CollaborationError("invalid_request") from None
 
 
 def _credential_digest(token: str) -> bytes | None:
@@ -136,7 +191,14 @@ def _enrollment_digests(keys: Mapping[str, str]) -> dict[str, bytes]:
 def _member(connection: sqlite3.Connection, token: str) -> sqlite3.Row:
     digest = _credential_digest(token)
     record = connection.execute(
-        f"SELECT {_MEMBER} FROM members WHERE token_digest = ?", (digest,)
+        f"""
+        SELECT {_MEMBER} FROM members WHERE token_digest = ?
+            AND NOT EXISTS (
+                SELECT 1 FROM accounts
+                WHERE accounts.owner_id = members.owner_id AND disabled = 1
+            )
+        """,
+        (digest,),
     ).fetchone()
     if record is None:
         raise CollaborationError("unauthorized")
@@ -173,6 +235,10 @@ class Collaboration:
         self._enrollment_keys = _enrollment_digests(enrollment_keys)
         self._listeners: dict[str, set[ChangeListener]] = {}
         self._listeners_lock = Lock()
+        self._login_checks: deque[_LoginCheck] = deque()
+        self._login_checks_lock = Lock()
+        self._password_checks = BoundedSemaphore(4)
+        self._unknown_password_digest = _PASSWORD_HASHER.hash(token_bytes(32))
         with suppress(FileExistsError):
             os.close(
                 os.open(self._db_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -184,8 +250,11 @@ class Collaboration:
             if version == 0:
                 for statement in _SCHEMA:
                     connection.execute(statement)
-                connection.execute("PRAGMA user_version = 1")
-            elif version != 1:
+            if version in (0, 1):
+                for statement in _ACCOUNT_SCHEMA:
+                    connection.execute(statement)
+                connection.execute("PRAGMA user_version = 2")
+            elif version != 2:
                 raise ValueError("Unsupported TeamUp database schema version")
 
     def _connect(self) -> sqlite3.Connection:
@@ -204,13 +273,184 @@ class Collaboration:
             connection.execute("BEGIN IMMEDIATE" if write else "BEGIN")
             yield connection
 
-    def _enrollment_owner(self, token: str) -> str | None:
-        digest = _credential_digest(token)
+    def create_account(self, username: str, password: str) -> None:
+        _validate_username(username)
+        _validate_password(password, minimum=12)
+        digest = _PASSWORD_HASHER.hash(password)
+        with self._transaction(write=True) as connection:
+            created = connection.execute(
+                """
+                INSERT INTO accounts (owner_id, username, password_digest) VALUES (?, ?, ?)
+                ON CONFLICT (username) DO NOTHING
+                """,
+                (str(uuid4()), username, digest),
+            )
+            if not created.rowcount:
+                raise CollaborationError("conflict")
+
+    def list_accounts(self) -> list[dict]:
+        with self._transaction() as connection:
+            return [
+                dict(row)
+                for row in connection.execute(
+                    "SELECT username, owner_id, disabled FROM accounts ORDER BY username"
+                )
+            ]
+
+    def reset_account_password(self, username: str, password: str) -> None:
+        _validate_username(username)
+        _validate_password(password, minimum=12)
+        digest = _PASSWORD_HASHER.hash(password)
+        with self._transaction(write=True) as connection:
+            account = self._account(connection, username)
+            if account["disabled"]:
+                raise CollaborationError("conflict")
+            connection.execute(
+                "UPDATE accounts SET password_digest = ? WHERE owner_id = ?",
+                (digest, account["owner_id"]),
+            )
+            self._revoke_account_sessions(connection, account["owner_id"])
+
+    def disable_account(self, username: str) -> None:
+        _validate_username(username)
+        with self._transaction(write=True) as connection:
+            owner_id = self._account(connection, username)["owner_id"]
+            connection.execute(
+                "UPDATE accounts SET disabled = 1 WHERE owner_id = ?", (owner_id,)
+            )
+            self._revoke_account_sessions(connection, owner_id)
+
+    @staticmethod
+    def _account(connection: sqlite3.Connection, username: str) -> sqlite3.Row:
+        account = connection.execute(
+            "SELECT owner_id, disabled FROM accounts WHERE username = ?", (username,)
+        ).fetchone()
+        if account is None:
+            raise CollaborationError("not_found")
+        return account
+
+    @staticmethod
+    def _revoke_account_sessions(connection: sqlite3.Connection, owner_id: str) -> None:
+        # Keep issued digests so expired or revoked login tokens cannot become member tokens.
+        connection.execute(
+            "UPDATE account_sessions SET expires_at = 0 WHERE owner_id = ? AND expires_at != 0",
+            (owner_id,),
+        )
+
+    def _start_password_check(self, username: str) -> _LoginCheck:
+        with self._login_checks_lock:
+            now = monotonic()
+            checks = self._login_checks
+            while checks and now - checks[0].started >= _LOGIN_WINDOW_SECONDS:
+                checks.popleft()
+            if (
+                len(checks) >= _LOGIN_CHECKS_PER_WINDOW
+                or sum(
+                    check.username == username and not check.succeeded
+                    for check in checks
+                )
+                >= _LOGIN_FAILURES_PER_USERNAME
+            ):
+                raise CollaborationError("rate_limited")
+            check = _LoginCheck(username, now)
+            checks.append(check)
+            return check
+
+    def login(self, username: str, password: str) -> dict:
+        _validate_username(username)
+        _validate_password(password)
+        check = self._start_password_check(username)
+        with self._transaction() as connection:
+            account = connection.execute(
+                """
+                SELECT owner_id, password_digest FROM accounts
+                WHERE username = ? AND disabled = 0
+                """,
+                (username,),
+            ).fetchone()
+        digest = (
+            account["password_digest"] if account else self._unknown_password_digest
+        )
+        with self._password_checks:
+            try:
+                _PASSWORD_HASHER.verify(digest, password)
+            except VerifyMismatchError:
+                raise CollaborationError("unauthorized") from None
+        if account is None:
+            raise CollaborationError("unauthorized")
+        session = self._issue_account_session(account["owner_id"], digest)
+        with self._login_checks_lock:
+            check.succeeded = True
+        return session
+
+    def _issue_account_session(self, owner_id: str, password_digest: str) -> dict:
+        with self._transaction(write=True) as connection:
+            if not connection.execute(
+                """
+                SELECT 1 FROM accounts
+                WHERE owner_id = ? AND password_digest = ? AND disabled = 0
+                """,
+                (owner_id, password_digest),
+            ).fetchone():
+                raise CollaborationError("unauthorized")
+            expires_at = int(time()) + _SESSION_SECONDS
+            while True:
+                raw = token_bytes(32)
+                digest = sha256(raw).digest()
+                if self._legacy_owner(digest) is not None:
+                    continue
+                collision = connection.execute(
+                    """
+                    SELECT 1 FROM members WHERE token_digest = ?
+                    UNION ALL SELECT 1 FROM account_sessions WHERE token_digest = ?
+                    """,
+                    (digest, digest),
+                ).fetchone()
+                if collision is None:
+                    break
+            connection.execute(
+                "INSERT INTO account_sessions VALUES (?, ?, ?)",
+                (digest, owner_id, expires_at),
+            )
+        return {
+            "access_token": urlsafe_b64encode(raw).decode("ascii").rstrip("="),
+            "expires_at": expires_at,
+        }
+
+    def _legacy_owner(self, digest: bytes | None) -> str | None:
         owner = None
         if digest is not None:
             for candidate, expected in self._enrollment_keys.items():
                 if compare_digest(digest, expected):
                     owner = candidate
+        return owner
+
+    def _enrollment_owner(self, connection: sqlite3.Connection, token: str) -> str:
+        digest = _credential_digest(token)
+        session = connection.execute(
+            """
+            SELECT a.owner_id, a.disabled, s.expires_at
+            FROM account_sessions AS s JOIN accounts AS a USING (owner_id)
+            WHERE s.token_digest = ?
+            """,
+            (digest,),
+        ).fetchone()
+        if session is not None:
+            if session["disabled"] or session["expires_at"] <= int(time()):
+                raise CollaborationError("unauthorized")
+            return session["owner_id"]
+        owner = self._legacy_owner(digest)
+        if (
+            owner is None
+            or connection.execute(
+                """
+            SELECT 1 FROM accounts WHERE owner_id = ?
+            UNION ALL SELECT 1 FROM members WHERE token_digest = ?
+            """,
+                (owner, digest),
+            ).fetchone()
+        ):
+            raise CollaborationError("unauthorized")
         return owner
 
     def enroll(
@@ -222,13 +462,17 @@ class Collaboration:
         role_description: str,
         member_token: str,
     ) -> dict:
-        owner = self._enrollment_owner(enrollment_key)
-        if owner is None:
-            raise CollaborationError("unauthorized")
         digest = _credential_digest(member_token)
-        if digest is None or self._enrollment_owner(member_token) is not None:
-            raise CollaborationError("invalid_request")
         with self._transaction(write=True) as connection:
+            owner = self._enrollment_owner(connection, enrollment_key)
+            if (
+                digest is None
+                or self._legacy_owner(digest) is not None
+                or connection.execute(
+                    "SELECT 1 FROM account_sessions WHERE token_digest = ?", (digest,)
+                ).fetchone()
+            ):
+                raise CollaborationError("invalid_request")
             existing = connection.execute(
                 f"""
                 SELECT {_MEMBER}, token_digest FROM members

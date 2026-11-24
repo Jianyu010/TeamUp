@@ -1,11 +1,14 @@
 import ipaddress
+import json
 import os
 import ssl
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from urllib.parse import urlsplit
 
-from ._local import LocalError, private_file
+from ._local import LocalError, lock_endpoint, private_file
 from ._protocol import decode_json, is_secret, is_string
 
 
@@ -25,7 +28,8 @@ class Binding:
 class ClientConfig:
     server_url: str
     socket_path: Path
-    enrollment_key: str = field(repr=False)
+    enrollment_key: str | None = field(repr=False)
+    account_token: str | None = field(repr=False)
     bindings: tuple[Binding, ...]
     tls: ssl.SSLContext
 
@@ -60,31 +64,51 @@ def _server_origin(value):
     return f"{origin.scheme}://{authority}"
 
 
-def load(path):
+def _read_contents(path):
     try:
         with os.fdopen(private_file(path), "rb") as source:
-            data = decode_json(source.read())
-    except (OSError, LocalError, ValueError, RecursionError):
+            return source.read()
+    except (OSError, LocalError):
         raise ConfigError("Could not read a private JSON configuration file") from None
 
-    required = {"server_url", "socket_path", "enrollment_key", "bindings"}
-    if not isinstance(data, dict) or not required <= data.keys() <= required | {
-        "ca_file"
-    }:
+
+def _read(path):
+    contents = _read_contents(path)
+    try:
+        data = decode_json(contents)
+    except (ValueError, RecursionError):
+        raise ConfigError("Could not read a private JSON configuration file") from None
+
+    required = {"server_url", "socket_path", "bindings"}
+    optional = {"ca_file", "account_token", "enrollment_key"}
+    if not isinstance(data, dict) or not required <= data.keys() <= required | optional:
         raise ConfigError("Invalid Client configuration fields")
-    server_url = _server_origin(data["server_url"])
-    if not is_string(data["socket_path"]) or "\0" in data["socket_path"]:
+    return data, contents
+
+
+def _socket_path(value):
+    if not is_string(value) or "\0" in value:
         raise ConfigError("socket_path must be an absolute path")
-    socket_path = Path(data["socket_path"])
+    socket_path = Path(value)
     if not socket_path.is_absolute() or not socket_path.name:
         raise ConfigError("socket_path must be an absolute path")
+    return socket_path
 
-    if not is_secret(data["enrollment_key"]):
-        raise ConfigError("Invalid enrollment_key")
+
+def _parse(path, data):
+    socket_path = _socket_path(data["socket_path"])
+    server_url = _server_origin(data["server_url"])
+    enrollment_key = data.get("enrollment_key")
+    account_token = data.get("account_token")
+    if "account_token" in data and "enrollment_key" in data:
+        raise ConfigError("Use either account_token or enrollment_key")
+    for name in ("account_token", "enrollment_key"):
+        if name in data and not is_secret(data[name]):
+            raise ConfigError(f"Invalid {name}")
     if not isinstance(data["bindings"], list):
         raise ConfigError("bindings must be a list")
     bindings = []
-    secrets = {data["enrollment_key"]}
+    secrets = {enrollment_key, account_token} - {None}
     sessions = set()
     for item in data["bindings"]:
         if not isinstance(item, dict) or set(item) != set(Binding.__dataclass_fields__):
@@ -115,5 +139,58 @@ def load(path):
     except (OSError, ValueError):
         raise ConfigError("Could not load the TLS trust configuration") from None
     return ClientConfig(
-        server_url, socket_path, data["enrollment_key"], tuple(bindings), tls
+        server_url, socket_path, enrollment_key, account_token, tuple(bindings), tls
     )
+
+
+@contextmanager
+def locked_config(path, *, remove_stale_socket=False):
+    original, original_contents = _read(path)
+    config = _parse(path, original)
+    with lock_endpoint(config.socket_path, remove_stale_socket=remove_stale_socket):
+        # Login may have replaced the configuration before we acquired the lock.
+        data, contents = _read(path)
+        if contents != original_contents:
+            updated = _parse(path, data)
+            if updated.socket_path != config.socket_path:
+                raise ConfigError(
+                    "Client socket path changed while opening the configuration"
+                )
+            config = updated
+        yield config, data, contents
+
+
+def verify_config_unchanged(path, contents):
+    if _read_contents(path) != contents:
+        raise ConfigError("Client configuration changed during login. Please try again")
+
+
+def save_account_token(path, config, data, contents, token):
+    if any(
+        token in (binding.binding_key, binding.member_token)
+        for binding in config.bindings
+    ):
+        raise ConfigError("Account token conflicts with an existing binding secret")
+    updated = {key: value for key, value in data.items() if key != "enrollment_key"}
+    updated["account_token"] = token
+    try:
+        with NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=".teamup-config-",
+            delete=False,
+        ) as target:
+            temporary = Path(target.name)
+            try:
+                os.fchmod(target.fileno(), 0o600)
+                json.dump(updated, target, indent=2)
+                target.write("\n")
+                target.flush()
+                os.fsync(target.fileno())
+                verify_config_unchanged(path, contents)
+                temporary.replace(path)
+            finally:
+                temporary.unlink(missing_ok=True)
+    except OSError:
+        raise ConfigError("Could not save the private Client configuration") from None

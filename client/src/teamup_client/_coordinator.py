@@ -63,7 +63,8 @@ class Session:
 
 class Coordinator:
     def __init__(self, config, upstream, notices, notice_output):
-        self._enrollment = config.enrollment_key
+        self._registration_token = config.account_token or config.enrollment_key
+        self._legacy_enrollment = config.enrollment_key is not None
         self._upstream = upstream
         self._notices = notices
         self._notice_output = notice_output
@@ -96,19 +97,7 @@ class Coordinator:
             )
             return {"notifications": notices}
         if method == "register":
-            body = {
-                **params,
-                "harness_instance_id": binding.harness_instance_id,
-                "session_key": binding.session_key,
-                "member_token": binding.member_token,
-            }
-            result = await self._upstream.request(
-                operation.verb,
-                operation.route,
-                self._enrollment,
-                body=body,
-                member_auth=False,
-            )
+            result = await self._register(binding, operation, params)
             session.registered.set()
             return result
 
@@ -125,6 +114,32 @@ class Coordinator:
         if method == "ack_board":
             session.inbox_changed.set()
         return result
+
+    async def _register(self, binding, operation, params):
+        if not self._legacy_enrollment:
+            try:
+                return await self._upstream.request(
+                    "GET", "/members/me", binding.member_token
+                )
+            except ClientError as exc:
+                if exc.code != "not_registered":
+                    raise
+        if self._registration_token is None:
+            raise ClientError(
+                "unauthorized", "Run teamup-client login to register this binding"
+            )
+        return await self._upstream.request(
+            operation.verb,
+            operation.route,
+            self._registration_token,
+            body={
+                **params,
+                "harness_instance_id": binding.harness_instance_id,
+                "session_key": binding.session_key,
+                "member_token": binding.member_token,
+            },
+            member_auth=False,
+        )
 
     @asynccontextmanager
     async def watching_inboxes(self):
