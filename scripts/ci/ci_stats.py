@@ -22,27 +22,29 @@ from typing import Any
 
 from scripts.ci.gate import API, GitHub, load_policy
 
-# Dashboard series → (workflow name, event or None for any event).
+# Dashboard series → (workflow names, event or None for any event). The older names keep the days
+# before the DigitalMate-style rename counted.
 SERIES = {
-    "pr_checks": ("PR checks", "pull_request"),
-    "main_checks": ("PR checks", "push"),
-    "gate": ("Gate", None),
-    "review": ("OpenCode Review", None),
-    "nightly": ("Nightly", None),
-    "weekly": ("Weekly", None),
+    "pr_checks": (("CI", "PR checks"), "pull_request"),
+    "main_checks": (("CI", "PR checks"), "push"),
+    "gate": (("Merge Gate", "Gate"), None),
+    "review": (("AI Review", "OpenCode Review"), None),
+    "nightly": (("Nightly",), None),
+    "weekly": (("Weekly",), None),
 }
 PASSED = frozenset({"success"})
 FAILED = frozenset({"failure", "timed_out", "startup_failure"})
 
 
 def tally(
-    runs: list[dict[str, Any]], workflow: str, event: str | None
+    runs: list[dict[str, Any]], workflow: str | tuple[str, ...], event: str | None
 ) -> dict[str, Any]:
     """Counts and pass rate for one series."""
+    names = (workflow,) if isinstance(workflow, str) else workflow
     mine = [
         r
         for r in runs
-        if r.get("name") == workflow and (event is None or r.get("event") == event)
+        if r.get("name") in names and (event is None or r.get("event") == event)
     ]
     done = [r for r in mine if r.get("status") == "completed"]
     passed = sum(1 for r in done if r.get("conclusion") in PASSED)

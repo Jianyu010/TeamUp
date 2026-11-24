@@ -34,13 +34,30 @@ from scripts.ci.version import Version, first_parents, render, tags
 CLOSES = re.compile(
     r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+#(\d+)\b", re.IGNORECASE
 )
-GROUPS = ("Features", "Fixes", "Documentation", "CI and tests", "Other changes")
+GROUPS = (
+    "Features",
+    "Performance",
+    "Fixes",
+    "Documentation",
+    "CI and tests",
+    "Maintenance",
+    "Other changes",
+)
 LABEL_GROUPS = {
+    # docs/ci/labeling.md type/* (mirrored onto PRs from their issues), then GitHub's defaults.
+    "type/feature": "Features",
+    "type/enhancement": "Features",
+    "type/perf": "Performance",
+    "type/bug": "Fixes",
+    "type/security": "Fixes",
+    "type/docs": "Documentation",
+    "type/ci": "CI and tests",
+    "type/test": "CI and tests",
+    "type/refactor": "Maintenance",
+    "type/chore": "Maintenance",
     "feature": "Features",
     "enhancement": "Features",
-    "type/feature": "Features",
     "bug": "Fixes",
-    "type/bug": "Fixes",
     "documentation": "Documentation",
     "docs": "Documentation",
     "ci": "CI and tests",

@@ -1,22 +1,23 @@
 # Layer 5 · what follows a PR's checks and its Gate run, and the merger (docs/ci/README.md).
 # Ported from tweakie's gate-queue.yml. Every job fetches main's scripts through the contents API
-# and runs them on a trusted `teamup-merge` runner; no PR code runs here.
+# and runs them on a trusted runner (`merge-gate`, `merge`, `utility`); no PR code runs here.
 #
 # - revoke: a PR-checks run that ends without success fails `merge-gate` on its commit.
-# - auto: the automatic route. When PR checks pass on a head, `merge-gate` goes green when every
+# - auto: the automatic route. When CI passes on a head, `merge-gate` goes green when every
 #   required check passed, layer 1 holds nothing, the OpenCode review of that head is clean with
 #   every finding answered, and the PR is not a draft, on `pr/hold`, or conflicting. When only the
 #   review is missing, auto dispatches it (opencode-review.yml); its wake-gate job re-judges.
 # - merge: the merger. Merges every open PR whose `merge-gate` is green, oldest first, with a merge
 #   commit pinned to the judged head. With TEAMUP_MERGE_TOKEN it merges as the owner, so push
-#   workflows (PR checks on main) start; without it, with the workflow token, they do not. While
+#   workflows (CI on main) start; without it, with the workflow token, they do not. While
 #   an open `ci/freeze` issue exists only PRs the owner passed with `ready` merge.
-# - main-health: PR checks on a push to main; red freezes auto-merge, green thaws it.
-name: Gate queue
+# - main-health: CI on a push to main; red freezes auto-merge, green thaws it.
+# - pr-labels: gate/*-failed, mirrored type/* and pr/no-issue (docs/ci/labeling.md); advisory.
+name: Merge Queue
 
 on:
   workflow_run:
-    workflows: [PR checks, Gate]
+    workflows: [CI, Merge Gate]
     types: [completed]
   workflow_dispatch:
     inputs:
@@ -34,14 +35,15 @@ on:
 permissions: {}
 
 env:
-  FETCH: scripts/ci/gate.py scripts/ci/merge.py scripts/ci/freeze.py .github/ci/policy.json
+  FETCH: scripts/ci/gate.py scripts/ci/merge.py scripts/ci/freeze.py scripts/ci/labels.py .github/ci/policy.json docs/ci/labeling.md
 
 jobs:
   revoke:
+    name: 5 · Revoke
     if: >-
       ${{ github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request'
       && !contains(fromJSON('["success","skipped"]'), github.event.workflow_run.conclusion) }}
-    runs-on: [self-hosted, teamup-merge]
+    runs-on: [self-hosted, merge-gate]
     timeout-minutes: 5
     permissions:
       actions: read
@@ -72,15 +74,16 @@ jobs:
         run: python3 -E -s -m scripts.ci.gate revoke --sha "$SHA" --workflow "$WORKFLOW" --conclusion "$CONCLUSION" --run-id "$RUN_ID"
 
   auto:
+    name: 5 · Merge Gate · auto
     if: >-
       ${{ github.event_name == 'schedule'
       || (github.event_name == 'workflow_dispatch'
           && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
       || (github.event_name == 'workflow_run'
       && contains(fromJSON('["pull_request","pull_request_target"]'), github.event.workflow_run.event)
-      && github.event.workflow_run.name != 'Gate'
+      && github.event.workflow_run.name != 'Merge Gate'
       && github.event.workflow_run.conclusion == 'success') }}
-    runs-on: [self-hosted, teamup-merge]
+    runs-on: [self-hosted, merge-gate]
     timeout-minutes: 5
     concurrency:
       group: gate-auto-${{ github.event.workflow_run.pull_requests[0].number || github.event.workflow_run.head_sha || inputs.pr || 'sweep' }}
@@ -122,18 +125,70 @@ jobs:
             python3 -E -s -m scripts.ci.gate auto --sha "$SHA"
           fi
 
+  pr-labels:
+    name: PR Labels
+    # docs/ci/labeling.md: gate/*-failed from the required checks and the review, type/* mirrored
+    # from linked issues, pr/no-issue. Advisory only: the gate never reads these labels.
+    if: >-
+      ${{ github.event_name == 'schedule'
+      || (github.event_name == 'workflow_dispatch'
+          && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
+      || (github.event_name == 'workflow_run'
+          && contains(fromJSON('["pull_request","pull_request_target"]'), github.event.workflow_run.event)) }}
+    runs-on: [self-hosted, utility]
+    timeout-minutes: 5
+    continue-on-error: true
+    concurrency:
+      group: pr-labels-${{ github.event.workflow_run.head_sha || inputs.pr || 'sweep' }}
+      cancel-in-progress: true
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Fetch main's scripts (contents API, not git)
+        timeout-minutes: 2
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/labels"
+          for f in $FETCH; do
+            mkdir -p "$RUNNER_TEMP/labels/$(dirname "$f")"
+            curl -fsSL --connect-timeout 10 --max-time 15 --retry 3 --retry-delay 2 --retry-max-time 55 --retry-all-errors \
+              -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github.raw" \
+              -o "$RUNNER_TEMP/labels/$f" "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/contents/$f?ref=$REF"
+          done
+      - working-directory: ${{ runner.temp }}/labels
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR: ${{ inputs.pr }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          if [ -n "$PR" ]; then
+            python3 -E -s -m scripts.ci.labels pr --pr "$PR"
+          elif [ -n "$SHA" ]; then
+            python3 -E -s -m scripts.ci.labels pr --sha "$SHA"
+          else
+            python3 -E -s -m scripts.ci.labels pr --all
+          fi
+
   merge:
+    name: 5 · Merge
     needs: [revoke, auto]
     if: >-
       ${{ !cancelled() && (github.event_name == 'schedule'
       || (github.event_name == 'workflow_dispatch'
           && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
       || (github.event_name == 'workflow_run'
-          && ((github.event.workflow_run.name == 'Gate' && github.event.workflow_run.conclusion != 'skipped')
-              || (github.event.workflow_run.name == 'PR checks' && github.event.workflow_run.event == 'push')
+          && ((github.event.workflow_run.name == 'Merge Gate' && github.event.workflow_run.conclusion != 'skipped')
+              || (github.event.workflow_run.name == 'CI' && github.event.workflow_run.event == 'push')
               || (contains(fromJSON('["pull_request","pull_request_target"]'), github.event.workflow_run.event)
                   && github.event.workflow_run.conclusion == 'success')))) }}
-    runs-on: [self-hosted, teamup-merge]
+    runs-on: [self-hosted, merge]
     timeout-minutes: 10
     concurrency:
       group: merge-queue # one merger at a time: merges into main stay sequential
@@ -174,11 +229,12 @@ jobs:
           fi
 
   main-health:
+    name: 5 · Main Health
     if: >-
-      ${{ github.event_name == 'workflow_run' && github.event.workflow_run.name == 'PR checks'
+      ${{ github.event_name == 'workflow_run' && github.event.workflow_run.name == 'CI'
       && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main'
       && contains(fromJSON('["success","failure","timed_out"]'), github.event.workflow_run.conclusion) }}
-    runs-on: [self-hosted, teamup-merge]
+    runs-on: [self-hosted, merge-gate]
     timeout-minutes: 5
     concurrency:
       group: freeze-main
@@ -212,5 +268,5 @@ jobs:
             python3 -E -s -m scripts.ci.freeze clear --source main --url "$URL"
           else
             python3 -E -s -m scripts.ci.freeze set --source main --url "$URL" \
-              --reason "PR checks on main at \`${SHA:0:7}\` concluded $CONCLUSION."
+              --reason "CI on main at \`${SHA:0:7}\` concluded $CONCLUSION."
           fi
