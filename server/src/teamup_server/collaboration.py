@@ -1196,7 +1196,11 @@ class Collaboration:
                 WHERE e.member_id = ? AND e.event_id > ? AND e.acknowledged = 0
                     AND e.kind IN ({", ".join("?" * len(kind_filter))})
                     AND (
-                        m.dm_id IS NOT NULL
+                        EXISTS (
+                            SELECT 1 FROM dms AS d
+                            WHERE d.dm_id = m.dm_id
+                                AND e.member_id IN (d.member_low, d.member_high)
+                        )
                         OR EXISTS (
                             SELECT 1 FROM room_members AS rm
                             JOIN rooms AS r ON r.room_id = rm.room_id
@@ -1242,6 +1246,8 @@ class Collaboration:
             if event["dm_id"] is None:
                 room = _room_member(connection, event["room_id"], member_id)
                 _require_current_board(room)
+            else:
+                _dm_participant(connection, event["dm_id"], member_id)
             if event["acknowledged"]:
                 return
             connection.execute(
