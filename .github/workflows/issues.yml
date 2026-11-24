@@ -1,0 +1,113 @@
+# Issue labeling (docs/ci/labeling.md; ported from Linkie/PPMA's issue-triage, auto-label and
+# label-lint). On a new issue, in order:
+#   1. triage   – a human-filed issue gets agent/human-only + status/review-needed, the owner as
+#                 assignee, and one comment.
+#   2. label    – a model on hp-laptop proposes type/source/priority/area/size; scripts/ci/autolabel.py
+#                 keeps only manifest labels and never sets agent/*, blocker or priority/critical.
+#                 Repository variable AUTOLABEL_MODE: apply (default) | suggest | off.
+#   3. lint     – a missing type/source/priority adds status/triage and one comment; a pass clears it.
+# Any later label change runs only the lint. Every step runs main's scripts on the trusted
+# utility runner; the issue text reaches only the model, as data, and only the issue number
+# passes through the shell. Labels written with the workflow token start no workflow.
+# Re-run by hand: gh workflow run issues.yml -f issue=<n>
+name: Issues
+
+on:
+  issues:
+    types: [opened, reopened, edited, labeled, unlabeled]
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: Issue number (runs triage, auto-label and lint)
+        required: true
+        type: number
+  push:
+    branches: [main]
+    paths: [docs/ci/labeling.md]
+
+permissions: {}
+
+env:
+  FETCH: scripts/ci/gate.py scripts/ci/labels.py scripts/ci/autolabel.py .github/ci/policy.json docs/ci/labeling.md
+
+jobs:
+  issue:
+    name: Issue Labels
+    if: ${{ github.event_name != 'push' }}
+    runs-on: [self-hosted, utility]
+    timeout-minutes: 10
+    concurrency:
+      group: issue-${{ github.event.issue.number || inputs.issue }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Fetch main's scripts (contents API, not git)
+        timeout-minutes: 3
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/issues"
+          for f in $FETCH; do
+            mkdir -p "$RUNNER_TEMP/issues/$(dirname "$f")"
+            curl -fsSL --connect-timeout 10 --max-time 15 --retry 3 --retry-delay 2 --retry-max-time 55 --retry-all-errors \
+              -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github.raw" \
+              -o "$RUNNER_TEMP/issues/$f" "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/contents/$f?ref=$REF"
+          done
+      - name: Triage a human-filed issue
+        if: ${{ github.event.action == 'opened' || github.event_name == 'workflow_dispatch' }}
+        working-directory: ${{ runner.temp }}/issues
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ISSUE: ${{ github.event.issue.number || inputs.issue }}
+        run: python3 -E -s -m scripts.ci.labels triage --issue "$ISSUE"
+      - name: Auto-label (model on hp-laptop)
+        if: ${{ (github.event.action == 'opened' || github.event_name == 'workflow_dispatch') && vars.AUTOLABEL_MODE != 'off' }}
+        continue-on-error: true # a slow or spent gateway leaves status/triage for a human
+        timeout-minutes: 6
+        working-directory: ${{ runner.temp }}/issues
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ISSUE: ${{ github.event.issue.number || inputs.issue }}
+          AUTOLABEL_MODE: ${{ vars.AUTOLABEL_MODE || 'apply' }}
+          AUTOLABEL_BASE_URL: ${{ vars.AUTOLABEL_BASE_URL || 'http://127.0.0.1:18081/v1' }}
+          AUTOLABEL_MODEL: ${{ vars.AUTOLABEL_MODEL || 'DeepSeek-V4.1-Flash-1017' }}
+        run: python3 -E -s -m scripts.ci.autolabel --issue "$ISSUE"
+      - name: Lint the labels
+        working-directory: ${{ runner.temp }}/issues
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ISSUE: ${{ github.event.issue.number || inputs.issue }}
+        run: python3 -E -s -m scripts.ci.labels lint --issue "$ISSUE"
+
+  sync:
+    name: Label Sync
+    # The manifest changed on main: create or update the labels it lists (never deletes one).
+    if: ${{ github.event_name == 'push' }}
+    runs-on: [self-hosted, utility]
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Fetch main's scripts (contents API, not git)
+        timeout-minutes: 3
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/issues"
+          for f in $FETCH; do
+            mkdir -p "$RUNNER_TEMP/issues/$(dirname "$f")"
+            curl -fsSL --connect-timeout 10 --max-time 15 --retry 3 --retry-delay 2 --retry-max-time 55 --retry-all-errors \
+              -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github.raw" \
+              -o "$RUNNER_TEMP/issues/$f" "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/contents/$f?ref=$REF"
+          done
+      - working-directory: ${{ runner.temp }}/issues
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 -E -s -m scripts.ci.labels sync

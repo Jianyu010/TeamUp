@@ -2,8 +2,8 @@
 # saw its `*/15` run every 3-5 hours). This job dispatches the gate sweep every 15 minutes and, on
 # the hour, nightly.yml / weekly.yml when one is due and has not run yet (scripts/ci/cadence.py).
 # Then it hands over to a fresh run of itself before its token expires. It runs on a trusted
-# runner of its own, `teamup-tick`, so it never holds a merge or gate runner.
-name: Gate tick
+# runner of its own, `gate-tick`, so it never holds a merge or gate runner.
+name: Gate Tick
 
 on:
   schedule:
@@ -18,7 +18,8 @@ concurrency:
 
 jobs:
   tick:
-    runs-on: [self-hosted, teamup-tick]
+    name: Gate Tick
+    runs-on: [self-hosted, gate-tick]
     timeout-minutes: 270
     permissions:
       actions: write # dispatch gate-queue.yml, nightly.yml, weekly.yml and this workflow

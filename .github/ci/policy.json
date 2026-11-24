@@ -2,10 +2,10 @@
   "version": 1,
   "owner": "Jianyu010",
   "required_checks": [
-    "2 · lint",
-    "2 · architecture",
-    "2 · unit",
-    "3 · system"
+    "2 · Lint",
+    "2 · Architecture",
+    "3 · Linux UT",
+    "3 · Linux ST"
   ],
   "protected_paths": [
     ".github/",

@@ -21,8 +21,8 @@ permissions: {}
 
 jobs:
   publish:
-    name: dashboard data and pages
-    runs-on: [self-hosted, teamup-merge]
+    name: Dashboard
+    runs-on: [self-hosted, utility]
     timeout-minutes: 10
     permissions:
       actions: read # workflow runs for the CI health statistics
