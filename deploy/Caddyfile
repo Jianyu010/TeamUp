@@ -4,7 +4,8 @@
 }
 
 https://{$TEAMUP_HTTPS_HOST}:{$TEAMUP_HTTPS_PORT} {
-	bind {$TEAMUP_HTTPS_BIND}
+	bind {$TEAMUP_HTTPS_BIND:127.0.0.1}
+	vars teamup_https_bind {$TEAMUP_HTTPS_BIND:127.0.0.1}
 	tls {$TEAMUP_TLS_CERT} {$TEAMUP_TLS_KEY}
 
 	handle /v1/* {

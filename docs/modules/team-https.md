@@ -14,7 +14,7 @@
 
 证书与私钥由管理员显式提供，二者必须一一配对：
 
-- 证书的 SAN 必须完整覆盖成员访问使用的 DNS 名称（例如 `teamup.corp.example`），需要 IP 访问时把 IP 一并写入 SAN。
+- 成员必须用同一个 DNS 名称访问，该名称要同时匹配站点与证书：既要与 `TEAMUP_HTTPS_HOST`（站点的 Host 匹配）一致，也要完整写入证书 SAN（例如 `teamup.corp.example`）。只用 IP 访问不会命中站点的 Host 匹配，本路径不支持，也不要求把 IP 写入 SAN。
 - 更换 DNS 名称或证书时，证书与私钥必须成对替换并重启 Caddy；只换其一会导致启动失败或握手失败，不允许混用。
 - 私钥权限 `0600`，仅运行 Caddy 的用户可读；私钥不离开服务器。
 
@@ -26,13 +26,14 @@
 | --- | --- |
 | `TEAMUP_HTTPS_HOST` | 成员访问的 DNS 名称，用于匹配证书与 Host 校验 |
 | `TEAMUP_HTTPS_PORT` | HTTPS 监听端口，正式部署通常为 443 |
-| `TEAMUP_HTTPS_BIND` | 显式绑定的服务器地址（内网网卡或 VPN 接口 IP），避免意外监听全部接口 |
+| `TEAMUP_HTTPS_BIND` | 显式绑定的服务器地址（内网网卡或 VPN 接口 IP）。未设置时只绑定回环 `127.0.0.1`；显式设置为空串时 Caddy 直接拒绝加载配置；两种情况都不会监听全部接口，显式地址按原值绑定 |
 | `TEAMUP_TLS_CERT`、`TEAMUP_TLS_KEY` | 证书与私钥文件的绝对路径 |
 | `TEAMUP_UPSTREAM_PORT` | 回环上 TeamUp Server 的端口（默认部署为 8765） |
 
 行为要点：
 
 - `admin off` 关闭 Caddy 管理端点；`auto_https disable_redirects` 不额外监听 HTTP 跳转端口。
+- `TEAMUP_HTTPS_BIND` fail closed：Caddyfile 的 `{$TEAMUP_HTTPS_BIND:127.0.0.1}` 默认值只在环境变量未设置时生效；显式空串会展开为空参数，站点内的 `vars teamup_https_bind` 守卫因此参数数量不足，`caddy adapt` 报错退出、配置整体被拒绝，不会退化为全网卡监听（实测 Caddy v2.11.9，见下方已验证）。
 - 仅 `/v1/*` 反向代理到字面量回环上游 `127.0.0.1:$TEAMUP_UPSTREAM_PORT`，其余路径一律返回 404。
 - `Authorization` 头原样透传，认证与授权完全由后端按契约执行。
 - SSE（`/v1/events`）由 Caddy 默认即时下发，不配置缓冲或跳转；SSE 只作提示，丢帧后仍由持久收件箱恢复，重连语义不变。
@@ -45,7 +46,7 @@ caddy run --config /opt/teamup-pilot/Caddyfile --adapter caddyfile
 
 ## 源码分发
 
-客户端源码必须与 SSH 路径同源。在仓库根对固定修订执行 `git archive`，记录 SHA256 摘要，经团队批准的渠道（成员间约定的私密渠道或本 HTTPS 站点）分发；成员校验摘要一致后再解压安装，不接受来源不明的压缩包。
+客户端源码必须与 SSH 路径同源。在仓库根对固定修订执行 `git archive`，记录 SHA256 摘要，经团队批准的独立私密渠道分发；本 HTTPS 站点只转发 `/v1`，不提供源码下载，不得作为分发通道。成员校验摘要一致后再解压安装，不接受来源不明的压缩包。
 
 ```sh
 git archive --format=tar.gz --prefix=teamup-account-pilot/ -o teamup-client-src.tar.gz <pinned-revision>
@@ -63,6 +64,6 @@ sha256sum teamup-client-src.tar.gz
 
 ## 已验证与未验证
 
-自动化验收在回环环境用临时私有 CA 与 `localhost` 证书运行真实 Caddy（经 `TEAMUP_CADDY_BIN` 或 `PATH` 提供 caddy 后执行 `uv run --no-sync pytest tests/test_https_proxy.py`），覆盖：经代理的账号登录与 Agent 登记、运行中成员的实时 SSE 提示、离线成员重连补收、错误 CA 信任失败、错误口令失败，以及非 `/v1` 路径 404。
+自动化验收在回环环境用临时私有 CA 与 `localhost` 证书运行真实 Caddy（经 `TEAMUP_CADDY_BIN` 或 `PATH` 提供 caddy 后执行 `uv run --no-sync pytest tests/test_https_proxy.py`），覆盖：经代理的账号登录与 Agent 登记、运行中成员的实时 SSE 提示、离线成员重连补收、错误 CA 信任失败、错误口令失败，以及非 `/v1` 路径 404。同一套件还用真实 `caddy adapt` 验证 `TEAMUP_HTTPS_BIND` 的三种取值：未设置时仅回环监听、显式空串时配置被拒绝、显式地址原样保留（实测 Caddy v2.11.9）。
 
 未验证：真实内网或 VPN 部署、跨网段链路、第二台设备与生产网络。在完成这些验证并取得 owner 同意前，线上试点保持 SSH 隧道，本页路径不作为默认接入方式。

@@ -5,6 +5,7 @@ import json
 import os
 import secrets
 import shutil
+import socket
 import ssl
 import subprocess
 import sys
@@ -22,7 +23,6 @@ from test_account_pilot import login, password_command
 from test_loop import (
     ROOT,
     Developer,
-    available_port,
     process,
     tcp_is_ready,
     tool,
@@ -132,6 +132,18 @@ def caddy_process(config_path, env, log):
                     child.wait(timeout=5)
 
 
+@contextmanager
+def hold_loopback_ports():
+    reservations = [socket.socket() for _ in range(2)]
+    try:
+        for reservation in reservations:
+            reservation.bind(("127.0.0.1", 0))
+        yield reservations
+    finally:
+        for reservation in reservations:
+            reservation.close()
+
+
 def create_account(database, username, password):
     password_command(
         [
@@ -151,17 +163,38 @@ def create_account(database, username, password):
 
 
 def wait_for_https(origin, context, child):
-    def verified():
+    def ready():
         try:
             response = httpx.get(
                 f"{origin}/v1/inbox", verify=context, trust_env=False, timeout=2
             )
         except httpx.HTTPError:
             return False
-        assert response.status_code == 401, response.status_code
-        return True
+        return response.status_code == 401
 
-    wait_for(verified, child)
+    wait_for(ready, child)
+
+
+def adapt_caddyfile(env):
+    return subprocess.run(
+        [
+            CADDY,
+            "adapt",
+            "--config",
+            str(ROOT / "deploy" / "Caddyfile"),
+            "--adapter",
+            "caddyfile",
+        ],
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def listen_addresses(config):
+    servers = config.get("apps", {}).get("http", {}).get("servers", {})
+    return [address for server in servers.values() for address in server["listen"]]
 
 
 def tls_verification_failed(exc):
@@ -180,152 +213,165 @@ def tls_verification_failed(exc):
 
 
 async def https_exchange(root):
-    app_port = available_port()
-    https_port = available_port()
-    origin = f"https://localhost:{https_port}"
+    with hold_loopback_ports() as (app_port_reservation, https_port_reservation):
+        app_port = app_port_reservation.getsockname()[1]
+        https_port = https_port_reservation.getsockname()[1]
+        origin = f"https://localhost:{https_port}"
 
-    pki = root / "pki"
-    pki.mkdir()
-    ca_key, ca_certificate = generate_authority("TeamUp HTTPS acceptance CA")
-    leaf_key, leaf_certificate = generate_leaf(ca_key, ca_certificate)
-    _, untrusted_certificate = generate_authority("TeamUp HTTPS untrusted CA")
-    ca_path = write_certificate(pki / "teamup-ca.pem", ca_certificate)
-    untrusted_path = write_certificate(pki / "untrusted-ca.pem", untrusted_certificate)
-    certificate_path = write_certificate(pki / "localhost.pem", leaf_certificate)
-    key_path = write_key(pki / "localhost.key", leaf_key)
-    trusted = ssl.create_default_context(cafile=str(ca_path))
-    untrusted = ssl.create_default_context(cafile=str(untrusted_path))
+        pki = root / "pki"
+        pki.mkdir()
+        ca_key, ca_certificate = generate_authority("TeamUp HTTPS acceptance CA")
+        leaf_key, leaf_certificate = generate_leaf(ca_key, ca_certificate)
+        _, untrusted_certificate = generate_authority("TeamUp HTTPS untrusted CA")
+        ca_path = write_certificate(pki / "teamup-ca.pem", ca_certificate)
+        untrusted_path = write_certificate(
+            pki / "untrusted-ca.pem", untrusted_certificate
+        )
+        certificate_path = write_certificate(pki / "localhost.pem", leaf_certificate)
+        key_path = write_key(pki / "localhost.key", leaf_key)
+        trusted = ssl.create_default_context(cafile=str(ca_path))
+        untrusted = ssl.create_default_context(cafile=str(untrusted_path))
 
-    database = root / "server.db"
-    usernames = ["https-alice", "https-bob"]
+        database = root / "server.db"
+        usernames = ["https-alice", "https-bob"]
 
-    with (
-        process(
+        app_port_reservation.close()
+        with process(
             "teamup_server.main",
             "server/src",
             ["--db", database, "--port", app_port],
             root / "server.log",
-        ) as server,
-        caddy_process(
-            ROOT / "deploy" / "Caddyfile",
-            {
-                "TEAMUP_HTTPS_HOST": "localhost",
-                "TEAMUP_HTTPS_PORT": str(https_port),
-                "TEAMUP_HTTPS_BIND": "127.0.0.1",
-                "TEAMUP_TLS_CERT": str(certificate_path),
-                "TEAMUP_TLS_KEY": str(key_path),
-                "TEAMUP_UPSTREAM_PORT": str(app_port),
-                "XDG_DATA_HOME": str(root / "caddy-home"),
-                "XDG_CONFIG_HOME": str(root / "caddy-home"),
-            },
-            root / "caddy.log",
-        ) as proxy,
-    ):
-        wait_for(lambda: tcp_is_ready(app_port), server)
-        wait_for_https(origin, trusted, proxy)
+        ) as server:
+            https_port_reservation.close()
+            with caddy_process(
+                ROOT / "deploy" / "Caddyfile",
+                {
+                    "TEAMUP_HTTPS_HOST": "localhost",
+                    "TEAMUP_HTTPS_PORT": str(https_port),
+                    "TEAMUP_HTTPS_BIND": "127.0.0.1",
+                    "TEAMUP_TLS_CERT": str(certificate_path),
+                    "TEAMUP_TLS_KEY": str(key_path),
+                    "TEAMUP_UPSTREAM_PORT": str(app_port),
+                    "XDG_DATA_HOME": str(root / "caddy-home"),
+                    "XDG_CONFIG_HOME": str(root / "caddy-home"),
+                },
+                root / "caddy.log",
+            ) as proxy:
+                wait_for(lambda: tcp_is_ready(app_port), server)
+                wait_for_https(origin, trusted, proxy)
 
-        async with httpx.AsyncClient(
-            base_url=origin, verify=trusted, trust_env=False
-        ) as api:
-            assert (await api.get("/")).status_code == 404
-            assert (await api.get("/v1foo")).status_code == 404
-            rejected = await api.get(
-                "/v1/inbox",
-                headers={"Authorization": "Bearer not-a-member-token"},
-            )
-            assert rejected.status_code == 401
-            assert rejected.json()["error"]["code"] == "unauthorized"
+                async with httpx.AsyncClient(
+                    base_url=origin, verify=trusted, trust_env=False
+                ) as api:
+                    assert (await api.get("/")).status_code == 404
+                    assert (await api.get("/v1foo")).status_code == 404
+                    rejected = await api.get(
+                        "/v1/inbox",
+                        headers={"Authorization": "Bearer not-a-member-token"},
+                    )
+                    assert rejected.status_code == 401
+                    assert rejected.json()["error"]["code"] == "unauthorized"
 
-        a = HttpsDeveloper(root, "alice", https_port)
-        b = HttpsDeveloper(root, "bob", https_port)
-        for developer in (a, b):
-            shutil.copy(ca_path, developer.config_path.parent / "teamup-ca.pem")
-        for developer, username in zip((a, b), usernames, strict=True):
-            password = secrets.token_urlsafe(24)
-            create_account(database, username, password)
-            login(developer, username, password)
-            assert "account_token" in json.loads(developer.config_path.read_text())
+                a = HttpsDeveloper(root, "alice", https_port)
+                b = HttpsDeveloper(root, "bob", https_port)
+                for developer in (a, b):
+                    shutil.copy(ca_path, developer.config_path.parent / "teamup-ca.pem")
+                for developer, username in zip((a, b), usernames, strict=True):
+                    password = secrets.token_urlsafe(24)
+                    create_account(database, username, password)
+                    login(developer, username, password)
+                    assert "account_token" in json.loads(
+                        developer.config_path.read_text()
+                    )
 
-        async with httpx.AsyncClient(
-            base_url=origin, verify=trusted, trust_env=False
-        ) as api:
-            denied = await api.post(
-                "/v1/auth/login",
-                json={"username": usernames[0], "password": "wrong password"},
-            )
-            assert denied.status_code == 401
-            assert denied.json()["error"]["code"] == "unauthorized"
+                async with httpx.AsyncClient(
+                    base_url=origin, verify=trusted, trust_env=False
+                ) as api:
+                    denied = await api.post(
+                        "/v1/auth/login",
+                        json={"username": usernames[0], "password": "wrong password"},
+                    )
+                    assert denied.status_code == 401
+                    assert denied.json()["error"]["code"] == "unauthorized"
 
-        async with httpx.AsyncClient(
-            base_url=origin, verify=untrusted, trust_env=False
-        ) as untrusted_client:
-            with pytest.raises(httpx.ConnectError) as rejected:
-                await untrusted_client.get("/v1/inbox")
-            assert tls_verification_failed(rejected.value)
+                async with httpx.AsyncClient(
+                    base_url=origin, verify=untrusted, trust_env=False
+                ) as untrusted_client:
+                    with pytest.raises(httpx.ConnectError) as rejected:
+                        await untrusted_client.get("/v1/inbox")
+                    assert tls_verification_failed(rejected.value)
 
-        with a.daemon():
-            async with a.agent() as agent_a:
-                with b.daemon() as bob_daemon:
-                    async with b.agent() as agent_b:
-                        alice = await tool(
-                            agent_a, "register", role_description="HTTPS backend"
-                        )
-                        bob = await tool(
-                            agent_b, "register", role_description="HTTPS frontend"
-                        )
-                        assert alice["member_id"] != bob["member_id"]
-                        room = await tool(
-                            agent_a, "create_room", name="HTTPS acceptance"
-                        )
-                        room_id = room["room_id"]
-                        await tool(agent_b, "join_room", room_id=room_id)
-                        for agent in (agent_a, agent_b):
-                            board = await tool(agent, "get_board", room_id=room_id)
-                            await tool(
-                                agent,
-                                "ack_board",
-                                room_id=room_id,
-                                version=board["version"],
+                with a.daemon():
+                    async with a.agent() as agent_a:
+                        with b.daemon() as bob_daemon:
+                            async with b.agent() as agent_b:
+                                alice = await tool(
+                                    agent_a,
+                                    "register",
+                                    role_description="HTTPS backend",
+                                )
+                                bob = await tool(
+                                    agent_b,
+                                    "register",
+                                    role_description="HTTPS frontend",
+                                )
+                                assert alice["member_id"] != bob["member_id"]
+                                room = await tool(
+                                    agent_a, "create_room", name="HTTPS acceptance"
+                                )
+                                room_id = room["room_id"]
+                                await tool(agent_b, "join_room", room_id=room_id)
+                                for agent in (agent_a, agent_b):
+                                    board = await tool(
+                                        agent, "get_board", room_id=room_id
+                                    )
+                                    await tool(
+                                        agent,
+                                        "ack_board",
+                                        room_id=room_id,
+                                        version=board["version"],
+                                    )
+                                # Let Bob's proxied SSE stream go live and idle so the
+                                # mention is delivered by the live hint, not backfill.
+                                await asyncio.sleep(1.5)
+                                live = await tool(
+                                    agent_a,
+                                    "send_message",
+                                    room_id=room_id,
+                                    client_message_id="https-live-sse-hint",
+                                    text="Live hint over proxied SSE",
+                                    mention_member_id=bob["member_id"],
+                                )
+                            notice = await asyncio.to_thread(
+                                b.wait_for_notice, live["message_id"], bob_daemon
                             )
-                        # Let Bob's proxied SSE stream go live and idle so the
-                        # mention is delivered by the live hint, not backfill.
-                        await asyncio.sleep(1.5)
-                        live = await tool(
+                            assert notice["sender_member_id"] == alice["member_id"]
+                            assert "text" not in notice
+                        offline = await tool(
                             agent_a,
                             "send_message",
                             room_id=room_id,
-                            client_message_id="https-live-sse-hint",
-                            text="Live hint over proxied SSE",
+                            client_message_id="https-offline-backfill",
+                            text="Backfill after offline reconnect",
                             mention_member_id=bob["member_id"],
                         )
-                    notice = await asyncio.to_thread(
-                        b.wait_for_notice, live["message_id"], bob_daemon
-                    )
-                    assert notice["sender_member_id"] == alice["member_id"]
-                    assert "text" not in notice
-                offline = await tool(
-                    agent_a,
-                    "send_message",
-                    room_id=room_id,
-                    client_message_id="https-offline-backfill",
-                    text="Backfill after offline reconnect",
-                    mention_member_id=bob["member_id"],
-                )
-                with b.daemon() as bob_daemon:
-                    backfill = await asyncio.to_thread(
-                        b.wait_for_notice, offline["message_id"], bob_daemon
-                    )
-                    async with b.agent() as agent_b:
-                        assert (await tool(agent_b, "notifications"))[
-                            "notifications"
-                        ] == [notice, backfill]
-                        messages = (
-                            await tool(agent_b, "read_messages", room_id=room_id)
-                        )["messages"]
-                        assert [message["text"] for message in messages] == [
-                            "Live hint over proxied SSE",
-                            "Backfill after offline reconnect",
-                        ]
+                        with b.daemon() as bob_daemon:
+                            backfill = await asyncio.to_thread(
+                                b.wait_for_notice, offline["message_id"], bob_daemon
+                            )
+                            async with b.agent() as agent_b:
+                                assert (await tool(agent_b, "notifications"))[
+                                    "notifications"
+                                ] == [notice, backfill]
+                                messages = (
+                                    await tool(
+                                        agent_b, "read_messages", room_id=room_id
+                                    )
+                                )["messages"]
+                                assert [message["text"] for message in messages] == [
+                                    "Live hint over proxied SSE",
+                                    "Backfill after offline reconnect",
+                                ]
 
 
 def test_caddy_https_proxy_login_sse_notice_and_reconnect():
@@ -336,3 +382,29 @@ def test_caddy_https_proxy_login_sse_notice_and_reconnect():
                 await https_exchange(Path(directory))
 
         asyncio.run(run())
+
+
+def test_caddy_bind_fails_closed(tmp_path):
+    base = {
+        "TEAMUP_HTTPS_HOST": "localhost",
+        "TEAMUP_HTTPS_PORT": "8443",
+        "TEAMUP_TLS_CERT": str(tmp_path / "localhost.pem"),
+        "TEAMUP_TLS_KEY": str(tmp_path / "localhost.key"),
+        "TEAMUP_UPSTREAM_PORT": "8765",
+    }
+
+    missing = adapt_caddyfile(base)
+    assert missing.returncode == 0, missing.stderr
+    addresses = listen_addresses(json.loads(missing.stdout))
+    assert addresses
+    for address in addresses:
+        host = address.rsplit(":", 1)[0].strip("[]")
+        assert ipaddress.ip_address(host).is_loopback, address
+
+    empty = adapt_caddyfile(base | {"TEAMUP_HTTPS_BIND": ""})
+    assert empty.returncode != 0, empty.stdout
+    assert empty.stderr
+
+    explicit = adapt_caddyfile(base | {"TEAMUP_HTTPS_BIND": "192.0.2.10"})
+    assert explicit.returncode == 0, explicit.stderr
+    assert listen_addresses(json.loads(explicit.stdout)) == ["192.0.2.10:8443"]
