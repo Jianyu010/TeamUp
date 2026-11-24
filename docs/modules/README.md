@@ -13,3 +13,5 @@
 | [Harness 投递设计](harness-delivery.md) | 成员到会话的映射、会话接入与 @ 投递，Claude Code 部分已实现 |
 | [Codex 桌面唤醒验证](codex-wake.md) | Harness Driver 的独立验证步骤与通过条件 |
 | [Claude Code 桌面唤醒验证](claude-code-wake.md) | 本机 socket 入口与实际 turn 证据 |
+| [Local Client Console](client-console.md) | 本机控制台、数据权限与联合验收 |
+| [Room tasks proposal](room-tasks-proposal.md) | 房间任务、参与人、进度与停滞追踪契约提案 |

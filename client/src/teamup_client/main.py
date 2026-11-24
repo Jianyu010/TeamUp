@@ -8,11 +8,13 @@ import secrets
 import signal
 import sqlite3
 import sys
-from contextlib import suppress
+from contextlib import nullcontext, suppress
 from functools import partial
 from pathlib import Path
 
 from ._config import ConfigError, locked_config, owner_key, read_config
+from ._console import serve_console
+from ._console_data import ConsoleReader
 from ._coordinator import Coordinator
 from ._daemon import handle
 from ._desktop import DesktopNotifier, default_command
@@ -24,7 +26,7 @@ from ._upstream import connect
 from .ipc import ClientError, call
 
 
-async def _serve(path):
+async def _serve(path, *, console=False):
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     loop.add_signal_handler(signal.SIGTERM, stop.set)
@@ -42,10 +44,20 @@ async def _serve(path):
                     config, upstream, notices, NoticeOutput(), notifier
                 )
                 on_call = partial(handle, coordinator=coordinator)
+                viewer = (
+                    serve_console(
+                        ConsoleReader(coordinator.console_sessions, upstream.request)
+                    )
+                    if console
+                    else nullcontext()
+                )
                 async with (
                     listen(config.socket_path, on_call),
                     coordinator.watching_inboxes(),
+                    viewer as console_url,
                 ):
+                    if console_url:
+                        print(console_url, flush=True)
                     await stop.wait()
     finally:
         loop.remove_signal_handler(signal.SIGTERM)
@@ -87,6 +99,9 @@ def main(argv=None):
     commands = parser.add_subparsers(dest="command", required=True)
     serve = commands.add_parser("serve")
     serve.add_argument("--config", required=True, type=Path)
+    serve.add_argument(
+        "--console", action="store_true", help="Start the local browser console"
+    )
     sign_in = commands.add_parser("login")
     sign_in.add_argument("--config", required=True, type=Path)
     sign_in.add_argument("--username", required=True)
@@ -126,7 +141,7 @@ def main(argv=None):
             print(json.dumps(asyncio.run(_owner(args)), ensure_ascii=False, indent=2))
         elif args.command == "serve":
             with suppress(KeyboardInterrupt):
-                asyncio.run(_serve(args.config))
+                asyncio.run(_serve(args.config, console=args.console))
         elif args.command == "login":
             login(args.config, args.username)
             print("TeamUp login saved.")

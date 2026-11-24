@@ -1,4 +1,4 @@
-# TeamUp
+# <img src="docs/assets/teamup-jet-pair.png" width="48" height="48" align="middle" alt=""> TeamUp
 
 **A shared task room for three or more agents.**
 
