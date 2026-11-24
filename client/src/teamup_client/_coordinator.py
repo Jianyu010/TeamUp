@@ -7,7 +7,7 @@ from functools import partial
 
 from ._config import Binding, owner_key
 from ._desktop import PREVIEW_LIMIT, TITLE_LIMIT, clean
-from ._harness import DRIVERS, owned_socket, wake_prompt
+from ._harness import owned_socket, wake_prompt
 from ._notices import binding_scope
 from ._protocol import is_integer, is_string, is_uuid
 from ._upstream import unavailable
@@ -131,7 +131,7 @@ def valid_session(value):
 
 
 class Coordinator:
-    def __init__(self, config, upstream, notices, notice_output, notifier):
+    def __init__(self, config, upstream, notices, notice_output, notifier, drivers):
         self._server_url = config.server_url
         self._registration_token = config.account_token or config.enrollment_key
         self._legacy_enrollment = config.enrollment_key is not None
@@ -140,6 +140,7 @@ class Coordinator:
         self._notices = notices
         self._notice_output = notice_output
         self._notifier = notifier
+        self._drivers = drivers
         self._static = {
             binding.binding_key: (binding.harness_instance_id, binding.session_key)
             for binding in config.bindings
@@ -190,7 +191,7 @@ class Coordinator:
     async def _resolve(self, key, session_ref):
         identity, install = self._identity(key, session_ref)
         if session_ref is not None and session_ref["kind"] == "codex":
-            # Codex sessions are addressed by thread; no Driver submits yet.
+            # Codex sessions are addressed by thread and have no live connection.
             self._set_lease(identity, Lease("codex", session_ref["id"]))
         if install is None:
             return self._sessions[identity]
@@ -595,7 +596,7 @@ class Coordinator:
 
     async def _hand_off(self, binding, session, notice):
         lease = self._leases.get(session.identity)
-        driver = DRIVERS.get(lease.kind)
+        driver = self._drivers.get(lease.kind)
         if driver is None:
             return "failed"
         room = notice["room_id"]
@@ -634,6 +635,8 @@ class Coordinator:
         prompt = wake_prompt(notice, role, room_name, message, board)
         self._notices.set_harness_state(session.scope, notice["event_id"], "submitting")
         submitted = await driver(lease.address, lease.token, prompt)
+        if submitted is None:
+            return "unknown"
         return "submitted" if submitted else "failed"
 
 
