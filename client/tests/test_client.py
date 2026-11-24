@@ -232,8 +232,9 @@ def write_config(directory, server_url, **overrides):
                 "socket_path": str(socket),
                 "enrollment_key": ENROLLMENT,
                 "bindings": BINDINGS,
-                # Tests never raise real desktop notices.
+                # Tests never raise real desktop notices or wake real Codex threads.
                 "notify_command": [],
+                "codex_command": [],
                 **overrides,
             }
         ),
@@ -1107,3 +1108,108 @@ def test_unsettled_submission_is_never_resent():
     store.abandon_submitting("s")
     assert store.state("s", 1)["harness_state"] == "unknown"
     assert [item["event_id"] for item in store.undecided("s")] == [2, 3]
+
+
+def test_codex_driver_runs_the_cli_by_argv_and_maps_its_exit(monkeypatch):
+    from teamup_client import _harness
+
+    thread = "00000000-0000-4000-8000-0000000000aa"
+    with tempfile.TemporaryDirectory() as directory:
+        log = Path(directory) / "argv.json"
+        script = (
+            "import json, sys, time\n"
+            "open(sys.argv[1], 'w').write(json.dumps(sys.argv[2:]))\n"
+            "time.sleep(float(sys.argv[2]))\n"
+            "sys.exit(int(sys.argv[3]))\n"
+        )
+
+        def submit(delay, code, address=thread, text="$(touch x) -- 'hi'"):
+            command = (sys.executable, "-c", script, str(log), delay, code)
+            return asyncio.run(_harness.submit_codex(command, address, None, text))
+
+        assert submit("0", "0") is True
+        assert json.loads(log.read_text()) == [
+            "0",
+            "0",
+            "queue",
+            "--disable",
+            "daemon_auto_start",
+            "--resume",
+            "--thread",
+            thread,
+            "--message",
+            "$(touch x) -- 'hi'",
+        ]
+        assert submit("0", "3") is False
+        log.unlink()
+        # A thread that is not a UUID could name a session or an option: no run.
+        assert submit("0", "0", address="--help") is False
+        assert submit("0", "0", address="my session") is False
+        assert not log.exists()
+        assert asyncio.run(_harness.submit_codex((), thread, None, "x")) is False
+        assert (
+            asyncio.run(
+                _harness.submit_codex((f"{directory}/missing",), thread, None, "x")
+            )
+            is False
+        )
+        # A CLI that does not exit in time is killed; the result is unknown.
+        monkeypatch.setattr(_harness, "CODEX_TIMEOUT", 0.5)
+        started = time.monotonic()
+        assert submit("30", "0") is None
+        assert time.monotonic() - started < 5
+
+
+def test_cancelled_codex_submission_kills_the_cli():
+    from teamup_client import _harness
+
+    thread = "00000000-0000-4000-8000-0000000000aa"
+    with tempfile.TemporaryDirectory() as directory:
+        pid_file = Path(directory) / "pid"
+        script = (
+            "import os, sys, time\n"
+            "open(sys.argv[1], 'w').write(str(os.getpid()))\n"
+            "time.sleep(30)\n"
+        )
+
+        async def run():
+            command = (sys.executable, "-c", script, str(pid_file))
+            task = asyncio.create_task(
+                _harness.submit_codex(command, thread, None, "x")
+            )
+            async with asyncio.timeout(5):
+                while not pid_file.exists() or not pid_file.read_text():
+                    await asyncio.sleep(0.02)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            return int(pid_file.read_text())
+
+        pid = asyncio.run(run())
+        # Killed and reaped: the process no longer exists.
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
+
+
+def test_codex_command_defaults_to_the_bundled_cli_only_on_macos(monkeypatch):
+    from teamup_client import _harness
+
+    monkeypatch.setattr(_harness.os, "access", lambda path, mode: True)
+    assert _harness.default_codex_command("darwin") == (str(_harness.BUNDLED_CODEX),)
+    assert _harness.default_codex_command("linux") == ()
+    monkeypatch.setattr(_harness.os, "access", lambda path, mode: False)
+    assert _harness.default_codex_command("darwin") == ()
+
+
+@pytest.mark.parametrize("command", ["codex", [1], ["co\0dex"], None])
+def test_codex_command_must_be_an_argv_list(command):
+    from teamup_client._config import ConfigError, read_config
+
+    with tempfile.TemporaryDirectory() as directory:
+        config, _ = write_config(Path(directory), "http://127.0.0.1:1")
+        assert read_config(config).codex_command == ()
+        config, _ = write_config(
+            Path(directory), "http://127.0.0.1:1", codex_command=command
+        )
+        with pytest.raises(ConfigError, match="codex_command"):
+            read_config(config)
