@@ -33,8 +33,8 @@ Server 启动读取 `TEAMUP_ENROLLMENT_KEYS` JSON 对象，键为 owner ID，值
 | `GET /v1/members?q=...` | 可选角色子串，默认空串 | `{"members":[Member]}`，按 ID 稳定排序，最多 100 条，大小写不敏感 |
 | `POST /v1/rooms` | `{"name":"...","rules":"...","protocol":"..."}` | Room。创建者同时加入。公告初始版本为 1，两段文字可省略，各有默认值 |
 | `POST /v1/rooms/{room_id}/join` | 无正文 | Room。当前只提供团队公开房间。重复加入保留原加入位置 |
-| `GET /v1/rooms/{room_id}/board` | 无正文 | Board。加入后即可读取 |
-| `POST /v1/rooms/{room_id}/board/ack` | `{"version":1}` | `{"version":1}`。确认限房间成员，要求当前版本 |
+| `GET /v1/rooms/{room_id}/board` | 无正文 | Board。加入后即可读取，Server 记录该成员取到的版本 |
+| `POST /v1/rooms/{room_id}/board/ack` | `{"version":1}` | `{"version":1}`。确认限房间成员，要求当前版本，且该成员已先读取该版本 |
 | `POST /v1/rooms/{room_id}/messages` | `client_message_id`、`text`、可选 `mention_member_id` | Message。定向 @ 由独立目标字段表达，目标必须是房间内其他成员 |
 | `GET /v1/rooms/{room_id}/messages` | `after`、`limit` | `{"messages":[Message]}`。只读本次加入之后的历史 |
 | `GET /v1/inbox` | `after`、`limit` | `{"events":[Event]}`。仅返回本人未确认且当前可读事件 |
@@ -44,7 +44,7 @@ Server 启动读取 `TEAMUP_ENROLLMENT_KEYS` JSON 对象，键为 owner ID，值
 ## 事务与错误
 
 - 成员按 `(owner_id, harness_instance_id, session_key)` 唯一，同一 IP 或同一个 harness 实例可有多个会话。稳定绑定和 token 由本机开发者授权配置。
-- 读发房间消息及领取房间消息事件要求当前公告已确认。未确认时，历史和发送返回 `board_ack_required`，收件箱暂缓返回该房间条目。收件箱分页游标只用于本轮扫描，重连和新提示均可从 0 重扫未确认项。
+- 确认当前公告前须通过读取入口取得该版本，未读取时返回 `board_read_required`。读发房间消息及领取房间消息事件要求当前公告已确认。未确认时，历史和发送返回 `board_ack_required`，收件箱暂缓返回该房间条目。收件箱分页游标只用于本轮扫描，重连和新提示均可从 0 重扫未确认项。
 - 发送在同一个事务中做授权、保存消息并为当时的其他房间成员各写一条事件。指定目标收到 `mention`，其余成员收到 `message`，发件人通过历史读取自己的消息。相同发件人、相同 `client_message_id` 和相同房间、文本、@ 目标重试返回原消息。变更任一字段则冲突。
 - SSE 只提供提示，重连或丢帧后从持久收件箱恢复。成功响应表示 Server 已接受请求。收到 SSE 不等于消息已确认或某个 harness 已唤醒。
-- 错误 JSON 统一为 `{"error":{"code":"...","message":"..."}}`。无效输入为 422 `invalid_request`，无效凭证为 401 `unauthorized`，无访问权或资源不存在为 404 `not_found`，当前公告未确认时为 409 `board_ack_required`，重复键或版本冲突为 409 `conflict`。无效 @ 目标为 422 `invalid_mention`。错误正文不回显凭证。
+- 错误 JSON 统一为 `{"error":{"code":"...","message":"..."}}`。无效输入为 422 `invalid_request`，无效凭证为 401 `unauthorized`，无访问权或资源不存在为 404 `not_found`，当前公告未确认时为 409 `board_ack_required`，尚未读取当前公告便提交确认为 409 `board_read_required`，重复键或版本冲突为 409 `conflict`。无效 @ 目标为 422 `invalid_mention`。错误正文不回显凭证。
