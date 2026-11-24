@@ -4,7 +4,7 @@ import asyncio
 import re
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
-from typing import Annotated
+from typing import Annotated, Literal
 from urllib.parse import unquote_to_bytes
 from uuid import UUID
 
@@ -89,6 +89,7 @@ class _Room(_Body):
     name: _Name
     rules: _LongText | None = None
     protocol: _LongText | None = None
+    history_policy: Literal["retained", "since_joining"] = "since_joining"
 
     @field_validator("rules", "protocol")
     @classmethod
@@ -207,7 +208,7 @@ class Gateway:
         @app.post("/v1/rooms", dependencies=[Depends(_require_utf8)])
         def create_room(token: _Bearer, body: _Room) -> dict:
             return collaboration.create_room(
-                token, body.name, body.rules, body.protocol
+                token, body.name, body.rules, body.protocol, body.history_policy
             )
 
         @app.get("/v1/rooms")
