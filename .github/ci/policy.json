@@ -3,9 +3,16 @@
   "owner": "Jianyu010",
   "required_checks": [
     "2 · Lint",
+    "2 · Type Check",
+    "2 · Secrets",
+    "2 · Workflow Lint",
+    "2 · Dependencies",
     "2 · Architecture",
     "3 · Linux UT",
-    "3 · Linux ST"
+    "3 · Linux ST",
+    "3 · Linux ST · 跨组件",
+    "3 · Contract",
+    "3 · Install"
   ],
   "protected_paths": [
     ".github/",

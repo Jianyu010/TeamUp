@@ -35,9 +35,16 @@ NO_ISSUE = "pr/no-issue"
 # Required check (job name) → the gate label it sets while failing.
 GATE_LABELS = {
     "2 · Lint": "gate/lint-failed",
+    "2 · Type Check": "gate/type-check-failed",
+    "2 · Secrets": "gate/secrets-failed",
+    "2 · Workflow Lint": "gate/workflow-lint-failed",
+    "2 · Dependencies": "gate/dependencies-failed",
     "2 · Architecture": "gate/architecture-failed",
     "3 · Linux UT": "gate/linux-ut-failed",
     "3 · Linux ST": "gate/linux-st-failed",
+    "3 · Linux ST · 跨组件": "gate/linux-st-cross-failed",
+    "3 · Contract": "gate/contract-failed",
+    "3 · Install": "gate/install-failed",
 }
 REVIEW_LABEL = "gate/ai-review-failed"
 FAILED = frozenset({"failure", "timed_out", "startup_failure"})

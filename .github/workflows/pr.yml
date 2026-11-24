@@ -59,6 +59,118 @@ jobs:
       - name: ruff check
         run: uv run --no-sync ruff check .
 
+  type-check:
+    name: 2 · Type Check
+    runs-on: [self-hosted, type-check]
+    timeout-minutes: 10
+    steps:
+      - name: Fetch the tree (API tarball, no git)
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+          curl -sSfL --connect-timeout 10 --max-time 180 --retry 5 --retry-all-errors \
+            -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            -o "$RUNNER_TEMP/tree.tar.gz" "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/tarball/$GITHUB_SHA"
+          tar -xzf "$RUNNER_TEMP/tree.tar.gz" -C "$GITHUB_WORKSPACE" --strip-components=1 --no-same-owner
+          rm -f "$RUNNER_TEMP/tree.tar.gz"
+      - name: Python environment (uv, locked, through the mirror)
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          sed -i 's#https://pypi.org/simple#https://pypi.tuna.tsinghua.edu.cn/simple#g; s#https://files.pythonhosted.org/packages/#https://pypi.tuna.tsinghua.edu.cn/packages/#g' uv.lock
+          uv sync --frozen --all-packages --python 3.12 2>&1 | tail -3
+      - name: mypy
+        run: uv run --no-sync mypy
+
+  secrets:
+    name: 2 · Secrets
+    runs-on: [self-hosted, secrets]
+    timeout-minutes: 10
+    steps:
+      - name: Fetch the tree (API tarball, no git)
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+          curl -sSfL --connect-timeout 10 --max-time 180 --retry 5 --retry-all-errors \
+            -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            -o "$RUNNER_TEMP/tree.tar.gz" "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/tarball/$GITHUB_SHA"
+          tar -xzf "$RUNNER_TEMP/tree.tar.gz" -C "$GITHUB_WORKSPACE" --strip-components=1 --no-same-owner
+          rm -f "$RUNNER_TEMP/tree.tar.gz"
+      # The tarball has no git history, so scan the tree (gitleaks is in ~/.local/bin, installed by
+      # scripts/ci/hp-laptop/install-tools.sh).
+      - name: gitleaks
+        run: gitleaks dir . --config .gitleaks.toml --redact --exit-code 1
+
+  workflow-lint:
+    name: 2 · Workflow Lint
+    runs-on: [self-hosted, workflow-lint]
+    timeout-minutes: 10
+    steps:
+      - name: Fetch the tree (API tarball, no git)
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+          curl -sSfL --connect-timeout 10 --max-time 180 --retry 5 --retry-all-errors \
+            -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            -o "$RUNNER_TEMP/tree.tar.gz" "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/tarball/$GITHUB_SHA"
+          tar -xzf "$RUNNER_TEMP/tree.tar.gz" -C "$GITHUB_WORKSPACE" --strip-components=1 --no-same-owner
+          rm -f "$RUNNER_TEMP/tree.tar.gz"
+      # Tools (actionlint, shellcheck, zizmor) live in ~/.local/bin; custom runner labels are in
+      # .github/actionlint.yaml. The tarball has no .git, so actionlint cannot find the project on
+      # its own: pass the config and the files. It runs shellcheck on every `run:` script.
+      - name: actionlint
+        run: actionlint -config-file .github/actionlint.yaml .github/workflows/*.yml
+      - name: zizmor
+        run: zizmor --offline --no-progress .github/workflows
+
+  dependencies:
+    name: 2 · Dependencies
+    runs-on: [self-hosted, dependencies]
+    timeout-minutes: 10
+    steps:
+      - name: Fetch the tree (API tarball, no git)
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+          curl -sSfL --connect-timeout 10 --max-time 180 --retry 5 --retry-all-errors \
+            -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            -o "$RUNNER_TEMP/tree.tar.gz" "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/tarball/$GITHUB_SHA"
+          tar -xzf "$RUNNER_TEMP/tree.tar.gz" -C "$GITHUB_WORKSPACE" --strip-components=1 --no-same-owner
+          rm -f "$RUNNER_TEMP/tree.tar.gz"
+      # uv.lock records pypi.org URLs, which this box cannot reach, so the check runs on a copy
+      # rewritten to the mirror (the same rewrite the other jobs use). `--check` never writes; it
+      # fails when the rewritten lock no longer satisfies the pyproject files.
+      - name: Lock file matches the pyproject files
+        run: |
+          set -euo pipefail
+          sed -i 's#https://pypi.org/simple#https://pypi.tuna.tsinghua.edu.cn/simple#g; s#https://files.pythonhosted.org/packages/#https://pypi.tuna.tsinghua.edu.cn/packages/#g' uv.lock
+          uv lock --check --python 3.12
+      # Report only, never fails the job. Vulnerability service: OSV (api.osv.dev). hp-laptop reaches
+      # both OSV and PyPI's JSON API, but PyPI timed out under test and OSV answered in ~15 s each time.
+      - name: pip-audit (report only)
+        continue-on-error: true
+        run: |
+          uv export --frozen --all-packages --no-emit-workspace --no-hashes --no-header --no-annotate \
+            --python 3.12 -o "$RUNNER_TEMP/requirements.txt" > /dev/null
+          {
+            echo "### pip-audit"
+            echo '```'
+            pip-audit -s osv -r"$RUNNER_TEMP/requirements.txt" --no-deps --disable-pip --progress-spinner off 2>&1 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
   architecture:
     name: 2 · Architecture
     runs-on: [self-hosted, architecture]
@@ -146,10 +258,12 @@ jobs:
           --ignore=tests/contract
           --ignore=tests/install --ignore=tests/system
 
-  type-check:
-    name: 2 · Type Check
-    runs-on: [self-hosted, type-check]
-    timeout-minutes: 10
+  linux-st-cross:
+    name: 3 · Linux ST · 跨组件
+    needs: [lint, architecture]
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    runs-on: [self-hosted, linux-st-cross]
+    timeout-minutes: 15
     steps:
       - name: Fetch the tree (API tarball, no git)
         timeout-minutes: 5
@@ -169,8 +283,8 @@ jobs:
           set -euo pipefail
           sed -i 's#https://pypi.org/simple#https://pypi.tuna.tsinghua.edu.cn/simple#g; s#https://files.pythonhosted.org/packages/#https://pypi.tuna.tsinghua.edu.cn/packages/#g' uv.lock
           uv sync --frozen --all-packages --python 3.12 2>&1 | tail -3
-      - name: mypy
-        run: uv run --no-sync mypy
+      - name: Server, Client daemons and MCP end to end
+        run: uv run --no-sync pytest -q tests/system
 
   contract:
     name: 3 · Contract
@@ -227,117 +341,3 @@ jobs:
           uv sync --frozen --all-packages --python 3.12 2>&1 | tail -3
       - name: Build wheels and install into fresh venvs
         run: uv run --no-sync pytest -q tests/install
-
-  linux-st-cross:
-    name: 3 · Linux ST · 跨组件
-    needs: [lint, architecture]
-    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
-    runs-on: [self-hosted, linux-st-cross]
-    timeout-minutes: 15
-    steps:
-      - name: Fetch the tree (API tarball, no git)
-        timeout-minutes: 5
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
-          curl -sSfL --connect-timeout 10 --max-time 180 --retry 5 --retry-all-errors \
-            -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-            -o "$RUNNER_TEMP/tree.tar.gz" "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/tarball/$GITHUB_SHA"
-          tar -xzf "$RUNNER_TEMP/tree.tar.gz" -C "$GITHUB_WORKSPACE" --strip-components=1 --no-same-owner
-          rm -f "$RUNNER_TEMP/tree.tar.gz"
-      - name: Python environment (uv, locked, through the mirror)
-        timeout-minutes: 10
-        run: |
-          set -euo pipefail
-          sed -i 's#https://pypi.org/simple#https://pypi.tuna.tsinghua.edu.cn/simple#g; s#https://files.pythonhosted.org/packages/#https://pypi.tuna.tsinghua.edu.cn/packages/#g' uv.lock
-          uv sync --frozen --all-packages --python 3.12 2>&1 | tail -3
-      - name: Server, Client daemons and MCP end to end
-        run: uv run --no-sync pytest -q tests/system
-
-  secrets:
-    name: 2 · Secrets
-    runs-on: [self-hosted, secrets]
-    timeout-minutes: 10
-    steps:
-      - name: Fetch the tree (API tarball, no git)
-        timeout-minutes: 5
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
-          curl -sSfL --connect-timeout 10 --max-time 180 --retry 5 --retry-all-errors \
-            -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-            -o "$RUNNER_TEMP/tree.tar.gz" "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/tarball/$GITHUB_SHA"
-          tar -xzf "$RUNNER_TEMP/tree.tar.gz" -C "$GITHUB_WORKSPACE" --strip-components=1 --no-same-owner
-          rm -f "$RUNNER_TEMP/tree.tar.gz"
-      # The tarball has no git history, so scan the tree (gitleaks is in ~/.local/bin, installed by
-      # scripts/ci/hp-laptop/install-tools.sh).
-      - name: gitleaks
-        run: gitleaks dir . --config .gitleaks.toml --redact --exit-code 1
-
-  workflow-lint:
-    name: 2 · Workflow Lint
-    runs-on: [self-hosted, workflow-lint]
-    timeout-minutes: 10
-    steps:
-      - name: Fetch the tree (API tarball, no git)
-        timeout-minutes: 5
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
-          curl -sSfL --connect-timeout 10 --max-time 180 --retry 5 --retry-all-errors \
-            -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-            -o "$RUNNER_TEMP/tree.tar.gz" "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/tarball/$GITHUB_SHA"
-          tar -xzf "$RUNNER_TEMP/tree.tar.gz" -C "$GITHUB_WORKSPACE" --strip-components=1 --no-same-owner
-          rm -f "$RUNNER_TEMP/tree.tar.gz"
-      # Tools (actionlint, shellcheck, zizmor) live in ~/.local/bin; custom runner labels are in
-      # .github/actionlint.yaml. The tarball has no .git, so actionlint cannot find the project on
-      # its own: pass the config and the files. It runs shellcheck on every `run:` script.
-      - name: actionlint
-        run: actionlint -config-file .github/actionlint.yaml .github/workflows/*.yml
-      - name: zizmor
-        run: zizmor --offline --no-progress .github/workflows
-
-  dependencies:
-    name: 2 · Dependencies
-    runs-on: [self-hosted, dependencies]
-    timeout-minutes: 10
-    steps:
-      - name: Fetch the tree (API tarball, no git)
-        timeout-minutes: 5
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
-          curl -sSfL --connect-timeout 10 --max-time 180 --retry 5 --retry-all-errors \
-            -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-            -o "$RUNNER_TEMP/tree.tar.gz" "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/tarball/$GITHUB_SHA"
-          tar -xzf "$RUNNER_TEMP/tree.tar.gz" -C "$GITHUB_WORKSPACE" --strip-components=1 --no-same-owner
-          rm -f "$RUNNER_TEMP/tree.tar.gz"
-      # uv.lock records pypi.org URLs, which this box cannot reach, so the check runs on a copy
-      # rewritten to the mirror (the same rewrite the other jobs use). `--check` never writes; it
-      # fails when the rewritten lock no longer satisfies the pyproject files.
-      - name: Lock file matches the pyproject files
-        run: |
-          set -euo pipefail
-          sed -i 's#https://pypi.org/simple#https://pypi.tuna.tsinghua.edu.cn/simple#g; s#https://files.pythonhosted.org/packages/#https://pypi.tuna.tsinghua.edu.cn/packages/#g' uv.lock
-          uv lock --check --python 3.12
-      # Report only, never fails the job. Vulnerability service: OSV (api.osv.dev). hp-laptop reaches
-      # both OSV and PyPI's JSON API, but PyPI timed out under test and OSV answered in ~15 s each time.
-      - name: pip-audit (report only)
-        continue-on-error: true
-        run: |
-          uv export --frozen --all-packages --no-emit-workspace --no-hashes --no-header --no-annotate \
-            --python 3.12 -o "$RUNNER_TEMP/requirements.txt" > /dev/null
-          {
-            echo "### pip-audit"
-            echo '```'
-            pip-audit -s osv -r"$RUNNER_TEMP/requirements.txt" --no-deps --disable-pip --progress-spinner off 2>&1 || true
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"

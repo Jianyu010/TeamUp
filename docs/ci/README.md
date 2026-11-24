@@ -16,23 +16,23 @@ TeamUp 的 main 分支只接受合入门禁的自动合入。仓库 owner（`Jia
 
 草稿只运行第 2 层，不占 UT、ST 和审查的名额。转为 ready for review 时 `CI` 重新运行，第 3 层随之启动。
 
-### 待补充的检查（契约）
+### 第 1–3 层补充检查（契约）
 
-下列检查按本节实现；实现合入后，状态从"计划"改为"启用"，并加入 `.github/ci/policy.json` 的必需检查。job 名、runner 标签、命令和失败标签以本表为准，实现方不得私自改名。
+下列检查按本节实现，均已启用；标"是"的检查列在 `.github/ci/policy.json` 的必需检查里。job 名、runner 标签、命令和失败标签以本表为准，实现方不得私自改名。
 
 | Job | 层 | runner（标签 = 名称的短横线形式） | 命令或判定 | 必需 | 失败标签 | 状态 |
 | --- | --- | --- | --- | --- | --- | --- |
-| `1 · PR Routing` | 1 | 门禁写入的提交状态（`merge-gate-01`） | 门禁的路由结论：PR 走自动路径还是等待 owner | 否，只报告 | – | 计划 |
-| `1 · Protected Changes` | 1 | 同上 | 改了受保护路径、删除测试或新增 skip/xfail 时为红，owner 加 `ready` 后为绿 | 否，只报告 | – | 计划 |
-| `1 · Automation Limits` | 1 | 同上 | 改动超过 300 个文件、PR 作者不受信或审查重跑次数用尽时为红 | 否，只报告 | – | 计划 |
-| `2 · Type Check` | 2 | `type-check-01` | `uv run --no-sync mypy`，配置在根 `pyproject.toml` 的 `[tool.mypy]`，覆盖 `server/src`、`client/src`、`plugin/mcp/src` | 是 | `gate/type-check-failed` | 计划 |
-| `2 · Secrets` | 2 | `secrets-01` | `gitleaks dir . --config .gitleaks.toml --redact --exit-code 1` | 是 | `gate/secrets-failed` | 计划 |
-| `2 · Workflow Lint` | 2 | `workflow-lint-01` | `actionlint` 与 `zizmor --offline .github/workflows`（配置 `.github/zizmor.yml`） | 是 | `gate/workflow-lint-failed` | 计划 |
-| `2 · Dependencies` | 2 | `dependencies-01` | `uv.lock` 与各 `pyproject.toml` 一致（锁文件检查）；`pip-audit` 漏洞报告写入 job 摘要，只报告不失败 | 是（仅锁文件检查） | `gate/dependencies-failed` | 计划 |
-| `3 · Contract` | 3 | `contract-01` | `uv run --no-sync pytest -q tests/contract`：HTTP API、SSE 事件和 MCP 工具 schema 与 `tests/contract/golden/` 的快照一致 | 是 | `gate/contract-failed` | 计划 |
-| `3 · Install` | 3 | `install-01`–`03` | `uv run --no-sync pytest -q tests/install`：构建三个包的 wheel，装进全新虚拟环境，命令行入口可用 | 是 | `gate/install-failed` | 计划 |
-| `3 · Linux UT` 覆盖率下限 | 3 | `linux-ut-01`–`03` | `pytest --cov` 加 `--cov-fail-under=<下限>`，下限写在根 `pyproject.toml` 的 `[tool.coverage.report] fail_under` | 是（随 `3 · Linux UT`） | `gate/linux-ut-failed` | 计划 |
-| `3 · Linux ST · 跨组件` | 3 | `linux-st-cross-01`–`03` | `uv run --no-sync pytest -q tests/system`：Server、Client 守护进程和 MCP 一起启动，走完登记、建房、公告、消息与提醒的链路 | 是 | `gate/linux-st-cross-failed` | 计划 |
+| `1 · PR Routing` | 1 | 门禁写入的提交状态（`merge-gate-01`） | 门禁的路由结论：PR 走自动路径还是等待 owner | 否，只报告 | – | 启用 |
+| `1 · Protected Changes` | 1 | 同上 | 改了受保护路径、删除测试或新增 skip/xfail 时为红，owner 加 `ready` 后为绿 | 否，只报告 | – | 启用 |
+| `1 · Automation Limits` | 1 | 同上 | 改动超过 300 个文件、PR 作者不受信或审查重跑次数用尽时为红 | 否，只报告 | – | 启用 |
+| `2 · Type Check` | 2 | `type-check-01` | `uv run --no-sync mypy`，配置在根 `pyproject.toml` 的 `[tool.mypy]`，覆盖 `server/src`、`client/src`、`plugin/mcp/src` | 是 | `gate/type-check-failed` | 启用 |
+| `2 · Secrets` | 2 | `secrets-01` | `gitleaks dir . --config .gitleaks.toml --redact --exit-code 1` | 是 | `gate/secrets-failed` | 启用 |
+| `2 · Workflow Lint` | 2 | `workflow-lint-01` | `actionlint -config-file .github/actionlint.yaml`（列出自托管 runner 标签）与 `zizmor --offline .github/workflows`（配置 `.github/zizmor.yml`） | 是 | `gate/workflow-lint-failed` | 启用 |
+| `2 · Dependencies` | 2 | `dependencies-01` | `uv lock --check`：`uv.lock` 与各 `pyproject.toml` 一致（先把锁文件副本改写到清华镜像）；`pip-audit` 漏洞报告写入 job 摘要，只报告不失败 | 是（仅锁文件检查） | `gate/dependencies-failed` | 启用 |
+| `3 · Contract` | 3 | `contract-01` | `uv run --no-sync pytest -q tests/contract`：HTTP API、SSE 事件和 MCP 工具 schema 与 `tests/contract/golden/` 的快照一致 | 是 | `gate/contract-failed` | 启用 |
+| `3 · Install` | 3 | `install-01`–`03` | `uv run --no-sync pytest -q tests/install`：构建三个包的 wheel，装进全新虚拟环境，命令行入口可用 | 是 | `gate/install-failed` | 启用 |
+| `3 · Linux UT` 覆盖率下限 | 3 | `linux-ut-01`–`03` | `pytest --cov`，下限写在根 `pyproject.toml` 的 `[tool.coverage.report] fail_under`（现为 48%，实测约 50%） | 是（随 `3 · Linux UT`） | `gate/linux-ut-failed` | 启用 |
+| `3 · Linux ST · 跨组件` | 3 | `linux-st-cross-01`–`03` | `uv run --no-sync pytest -q tests/system`：Server、Client 守护进程和 MCP 一起启动，走完登记、建房、公告、消息与提醒的链路 | 是 | `gate/linux-st-cross-failed` | 启用 |
 
 第 2 层的四项在草稿上也运行；第 3 层只在 PR 标为 ready for review 之后运行。第 1 层的三个状态由门禁写入，不运行 PR 代码，也不在必需检查里，合入与否仍只看 `merge-gate`。
 
@@ -68,8 +68,15 @@ TeamUp 的 main 分支只接受合入门禁的自动合入。仓库 owner（`Jia
 | --- | --- | --- | --- |
 | `lint-01` | `lint` | PR 代码 | `2 · Lint` |
 | `architecture-01` | `architecture` | PR 代码 | `2 · Architecture` |
+| `type-check-01` | `type-check` | PR 代码 | `2 · Type Check` |
+| `secrets-01` | `secrets` | PR 代码 | `2 · Secrets` |
+| `workflow-lint-01` | `workflow-lint` | PR 代码 | `2 · Workflow Lint` |
+| `dependencies-01` | `dependencies` | PR 代码 | `2 · Dependencies` |
 | `linux-ut-01`–`03` | `linux-ut` | PR 代码 | `3 · Linux UT` |
 | `linux-st-01`–`03` | `linux-st` | PR 代码 | `3 · Linux ST` |
+| `linux-st-cross-01`–`03` | `linux-st-cross` | PR 代码 | `3 · Linux ST · 跨组件` |
+| `contract-01` | `contract` | PR 代码 | `3 · Contract` |
+| `install-01`–`03` | `install` | PR 代码 | `3 · Install` |
 | `ai-review-01`–`03` | `ai-review` | main 的审查工具 | `3 · AI Review`（并发还受共享审查名额限制） |
 | `e2e-01` | `e2e` | main | `4 · Nightly`、`4 · Weekly`（同一时间只跑一个，性能数据不受干扰） |
 | `merge-gate-01` | `merge-gate` | 只运行 main 的脚本 | `5 · Merge Gate`、撤销、main 健康检查、审查后的唤醒 |
@@ -77,7 +84,7 @@ TeamUp 的 main 分支只接受合入门禁的自动合入。仓库 owner（`Jia
 | `gate-tick-01` | `gate-tick` | main | 每 15 分钟一次的调度节拍 |
 | `utility-01` | `utility` | 只运行 main 的脚本 | 套件报告与发布、看板、issue 与 PR 标签 |
 
-耗时的第 3 层各有三个并发名额。hp-laptop 本地的实例目录带 `teamup-` 前缀（如 `~/gh-runner/teamup-linux-ut-01`），与同机其他仓库的 runner 区分；在 GitHub 上注册的名字不带前缀。
+耗时的第 3 层各有三个并发名额。第 2 层静态检查用到的 gitleaks、actionlint、shellcheck、zizmor 和 pip-audit 由 [`scripts/ci/hp-laptop/install-tools.sh`](../../scripts/ci/hp-laptop/install-tools.sh) 装进对应实例的 home（二进制校验 sha256）。hp-laptop 本地的实例目录带 `teamup-` 前缀（如 `~/gh-runner/teamup-linux-ut-01`），与同机其他仓库的 runner 区分；在 GitHub 上注册的名字不带前缀。
 
 注意事项：
 
