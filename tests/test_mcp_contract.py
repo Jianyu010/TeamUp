@@ -117,6 +117,9 @@ def test_stdio_passes_approved_binding_and_surfaces_ipc_error():
             assert "three or more" in tools["teamup_create_room"].description
             assert "retry" in tools["teamup_send_dm"].description
             assert "same conversation" in tools["teamup_open_dm"].description
+            assert "last event_id as after" in (
+                tools["teamup_notifications"].description
+            )
             assert tools["teamup_open_dm"].inputSchema == {
                 "type": "object",
                 "properties": {"member_id": {"type": "string", "format": "uuid"}},

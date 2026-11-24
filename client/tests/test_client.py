@@ -1395,6 +1395,92 @@ def test_dm_notices_stay_out_of_desktop_wake_and_mention_counts():
     asyncio.run(scenario())
 
 
+def test_full_first_page_of_dm_notices_still_surfaces_a_later_mention():
+    from teamup_client.ipc import call
+
+    async def scenario():
+        with tempfile.TemporaryDirectory(dir="/tmp") as name:
+            async with gateway() as (upstream, server_url):
+                config, socket = write_config(Path(name), server_url)
+                token = BINDINGS[0]["member_token"]
+                key = BINDINGS[0]["binding_key"]
+                upstream.registered = {
+                    token: {"member_id": MEMBERS[0], "role_description": "Backend"},
+                    BINDINGS[1]["member_token"]: {
+                        "member_id": MEMBERS[1],
+                        "role_description": "Frontend",
+                    },
+                }
+                # Fifty old DM notices fill the default first page, and the
+                # fresh mention waits just past it in the shared event cursor.
+                dm_events = {
+                    event_id: {
+                        "event_id": event_id,
+                        "kind": "dm",
+                        "message": {
+                            "message_id": event_id,
+                            "dm_id": DM,
+                            "sender_member_id": MEMBERS[1],
+                            "client_message_id": f"dm-{event_id}",
+                            "text": "private dm text",
+                            "created_at": "2026-11-24T12:00:00+00:00",
+                        },
+                    }
+                    for event_id in range(1, 51)
+                }
+                dm_notices = [
+                    {
+                        "event_id": event_id,
+                        "kind": "dm",
+                        "dm_id": DM,
+                        "message_id": event_id,
+                        "sender_member_id": MEMBERS[1],
+                    }
+                    for event_id in range(1, 51)
+                ]
+                mention_notice = {
+                    "event_id": 51,
+                    "room_id": ROOM,
+                    "message_id": 51,
+                    "sender_member_id": MEMBERS[1],
+                }
+                upstream.events[token] = {**dm_events, 51: mention_event(51, 51)}
+                async with daemon(config, socket) as child:
+                    printed = [
+                        json.loads(await asyncio.wait_for(child.stderr.readline(), 5))
+                        for _ in range(51)
+                    ]
+                    assert printed == dm_notices + [mention_notice]
+                    await until(lambda: not upstream.events[token])
+                    # The default page holds only the fifty old DM rows, so
+                    # the mention is still unread behind a full first page.
+                    first = await call(socket, key, "notifications", {})
+                    assert first == {"notifications": dm_notices}
+                    assert await call(socket, key, "mention_status", {}) == {
+                        "unread_mentions": 1
+                    }
+                    # Paging with the last event_id of that page surfaces it.
+                    second = await call(socket, key, "notifications", {"after": 50})
+                    assert second == {"notifications": [mention_notice]}
+                    assert await call(socket, key, "mention_status", {}) == {
+                        "unread_mentions": 0
+                    }
+                    # A short page ends the walk, and every row stays readable
+                    # through the same stateless cursor afterwards.
+                    assert await call(socket, key, "notifications", {"after": 51}) == {
+                        "notifications": []
+                    }
+                    again = await call(socket, key, "notifications", {"after": 50})
+                    assert again == {"notifications": [mention_notice]}
+                    earlier = await call(socket, key, "notifications", {"after": 48})
+                    assert earlier == {
+                        "notifications": dm_notices[48:] + [mention_notice]
+                    }
+                assert await child.stderr.read() == b""
+
+    asyncio.run(scenario())
+
+
 def test_dm_ipc_routing_credentials_and_error_passthrough():
     from teamup_client.ipc import ClientError, call
 

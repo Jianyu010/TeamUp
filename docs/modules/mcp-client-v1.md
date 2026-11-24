@@ -44,7 +44,7 @@ MCP 初始化说明与随附的协作 skill 会引导 Agent 按参与范围选�
 | `teamup_open_dm` | `open_dm` | `member_id` | DM |
 | `teamup_send_dm` | `send_dm` | `dm_id`、`client_message_id`、`text` | DM Message |
 | `teamup_read_dm` | `read_dm` | `dm_id`、可选 `after`、`limit` | `{"messages":[DM Message]}`，可带到期元数据 |
-| `teamup_notifications` | `notifications` | 可选 `after`、`limit` | `{"notifications":[Notice]}`，按 `event_id` 递增。返回的 `mention` 通知记为已送达 |
+| `teamup_notifications` | `notifications` | 可选 `after`、`limit` | `{"notifications":[Notice]}`，按 `event_id` 递增的无状态共享游标分页。返回的 `mention` 通知记为已送达 |
 | 无，MCP 插件启动时调用 | `attach` | `address`、`token` | `{"attached":true}`，连接保持打开，见下文 |
 | 无，MCP 插件内部调用 | `mention_status` | `{}` | `{"unread_mentions":0}`，本绑定尚未送达的 `mention` 通知数 |
 
@@ -57,6 +57,8 @@ Member、Room、Room 概要、Board、Message 与分页要求见 [Client–Serve
 Client 为已登记的绑定监听 SSE，在初连、重连和收到提示时拉取未确认事件。拉取显式携带 `kinds=message,mention,dm`（旧 Server 忽略该参数，只返回既有事件）。普通事件确认后可通过房间历史读取。收到 `mention` 时，Client 按绑定和 `event_id` 持久登记通知，再确认 Server 事件；收到 `dm` 时按同等方式持久登记类型化通知（含 `dm_id`，无正文），新类型与既有行共存于同一本机存储，存量行原样保留，重启迁移后全部可读。持久化先于确认。首次登记时异步尝试向 daemon stderr 打印只有 Notice 字段的 JSON 对象。日志管道阻塞或队列满时，stderr 提醒可能延迟或省略，收件确认和本机通知查询继续运行。重复投递不会增加通知记录。进程在保存后崩溃时，通知仍可通过 MCP 或 CLI 读取。确认与保留到期竞争、Server 对已到期事件返回 404 时，Client 视为已清除并继续补收；其余确认失败照旧退避重试。Server 和 IPC 在后续增加撤权能力时须约定相应的本地可见性变更。
 
 `dm` 的类型化通知只进入本机通知存储与 `notifications` 查询：不进入桌面提醒、送达状态、`mention_status` 未读计数或任何唤醒投递，也不改变本机会话的批准与许可状态。`mention` 的既有四字段输出与下述送达状态只描述房间 @。
+
+`notifications` 的分页是无状态共享游标：已送达的 `mention` 行与没有送达状态的 `dm` 行都不因读取或送达而移除，共用同一按 `event_id` 递增的游标空间，因此缺省首页（50 条）可能全部被旧行占据。需要确认是否有新通知的调用方在拿到满页（条数等于 `limit`）时，把该页最后一条的 `event_id` 作为下一次调用的 `after` 继续取页，直到某页返回不足 `limit` 条；如此无需其他本地状态即可可靠读到新的 `mention` 与 `dm` 通知，早先的通知也随时可用同一游标回读。`after`、`limit` 的取值与校验沿用上表，不引入新的参数或排序。
 
 ### 桌面提醒与送达状态
 
