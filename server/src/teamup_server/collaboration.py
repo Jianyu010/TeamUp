@@ -9,6 +9,7 @@ from collections import deque
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import AbstractContextManager, closing, contextmanager, suppress
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from functools import partial
 from hashlib import sha256
 from hmac import compare_digest
@@ -38,7 +39,7 @@ _PASSWORD_HASHER = PasswordHasher(
 )
 _MEMBER = "member_id, role_description"
 _MESSAGE = """
-    m.message_id, m.room_id, m.sender_member_id, m.client_message_id, m.text, m.mention_member_id
+    m.message_id, m.room_id, m.sender_member_id, m.client_message_id, m.text, m.mention_member_id, m.created_at
 """
 _INBOX = """
     FROM inbox_events AS e
@@ -67,7 +68,9 @@ _SCHEMA = (
         name TEXT NOT NULL,
         version INTEGER NOT NULL CHECK (version > 0),
         rules TEXT NOT NULL,
-        protocol TEXT NOT NULL
+        protocol TEXT NOT NULL,
+        history_policy TEXT NOT NULL DEFAULT 'since_joining'
+            CHECK (history_policy IN ('retained', 'since_joining'))
     )
     """,
     """
@@ -88,6 +91,7 @@ _SCHEMA = (
         client_message_id TEXT NOT NULL,
         text TEXT NOT NULL,
         mention_member_id TEXT REFERENCES members(member_id),
+        created_at TEXT,
         UNIQUE (sender_member_id, client_message_id)
     )
     """,
@@ -105,6 +109,13 @@ _SCHEMA = (
     """
     CREATE INDEX pending_inbox ON inbox_events (member_id, event_id) WHERE acknowledged = 0
     """,
+    """
+    CREATE TABLE id_counters (
+        counter TEXT PRIMARY KEY CHECK (counter IN ('message_id', 'event_id')),
+        last_id INTEGER NOT NULL CHECK (last_id >= 0)
+    )
+    """,
+    "INSERT INTO id_counters (counter, last_id) VALUES ('message_id', 0), ('event_id', 0)",
 )
 
 _ACCOUNT_SCHEMA = (
@@ -125,6 +136,54 @@ _ACCOUNT_SCHEMA = (
     """,
     "CREATE INDEX account_sessions_owner ON account_sessions (owner_id)",
 )
+
+_HISTORY_SCHEMA = (
+    """
+    ALTER TABLE rooms ADD COLUMN history_policy TEXT NOT NULL
+        DEFAULT 'since_joining' CHECK (history_policy IN ('retained', 'since_joining'))
+    """,
+    "ALTER TABLE messages ADD COLUMN created_at TEXT",
+    """
+    CREATE TABLE id_counters (
+        counter TEXT PRIMARY KEY CHECK (counter IN ('message_id', 'event_id')),
+        last_id INTEGER NOT NULL CHECK (last_id >= 0)
+    )
+    """,
+)
+
+
+def _seed_id_counters(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        INSERT INTO id_counters (counter, last_id)
+        SELECT 'message_id', COALESCE(MAX(message_id), 0) FROM messages
+        """
+    )
+    has_events = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'inbox_events'"
+    ).fetchone()
+    last_event_id = (
+        connection.execute(
+            "SELECT COALESCE(MAX(event_id), 0) FROM inbox_events"
+        ).fetchone()[0]
+        if has_events is not None
+        else 0
+    )
+    connection.execute(
+        "INSERT INTO id_counters (counter, last_id) VALUES ('event_id', ?)",
+        (last_event_id,),
+    )
+
+
+def _next_id(connection: sqlite3.Connection, counter: str) -> int:
+    return connection.execute(
+        "UPDATE id_counters SET last_id = last_id + 1 WHERE counter = ? RETURNING last_id",
+        (counter,),
+    ).fetchone()[0]
+
+
+def _rfc3339_utc_now() -> str:
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 ChangeListener = Callable[[], None]
 ObserveInbox = Callable[[ChangeListener], AbstractContextManager[None]]
@@ -210,8 +269,8 @@ def _room_member(
 ) -> sqlite3.Row:
     record = connection.execute(
         """
-        SELECT r.version, r.rules, r.protocol, rm.read_board_version,
-            rm.acked_board_version, rm.joined_after
+        SELECT r.version, r.rules, r.protocol, r.history_policy,
+            rm.read_board_version, rm.acked_board_version, rm.joined_after
         FROM room_members AS rm JOIN rooms AS r ON r.room_id = rm.room_id
         WHERE rm.room_id = ? AND rm.member_id = ?
         """,
@@ -253,8 +312,13 @@ class Collaboration:
             if version in (0, 1):
                 for statement in _ACCOUNT_SCHEMA:
                     connection.execute(statement)
-                connection.execute("PRAGMA user_version = 2")
-            elif version != 2:
+            if version in (1, 2):
+                for statement in _HISTORY_SCHEMA:
+                    connection.execute(statement)
+                _seed_id_counters(connection)
+            if version in (0, 1, 2):
+                connection.execute("PRAGMA user_version = 3")
+            elif version != 3:
                 raise ValueError("Unsupported TeamUp database schema version")
 
     def _connect(self) -> sqlite3.Connection:
@@ -528,25 +592,36 @@ class Collaboration:
             return [dict(record) for record in rows]
 
     def create_room(
-        self, token: str, name: str, rules: str | None, protocol: str | None
+        self,
+        token: str,
+        name: str,
+        rules: str | None,
+        protocol: str | None,
+        history_policy: str = "since_joining",
     ) -> dict:
+        if history_policy not in ("retained", "since_joining"):
+            raise CollaborationError("invalid_request")
         room_id = str(uuid4())
         with self._transaction(write=True) as connection:
             member_id = _member(connection, token)["member_id"]
             connection.execute(
-                "INSERT INTO rooms VALUES (?, ?, 1, ?, ?)",
+                """
+                INSERT INTO rooms (room_id, name, version, rules, protocol, history_policy)
+                VALUES (?, ?, 1, ?, ?, ?)
+                """,
                 (
                     room_id,
                     name,
                     rules if rules is not None else _DEFAULT_RULES,
                     protocol if protocol is not None else _DEFAULT_PROTOCOL,
+                    history_policy,
                 ),
             )
             connection.execute(
                 "INSERT INTO room_members (room_id, member_id, joined_after) VALUES (?, ?, 0)",
                 (room_id, member_id),
             )
-        return {"room_id": room_id, "name": name}
+        return {"room_id": room_id, "name": name, "history_policy": history_policy}
 
     def join_room(self, token: str, room_id: str) -> dict:
         with self._transaction(write=True) as connection:
@@ -638,21 +713,52 @@ class Collaboration:
                 ).fetchone()
                 if is_recipient is None:
                     raise CollaborationError("invalid_mention")
-            message_id = connection.execute(
-                """
-                INSERT INTO messages (
-                    room_id, sender_member_id, client_message_id, text, mention_member_id
-                ) VALUES (?, ?, ?, ?, ?)
-                """,
-                (room_id, sender, client_message_id, text, mention_member_id),
-            ).lastrowid
+            message_id = _next_id(connection, "message_id")
             connection.execute(
                 """
-                INSERT INTO inbox_events (member_id, message_id, kind)
-                SELECT member_id, ?, CASE WHEN member_id = ? THEN 'mention' ELSE 'message' END
-                FROM room_members WHERE room_id = ? AND member_id != ?
+                INSERT INTO messages (
+                    message_id, room_id, sender_member_id, client_message_id, text,
+                    mention_member_id, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (message_id, mention_member_id, room_id, sender),
+                (
+                    message_id,
+                    room_id,
+                    sender,
+                    client_message_id,
+                    text,
+                    mention_member_id,
+                    _rfc3339_utc_now(),
+                ),
+            )
+            recipients = [
+                row["member_id"]
+                for row in connection.execute(
+                    """
+                    SELECT member_id FROM room_members
+                    WHERE room_id = ? AND member_id != ? ORDER BY member_id
+                    """,
+                    (room_id, sender),
+                )
+            ]
+            for recipient in recipients:
+                connection.execute(
+                    """
+                    INSERT INTO inbox_events (event_id, member_id, message_id, kind)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        _next_id(connection, "event_id"),
+                        recipient,
+                        message_id,
+                        "mention" if recipient == mention_member_id else "message",
+                    ),
+                )
+            message = dict(
+                connection.execute(
+                    f"SELECT {_MESSAGE} FROM messages AS m WHERE m.message_id = ?",
+                    (message_id,),
+                ).fetchone()
             )
             visible_recipients = [
                 row["member_id"]
@@ -665,21 +771,19 @@ class Collaboration:
                 )
             ]
         self._notify(visible_recipients)
-        return {
-            "message_id": message_id,
-            "room_id": room_id,
-            "sender_member_id": sender,
-            "client_message_id": client_message_id,
-            "text": text,
-            "mention_member_id": mention_member_id,
-        }
+        return message
 
     def history(self, token: str, room_id: str, after: int, limit: int) -> list[dict]:
         with self._transaction() as connection:
             member_id = _member(connection, token)["member_id"]
             membership = _room_member(connection, room_id, member_id)
             _require_current_board(membership)
-            cursor = min(max(after, membership["joined_after"]), _SQLITE_MAX_ID)
+            floor = (
+                0
+                if membership["history_policy"] == "retained"
+                else membership["joined_after"]
+            )
+            cursor = min(max(after, floor), _SQLITE_MAX_ID)
             rows = connection.execute(
                 f"""
                 SELECT {_MESSAGE} FROM messages AS m
