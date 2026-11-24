@@ -11,10 +11,8 @@
   <header class="app-header">
     <div class="app-heading">
       <h1>Control Console</h1>
-      <p class="subtitle">Read-only view for authorized operators</p>
     </div>
     <div class="app-side">
-      <p class="badge">Read-only</p>
       <p class="status" id="statusLine" role="status" aria-live="polite">Signed out</p>
       <div class="session-actions" id="sessionActions" hidden>
         <button type="button" id="refreshButton">Refresh</button>
@@ -28,7 +26,6 @@
       <form class="login-card" id="loginForm" novalidate>
         <h2 id="loginTitle">Sign in</h2>
         <p class="login-note">Use your TeamUp account. The sign-in token is held in this tab's memory only and cleared on sign-out.</p>
-        <p class="login-note muted">This package ships the console interface only. It calls no server beyond the published console read routes.</p>
         <label class="field-label" for="username">Username</label>
         <input class="field" id="username" name="username" autocomplete="username" spellcheck="false" required>
         <label class="field-label" for="password">Password</label>
@@ -53,7 +50,6 @@
               <p class="detail-sub" id="roomMeta"></p>
               <p class="detail-id" id="roomId"></p>
             </div>
-            <p class="harness-note">Harness state unknown</p>
           </header>
           <hr class="rule">
           <h4 class="section-title">Members</h4>
@@ -90,9 +86,6 @@
       </section>
     </section>
   </main>
-  <footer class="page-foot">
-    <p class="footnote">TeamUp console shows recorded observations only. A delivery receipt proves a Client received an event, not that the Agent saw it. Harness state is Unknown until a supported harness reports it.</p>
-  </footer>
 </div>
 <script src="console.js" defer></script>
 </body>

@@ -5,7 +5,8 @@ The console ships as three static files under
 section "Console UI 消费方契约"). These tests lock the consumer contract
 without a browser: the exact file set, same-origin-only resources, no
 storage or cookie access, no HTML injection sinks, console-only fetch
-targets, and the stale-response guards.
+targets, the stale-response guards, and room-scoped DOM clearing on
+sign-out, session expiry, room switch, and access loss.
 """
 
 import re
@@ -35,6 +36,15 @@ def read(name):
     if not path.is_file():
         pytest.fail(f"Missing console static file: {name}")
     return path.read_text(encoding="utf-8")
+
+
+def function_source(js, name):
+    start = re.search(rf"function {name}\(", js)
+    assert start is not None, f"console.js must define function {name}"
+    rest = js[start.start() + 1 :]
+    end = re.search(r"\n(async )?function ", rest)
+    assert end is not None, f"Cannot isolate function {name}"
+    return js[start.start() : start.start() + 1 + end.start()]
 
 
 @pytest.fixture(scope="module")
@@ -172,6 +182,54 @@ def test_js_stale_response_guards(js):
     assert ".abort()" in js
     assert js.count("state.epoch") >= 3
     assert js.count("textContent") >= 8
+
+
+def test_js_signout_and_expiry_clear_room_scoped_dom(js):
+    """Sign-out and session expiry clear room DOM, not only memory state.
+
+    Regression for the Chrome smoke finding: showLogin used to hide mainView
+    and drop in-memory state while leaving transcript text, roster, timeline
+    rows, and room cards in hidden DOM nodes.
+    """
+    for name in ("logout", "sessionExpired"):
+        body = function_source(js, name)
+        assert "showLogin(" in body, f"{name} must return to the login view"
+    show_login = function_source(js, "showLogin")
+    assert "clearRoomPanes()" in show_login
+    clearing = function_source(js, "clearRoomPanes")
+    for node in ("roomList", "rosterBody", "timelineList", "chatsList"):
+        assert f"els.{node}.replaceChildren()" in clearing
+    for node in (
+        "roomTitle",
+        "roomMeta",
+        "roomId",
+        "timelineStatus",
+        "chatsDenied",
+        "chatsStatus",
+    ):
+        assert f'els.{node}.textContent = ""' in clearing
+    for node in ("timelineMore", "chatsMore"):
+        assert f"els.{node}.hidden = true" in clearing
+
+
+def test_js_room_switch_and_access_loss_clear_stale_dom(js):
+    """Room switch, refresh, and detail access loss clear stale panes promptly."""
+    for name in ("renderDetailShell", "renderDetailError"):
+        body = function_source(js, name)
+        assert "clearRoomPanes()" in body, f"{name} must clear stale panes"
+
+
+def test_html_no_implementation_only_or_redundant_copy(html):
+    """The page keeps user-facing status labels, not packaging commentary."""
+    assert "This package ships" not in html
+    for token in (
+        'class="badge"',
+        'class="subtitle"',
+        'class="page-foot"',
+        'class="harness-note"',
+        "login-note muted",
+    ):
+        assert token not in html
 
 
 def test_js_referenced_ids_exist(html, js):
