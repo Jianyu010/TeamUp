@@ -1,16 +1,17 @@
 """The public JSON and SSE transport for Collaboration."""
 
 import asyncio
+import pathlib
 import re
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
-from typing import Annotated
+from typing import Annotated, Literal
 from urllib.parse import unquote_to_bytes
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, Header, Path, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import (
     AfterValidator,
     BaseModel,
@@ -28,6 +29,7 @@ from .collaboration import Collaboration, CollaborationError, ObserveInbox
 _ERRORS = {
     "invalid_request": (422, "The request is invalid."),
     "unauthorized": (401, "The credential is missing or invalid."),
+    "forbidden": (403, "The authenticated account lacks the required authorization."),
     "not_found": (404, "The resource was not found."),
     "board_read_required": (409, "Read the current board version first."),
     "board_ack_required": (409, "Confirm the current board version first."),
@@ -37,6 +39,17 @@ _ERRORS = {
 }
 _UUID = re.compile(r"[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}")
 _KEEPALIVE_SECONDS = 15
+_CONSOLE_STATIC_DIR = pathlib.Path(__file__).parent / "console"
+_CONSOLE_HEADERS = {
+    "Content-Security-Policy": (
+        "default-src 'none'; script-src 'self'; style-src 'self'; "
+        "connect-src 'self'; base-uri 'none'; form-action 'none'; "
+        "frame-ancestors 'none'"
+    ),
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "Cache-Control": "no-cache",
+}
 
 
 def _nonblank(value: str) -> str:
@@ -76,6 +89,7 @@ class _Body(BaseModel):
 class _Login(_Body):
     username: Annotated[str, StringConstraints(strict=True)]
     password: Annotated[str, StringConstraints(strict=True)]
+    purpose: Literal["console"] | None = None
 
 
 class _Enrollment(_Body):
@@ -146,6 +160,12 @@ def _bearer(authorization: Annotated[str | None, Header()] = None) -> str:
 _Bearer = Annotated[str, Depends(_bearer)]
 
 
+def _console_asset(name: str, media_type: str) -> FileResponse:
+    return FileResponse(
+        _CONSOLE_STATIC_DIR / name, media_type=media_type, headers=_CONSOLE_HEADERS
+    )
+
+
 class _InboxStream(StreamingResponse):
     def __init__(self, frames: AsyncGenerator[str, None]):
         self._frames = frames
@@ -190,7 +210,25 @@ class Gateway:
 
         @app.post("/v1/auth/login", dependencies=[Depends(_require_utf8)])
         def login(body: _Login) -> dict:
-            return collaboration.login(body.username, body.password)
+            return collaboration.login(
+                body.username, body.password, body.purpose or "enrollment"
+            )
+
+        @app.get("/v1/console/rooms")
+        def console_rooms(token: _Bearer) -> dict:
+            return collaboration.list_console_rooms(token)
+
+        @app.get("/console/")
+        def console_index() -> FileResponse:
+            return _console_asset("index.html", "text/html; charset=utf-8")
+
+        @app.get("/console/console.css")
+        def console_stylesheet() -> FileResponse:
+            return _console_asset("console.css", "text/css; charset=utf-8")
+
+        @app.get("/console/console.js")
+        def console_script() -> FileResponse:
+            return _console_asset("console.js", "text/javascript; charset=utf-8")
 
         @app.post("/v1/members", dependencies=[Depends(_require_utf8)])
         def enroll(token: _Bearer, body: _Enrollment) -> dict:

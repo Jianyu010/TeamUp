@@ -16,7 +16,7 @@ from pathlib import Path
 from secrets import token_bytes
 from threading import BoundedSemaphore, Lock
 from time import monotonic, time
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from argon2 import PasswordHasher, Type
 from argon2.exceptions import VerifyMismatchError
@@ -33,6 +33,7 @@ _SESSION_SECONDS = 8 * 3600
 _LOGIN_WINDOW_SECONDS = 60
 _LOGIN_CHECKS_PER_WINDOW = 60
 _LOGIN_FAILURES_PER_USERNAME = 5
+_SESSION_PURPOSES = ("enrollment", "console")
 _PASSWORD_HASHER = PasswordHasher(
     time_cost=2, memory_cost=19 * 1024, parallelism=1, type=Type.ID
 )
@@ -120,10 +121,31 @@ _ACCOUNT_SCHEMA = (
     CREATE TABLE account_sessions (
         token_digest BLOB NOT NULL PRIMARY KEY,
         owner_id TEXT NOT NULL REFERENCES accounts(owner_id),
-        expires_at INTEGER NOT NULL
+        expires_at INTEGER NOT NULL,
+        purpose TEXT NOT NULL DEFAULT 'enrollment'
+            CHECK (purpose IN ('enrollment', 'console'))
     )
     """,
     "CREATE INDEX account_sessions_owner ON account_sessions (owner_id)",
+)
+
+_GRANT_SCHEMA = (
+    """
+    CREATE TABLE operator_grants (
+        owner_id TEXT NOT NULL REFERENCES accounts(owner_id),
+        scope TEXT NOT NULL CHECK (scope IN ('console_read', 'transcript_read')),
+        room_id TEXT REFERENCES rooms(room_id),
+        CHECK (
+            (scope = 'console_read' AND room_id IS NULL)
+            OR (scope = 'transcript_read' AND room_id IS NOT NULL)
+        )
+    )
+    """,
+    """
+    CREATE UNIQUE INDEX operator_grant_identity
+        ON operator_grants (owner_id, scope, ifnull(room_id, ''))
+    """,
+    "CREATE INDEX operator_grants_owner ON operator_grants (owner_id)",
 )
 
 ChangeListener = Callable[[], None]
@@ -156,6 +178,15 @@ def _validate_password(password: str, *, minimum: int = 0) -> None:
     try:
         password.encode("utf-8")
     except UnicodeEncodeError:
+        raise CollaborationError("invalid_request") from None
+
+
+def _validate_room_id(room_id: str) -> str:
+    if not isinstance(room_id, str):
+        raise CollaborationError("invalid_request")
+    try:
+        return str(UUID(room_id))
+    except ValueError:
         raise CollaborationError("invalid_request") from None
 
 
@@ -253,8 +284,19 @@ class Collaboration:
             if version in (0, 1):
                 for statement in _ACCOUNT_SCHEMA:
                     connection.execute(statement)
-                connection.execute("PRAGMA user_version = 2")
-            elif version != 2:
+            if version == 2:
+                # v3 pilot migration: legacy sessions keep enrollment semantics.
+                connection.execute(
+                    """
+                    ALTER TABLE account_sessions
+                        ADD COLUMN purpose TEXT NOT NULL DEFAULT 'enrollment'
+                    """
+                )
+            if version in (0, 1, 2):
+                for statement in _GRANT_SCHEMA:
+                    connection.execute(statement)
+                connection.execute("PRAGMA user_version = 3")
+            elif version != 3:
                 raise ValueError("Unsupported TeamUp database schema version")
 
     def _connect(self) -> sqlite3.Connection:
@@ -320,6 +362,60 @@ class Collaboration:
             )
             self._revoke_account_sessions(connection, owner_id)
 
+    def grant_console_read(self, username: str) -> None:
+        _validate_username(username)
+        with self._transaction(write=True) as connection:
+            owner_id = self._account(connection, username)["owner_id"]
+            connection.execute(
+                """
+                INSERT INTO operator_grants (owner_id, scope, room_id)
+                VALUES (?, 'console_read', NULL) ON CONFLICT DO NOTHING
+                """,
+                (owner_id,),
+            )
+
+    def revoke_console_read(self, username: str) -> None:
+        _validate_username(username)
+        with self._transaction(write=True) as connection:
+            owner_id = self._account(connection, username)["owner_id"]
+            connection.execute(
+                "DELETE FROM operator_grants WHERE owner_id = ? AND scope = 'console_read'",
+                (owner_id,),
+            )
+
+    def grant_transcript_read(self, username: str, room_id: str) -> None:
+        room_id = _validate_room_id(room_id)
+        _validate_username(username)
+        with self._transaction(write=True) as connection:
+            owner_id = self._account(connection, username)["owner_id"]
+            if (
+                connection.execute(
+                    "SELECT 1 FROM rooms WHERE room_id = ?", (room_id,)
+                ).fetchone()
+                is None
+            ):
+                raise CollaborationError("not_found")
+            connection.execute(
+                """
+                INSERT INTO operator_grants (owner_id, scope, room_id)
+                VALUES (?, 'transcript_read', ?) ON CONFLICT DO NOTHING
+                """,
+                (owner_id, room_id),
+            )
+
+    def revoke_transcript_read(self, username: str, room_id: str) -> None:
+        room_id = _validate_room_id(room_id)
+        _validate_username(username)
+        with self._transaction(write=True) as connection:
+            owner_id = self._account(connection, username)["owner_id"]
+            connection.execute(
+                """
+                DELETE FROM operator_grants
+                WHERE owner_id = ? AND scope = 'transcript_read' AND room_id = ?
+                """,
+                (owner_id, room_id),
+            )
+
     @staticmethod
     def _account(connection: sqlite3.Connection, username: str) -> sqlite3.Row:
         account = connection.execute(
@@ -356,9 +452,11 @@ class Collaboration:
             checks.append(check)
             return check
 
-    def login(self, username: str, password: str) -> dict:
+    def login(self, username: str, password: str, purpose: str = "enrollment") -> dict:
         _validate_username(username)
         _validate_password(password)
+        if purpose not in _SESSION_PURPOSES:
+            raise CollaborationError("invalid_request")
         check = self._start_password_check(username)
         with self._transaction() as connection:
             account = connection.execute(
@@ -378,12 +476,14 @@ class Collaboration:
                 raise CollaborationError("unauthorized") from None
         if account is None:
             raise CollaborationError("unauthorized")
-        session = self._issue_account_session(account["owner_id"], digest)
+        session = self._issue_account_session(account["owner_id"], digest, purpose)
         with self._login_checks_lock:
             check.succeeded = True
         return session
 
-    def _issue_account_session(self, owner_id: str, password_digest: str) -> dict:
+    def _issue_account_session(
+        self, owner_id: str, password_digest: str, purpose: str
+    ) -> dict:
         with self._transaction(write=True) as connection:
             if not connection.execute(
                 """
@@ -409,8 +509,11 @@ class Collaboration:
                 if collision is None:
                     break
             connection.execute(
-                "INSERT INTO account_sessions VALUES (?, ?, ?)",
-                (digest, owner_id, expires_at),
+                """
+                INSERT INTO account_sessions (token_digest, owner_id, expires_at, purpose)
+                VALUES (?, ?, ?, ?)
+                """,
+                (digest, owner_id, expires_at, purpose),
             )
         return {
             "access_token": urlsafe_b64encode(raw).decode("ascii").rstrip("="),
@@ -429,14 +532,18 @@ class Collaboration:
         digest = _credential_digest(token)
         session = connection.execute(
             """
-            SELECT a.owner_id, a.disabled, s.expires_at
+            SELECT a.owner_id, a.disabled, s.expires_at, s.purpose
             FROM account_sessions AS s JOIN accounts AS a USING (owner_id)
             WHERE s.token_digest = ?
             """,
             (digest,),
         ).fetchone()
         if session is not None:
-            if session["disabled"] or session["expires_at"] <= int(time()):
+            if (
+                session["disabled"]
+                or session["expires_at"] <= int(time())
+                or session["purpose"] != "enrollment"
+            ):
                 raise CollaborationError("unauthorized")
             return session["owner_id"]
         owner = self._legacy_owner(digest)
@@ -526,6 +633,60 @@ class Collaboration:
                 (query.casefold(),),
             )
             return [dict(record) for record in rows]
+
+    def list_console_rooms(self, token: str) -> dict:
+        with self._transaction() as connection:
+            owner_id = self._console_operator(connection, token)
+            self._require_grant(connection, owner_id, "console_read")
+            rows = connection.execute(
+                """
+                SELECT r.room_id, r.name,
+                    (SELECT COUNT(*) FROM room_members AS rm WHERE rm.room_id = r.room_id)
+                        AS member_count
+                FROM rooms AS r ORDER BY r.room_id
+                """
+            )
+            return {
+                "rooms": [
+                    {
+                        "room_id": row["room_id"],
+                        "name": row["name"],
+                        "member_count": row["member_count"],
+                        "last_activity": None,
+                    }
+                    for row in rows
+                ]
+            }
+
+    def _console_operator(self, connection: sqlite3.Connection, token: str) -> str:
+        digest = _credential_digest(token)
+        session = connection.execute(
+            """
+            SELECT a.owner_id, a.disabled, s.expires_at, s.purpose
+            FROM account_sessions AS s JOIN accounts AS a USING (owner_id)
+            WHERE s.token_digest = ?
+            """,
+            (digest,),
+        ).fetchone()
+        if session is None or session["purpose"] != "console":
+            raise CollaborationError("unauthorized")
+        if session["disabled"] or session["expires_at"] <= int(time()):
+            raise CollaborationError("unauthorized")
+        return session["owner_id"]
+
+    @staticmethod
+    def _require_grant(
+        connection: sqlite3.Connection,
+        owner_id: str,
+        scope: str,
+        room_id: str | None = None,
+    ) -> None:
+        granted = connection.execute(
+            "SELECT 1 FROM operator_grants WHERE owner_id = ? AND scope = ? AND room_id IS ?",
+            (owner_id, scope, room_id),
+        ).fetchone()
+        if granted is None:
+            raise CollaborationError("forbidden")
 
     def create_room(
         self, token: str, name: str, rules: str | None, protocol: str | None
