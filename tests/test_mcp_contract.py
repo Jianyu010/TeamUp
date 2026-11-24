@@ -31,6 +31,22 @@ def test_stdio_passes_approved_binding_and_surfaces_ipc_error():
                 {"message_id": 1},
             ),
             ("get_board", {"room_id": "room"}, None),
+            (
+                "search_room",
+                {"room_id": "room", "q": "Hello", "after": 0, "limit": 10},
+                {
+                    "matches": [
+                        {
+                            "message_id": 1,
+                            "sender_member_id": "b",
+                            "created_at": "2026-11-24T00:00:00Z",
+                            "snippet": "Hello there",
+                        }
+                    ],
+                    "expired_through_message_id": 0,
+                    "history_truncated": True,
+                },
+            ),
         ]
         seen = []
 
@@ -82,7 +98,30 @@ def test_stdio_passes_approved_binding_and_surfaces_ipc_error():
                 "teamup_ack_board",
                 "teamup_send_message",
                 "teamup_read_messages",
+                "teamup_search_room",
                 "teamup_notifications",
+            }
+            assert tools["teamup_create_room"].inputSchema["properties"][
+                "history_policy"
+            ] == {"type": "string", "enum": ["retained", "since_joining"]}
+            assert tools["teamup_read_messages"].inputSchema["properties"][
+                "before"
+            ] == {
+                "type": "integer",
+                "minimum": 1,
+            }
+            search_schema = tools["teamup_search_room"].inputSchema
+            assert search_schema["required"] == ["room_id", "q"]
+            assert search_schema["properties"]["q"] == {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+            }
+            assert search_schema["properties"]["limit"] == {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100,
+                "default": 50,
             }
             for method, args, result in requests:
                 response = await session.call_tool(f"teamup_{method}", args)
