@@ -10,11 +10,17 @@ in-transaction audit, scoped transcript grants, revocation taking effect on
 the next page, pagination, and Cache-Control: no-store on authorized reads.
 
 After merging the #3 direct messages server, these tests additionally pin
-the v5 migration layering (console on top of the DM v4 schema) for every
-supported start -- including the published #5 auth preview v3 (e495544),
-whose purposes, sessions, grants and room data must survive -- and the rule
-that DM rows never reach room activity, Timeline, or the operator transcript
-even while DMs are enabled.
+the console migration layering (console on top of the DM v4 schema) for
+every supported start -- including the published #5 auth preview v3
+(e495544), whose purposes, sessions, grants and room data must survive --
+and the rule that DM rows never reach room activity, Timeline, or the
+operator transcript even while DMs are enabled. After merging the #6 room
+and DM expiry runtime, the schema composes to v6 by adding both retention
+watermarks in place, and one test drives the real --room-retention-hours
+expiry path against the authenticated console from a published Console v5
+start: bodies and outstanding deliveries clear, Timeline keeps its
+body-free activities without message links, audits and the DM family stay
+untouched.
 """
 
 import json
@@ -27,7 +33,7 @@ from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
 from secrets import token_bytes
-from time import time
+from time import monotonic, sleep, time
 from uuid import uuid4
 
 import pytest
@@ -445,7 +451,7 @@ def test_v2_sessions_migrate_to_enrollment_purpose(tmp_path):
         assert bind(client, legacy_token, "sender").status_code == 200
         error(console_rooms(client, legacy_token), 401, "unauthorized")
         with closing(sqlite3.connect(db_path)) as connection:
-            assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
+            assert connection.execute("PRAGMA user_version").fetchone()[0] == 6
             purposes = dict(
                 connection.execute("SELECT token_digest, purpose FROM account_sessions")
             )
@@ -780,9 +786,10 @@ def test_console_timeline_keeps_events_when_message_expiry_clears_links(tmp_path
     removes an expired message after its inbox references, and the CHECK
     permits that null link for message and delivery activities only; join
     and board-ack activities still require NULL, and live messages keep
-    their links. Retention has no runtime path in this branch, so the
-    cleanup is direct test-only SQL on the temporary fixture with foreign
-    keys enforced.
+    their links. The real runtime expiry path (the maintenance loop under
+    --room-retention-hours) is covered by the Console v5 upgrade test below;
+    this one pins the FK and CHECK semantics with direct test-only SQL on the
+    temporary fixture with foreign keys enforced.
     """
     db_path = tmp_path / "team.sqlite3"
     enter_password(db_path, "create", "alice", PASSWORD)
@@ -902,6 +909,193 @@ def test_console_timeline_keeps_events_when_message_expiry_clears_links(tmp_path
             "activities"
         ][-1]
         assert (tail["kind"], tail["message_id"]) == ("message", kept["message_id"])
+
+
+def test_console_v5_upgrade_runs_real_room_expiry_and_keeps_dm_and_audit(tmp_path):
+    """The published Console v5 start meets the real #6 expiry runtime.
+
+    The fixture is downgraded to the published v5 shape (the v6 schema minus
+    both retention watermarks) and relaunched under --room-retention-hours:
+    the database upgrades in place to v6, the startup retention pass commits
+    the expired room batch, and the authenticated console verifies each side
+    of the composition -- the login, grants and roster survive, the room body
+    and its outstanding delivery are cleared, the body-free Timeline
+    activities keep their metadata with null message links, the transcript
+    read still writes a body-free audit, and the DM family stays
+    participant-only and unexpired.
+    """
+    db_path = tmp_path / "team.sqlite3"
+    old = "2020-01-01T00:00:00Z"
+    enter_password(db_path, "create", "alice", PASSWORD)
+    with live_server(db_path) as (client, _):
+        room_id = console_team_room(client, prefix="expiry")
+        room_path = f"/rooms/{room_id}"
+        join(client, "target", room_path)
+        confirm(client, "target", room_path)
+        acked = send(client, room_path, "acked-1", text="expiring acked body").json()
+        events = get(client, "target", "/inbox").json()["events"]
+        assert [event["message"]["message_id"] for event in events] == [
+            acked["message_id"]
+        ]
+        assert (
+            post(client, "target", f"/inbox/{events[0]['event_id']}/ack").status_code
+            == 200
+        )
+        outstanding = send(
+            client, room_path, "pending-1", text="expiring outstanding body"
+        ).json()
+        (pending,) = [
+            event["event_id"]
+            for event in get(client, "target", "/inbox").json()["events"]
+        ]
+        dm = post(
+            client, "sender", "/dms", json={"member_id": member(client, "target")}
+        ).json()
+        dm_message = post(
+            client,
+            "sender",
+            f"/dms/{dm['dm_id']}/messages",
+            json={"client_message_id": "dm-1", "text": "private dm body"},
+        ).json()
+        sender = member(client, "sender")
+        target = member(client, "target")
+        with closing(sqlite3.connect(db_path)) as connection:
+            owner_id = connection.execute(
+                "SELECT owner_id FROM accounts WHERE username = 'alice'"
+            ).fetchone()[0]
+
+        admin(db_path, "grant-console", "alice")
+        admin(db_path, "grant-transcript", "alice", room_id)
+        console = console_token(client, "alice", PASSWORD)
+        before = console_timeline(client, console, room_id, limit=100).json()[
+            "activities"
+        ]
+        assert [(activity["kind"], activity["message_id"]) for activity in before] == [
+            ("member_joined", None),
+            ("board_acknowledged", None),
+            ("member_joined", None),
+            ("board_acknowledged", None),
+            ("message", acked["message_id"]),
+            ("delivery", acked["message_id"]),
+            ("message", outstanding["message_id"]),
+        ]
+        assert audit_rows(db_path) == []
+
+    # Recreate the published Console v5 start: v6 minus both watermarks, with
+    # the room bodies aged past the retention cutoff while the DM keeps now.
+    with closing(sqlite3.connect(db_path)) as connection, connection:
+        connection.execute(
+            "UPDATE messages SET created_at = ? WHERE room_id IS NOT NULL", (old,)
+        )
+        connection.execute("ALTER TABLE rooms DROP COLUMN expired_through_message_id")
+        connection.execute("ALTER TABLE dms DROP COLUMN expired_through_message_id")
+        connection.execute("PRAGMA user_version = 5")
+        assert "expired_through_message_id" not in [
+            row[1] for row in connection.execute("PRAGMA table_info(rooms)")
+        ]
+
+    with live_server(db_path, extra=("--room-retention-hours", "1")) as (client, _):
+        with closing(sqlite3.connect(db_path)) as connection:
+            assert connection.execute("PRAGMA user_version").fetchone()[0] == 6
+
+        # The startup retention pass commits: the room body is gone and the
+        # room's durable watermark reports the cleared range.
+        deadline = monotonic() + 10
+        history = get(client, "sender", f"{room_path}/messages").json()
+        while "expired_through_message_id" not in history:
+            assert monotonic() < deadline, "The room expiry pass did not commit"
+            sleep(0.2)
+            history = get(client, "sender", f"{room_path}/messages").json()
+        assert history == {
+            "messages": [],
+            "expired_through_message_id": outstanding["message_id"],
+            "history_truncated": True,
+        }
+
+        # The outstanding delivery is cleared with the body: the member inbox
+        # no longer offers the event and its acknowledgement reports the
+        # expired event's not_found.
+        assert get(client, "target", "/inbox").json() == {"events": []}
+        error(post(client, "target", f"/inbox/{pending}/ack"), 404, "not_found")
+
+        # The authenticated console keeps its state across the v5 -> v6
+        # upgrade and the expiry: grants, roster, and the rooms projection
+        # keep the latest activity with its message link cleared.
+        console = console_token(client, "alice", PASSWORD)
+        detail = console_room_detail(client, console, room_id).json()
+        assert detail["room"] == {
+            "room_id": room_id,
+            "name": "Console room",
+            "member_count": 2,
+            "last_activity": {
+                "kind": "message",
+                "at": before[-1]["at"],
+                "message_id": None,
+            },
+        }
+        assert detail["transcript_allowed"] is True
+        assert [entry["member_id"] for entry in detail["members"]] == sorted(
+            (sender, target)
+        )
+        assert [entry["board_state"] for entry in detail["members"]] == [
+            "acknowledged",
+            "acknowledged",
+        ]
+        assert console_rooms(client, console).json() == {
+            "rooms": [
+                {
+                    "room_id": room_id,
+                    "name": "Console room",
+                    "member_count": 2,
+                    "last_activity": {
+                        "kind": "message",
+                        "at": before[-1]["at"],
+                        "message_id": None,
+                    },
+                }
+            ]
+        }
+
+        # Timeline keeps every activity row with kind, at and actor intact;
+        # only the links to the expired messages are cleared.
+        after = console_timeline(client, console, room_id, limit=100).json()[
+            "activities"
+        ]
+        assert [
+            (a["activity_id"], a["kind"], a["at"], a["actor_member_id"])
+            for a in after
+        ] == [
+            (a["activity_id"], a["kind"], a["at"], a["actor_member_id"])
+            for a in before
+        ]
+        assert [a["message_id"] for a in after] == [None] * len(before)
+
+        # The transcript body scope holds: the room text is unreadable and
+        # the read still writes exactly one body-free audit row.
+        transcript = console_transcript(client, console, room_id).json()
+        assert transcript == {"messages": [], "has_more": False}
+        (audit,) = audit_rows(db_path)
+        assert audit["owner_id"] == owner_id
+        assert audit["room_id"] == room_id
+        assert audit["action"] == "transcript_read"
+        assert audit["page_before"] is None
+        assert audit["page_limit"] == 50
+        assert audit["at"].endswith("Z")
+        assert "expiring" not in str(audit) and "private" not in str(audit)
+
+        # The DM family is untouched by the room expiry: both participants
+        # keep the exact pre-expiry response shape, and no console response
+        # carries the DM body.
+        assert get(client, "target", f"/dms/{dm['dm_id']}/messages").json() == {
+            "messages": [dm_message]
+        }
+        for payload in (
+            console_rooms(client, console).json(),
+            detail,
+            after,
+            transcript,
+        ):
+            assert "private dm body" not in json.dumps(payload)
 
 
 def test_console_transcript_pages_scoped_grants_audit_and_revocation(tmp_path):
@@ -1164,7 +1358,7 @@ def test_v3_history_database_upgrades_to_console_v5(tmp_path):
     with live_server(db_path, legacy=False) as (client, _):
         assert bind(client, legacy_token, "sender").status_code == 200
         with closing(sqlite3.connect(db_path)) as connection:
-            assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
+            assert connection.execute("PRAGMA user_version").fetchone()[0] == 6
             purposes = dict(
                 connection.execute("SELECT token_digest, purpose FROM account_sessions")
             )
@@ -1405,7 +1599,7 @@ def test_v3_auth_preview_database_upgrades_to_console_v5_preserving_grants(tmp_p
         # The preview's enrollment session still binds agents after the merge.
         assert bind(client, preview_enroll_token, "preview-agent").status_code == 200
         with closing(sqlite3.connect(db_path)) as connection:
-            assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
+            assert connection.execute("PRAGMA user_version").fetchone()[0] == 6
             purposes = dict(
                 connection.execute("SELECT token_digest, purpose FROM account_sessions")
             )
@@ -1673,7 +1867,7 @@ def test_v4_dm_database_upgrades_to_console_v5_without_dm_activity(tmp_path):
     with live_server(db_path, legacy=False) as (client, _):
         assert bind(client, legacy_token, "sender").status_code == 200
         with closing(sqlite3.connect(db_path)) as connection:
-            assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
+            assert connection.execute("PRAGMA user_version").fetchone()[0] == 6
             purposes = dict(
                 connection.execute("SELECT token_digest, purpose FROM account_sessions")
             )
