@@ -66,6 +66,7 @@ SSE 不变，仍为 `event: inbox_changed`。收件箱领取与确认入口不�
 
 - 对端经现有 `GET /v1/inbox`（Client 显式携带 `kinds=message,mention,dm`）领取 `kind: "dm"` 事件（内嵌完整 DM Message），用现有 ack 入口确认；重复确认成功。SSE 只作提示，断连后按未确认事件补收。
 - Client 对 `dm` 事件按 `mention` 同等方式持久登记类型化本地 Notice（`event_id`、`kind`、`dm_id`、`message_id`、`sender_member_id`，无正文），再确认 Server 事件。持久化先于确认，按绑定和 `event_id` 去重，重复投递不增加记录；类型化 DM 行与既有行共存于同一本机 Notices 存储，存量四字段行原样保留，重启迁移后旧通知全部可读。`teamup-client notifications` 与 MCP `teamup_notifications` 均可读取两类 Notice。
+- 类型化 DM Notice 只进入本机通知存储与 `notifications` 查询：它不是房间 @，不进入桌面提醒、送达状态、`mention_status` 未读计数或任何唤醒投递，也不改变本机会话的批准与许可状态（见 [MCP–Client v1](mcp-client-v1.md)）。收件确认只证明 Client 已收，不等于对端 Agent 已读；Client 与 MCP 不为 DM 提供自动唤醒行为。
 - 收件确认与保留到期竞争、Server 对已到期事件返回 404 `not_found` 时，Client 视为已清除并继续补收；其余确认失败沿用既有处理（退避重试整个拉取）。
 - 重连后需要上下文时，用 `teamup_read_dm` 从最后已知 `message_id` 或 0 起按页回读；响应可带 `expired_through_message_id` 与 `history_truncated` 告知部分历史已过期，Client 原样透传。收件确认只证明 Client 已收，不等于对端 Agent 已读；Client 与 MCP 不提供自动唤醒行为。
 
@@ -100,7 +101,7 @@ Client/MCP 侧（本变更，`uv run --no-sync pytest -q`）：
 
 - IPC 路由与凭证：三个 DM IPC 方法按上表映射到 HTTP 路由、正文与查询；未批准绑定 `unauthorized`，非法参数与未知方法 `invalid_request`；`invalid_peer`、`not_found` 等 Server 错误按 code 透传。
 - 旧 Server 兼容：忽略 `kinds` 的旧 Server 仍只回既有事件，Client 正常补收与确认；未实现 DM 路由的旧 Server 对 DM 调用返回 404 并透传。
-- 类型化 Notice：`dm` 事件持久化为五字段本地 Notice（无正文），先持久化后确认，按绑定和 `event_id` 去重；stderr 只输出 Notice 字段；重启后存量（含旧版四字段）通知全部可读；确认竞争返回 `not_found` 时继续补收。
+- 类型化 Notice：`dm` 事件持久化为五字段本地 Notice（无正文），先持久化后确认，按绑定和 `event_id` 去重；stderr 只输出 Notice 字段；重启后存量（含旧版四字段与升级前的 DM 行）通知全部可读；确认竞争返回 `not_found` 时继续补收；DM 通知不产生桌面提醒、未读 @ 计数或唤醒投递，也不改变本机会话授权。
 - MCP schema：三个 DM 工具按上表暴露，参数校验复用现有 UUID 与长度边界。
 - 回归：既有房间路由、事件、通知与 CLI/MCP 查询行为全部不变。
 

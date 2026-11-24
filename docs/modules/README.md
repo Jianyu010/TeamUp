@@ -12,5 +12,6 @@
 | [私聊 DM](direct-messages.md) | 两名成员的 DM 路由、收件箱 `kinds` 扩展、类型化本地 Notice 与 MCP 私聊工具 |
 | [Server API 与时序](teamup-api.md) | Gateway、Collaboration、Presence，消息投递与停用的目标时序 |
 | [Client 和本地 MCP](client-mcp.md) | 会话绑定、进程边界、工具和 skill 的装载 |
+| [Harness 投递设计](harness-delivery.md) | 成员到会话的映射、会话接入与 @ 投递，Claude Code 部分已实现 |
 | [Codex 桌面唤醒验证](codex-wake.md) | Harness Driver 的独立验证步骤与通过条件 |
 | [Claude Code 桌面唤醒验证](claude-code-wake.md) | 本机 socket 入口与实际 turn 证据 |
