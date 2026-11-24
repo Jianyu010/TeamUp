@@ -165,6 +165,13 @@ PR 的标签描述状态，`type/*` 从关联的 issue 继承。
 | `gate/linux-ut-failed` | `3 · Linux UT` |
 | `gate/linux-st-failed` | `3 · Linux ST` |
 | `gate/ai-review-failed` | `3 · AI Review` 运行失败 |
+| `gate/type-check-failed` | `2 · Type Check`（mypy） |
+| `gate/secrets-failed` | `2 · Secrets`（gitleaks） |
+| `gate/workflow-lint-failed` | `2 · Workflow Lint`（actionlint、zizmor） |
+| `gate/dependencies-failed` | `2 · Dependencies`（锁文件一致性） |
+| `gate/contract-failed` | `3 · Contract` |
+| `gate/install-failed` | `3 · Install` |
+| `gate/linux-st-cross-failed` | `3 · Linux ST · 跨组件` |
 
 ## 清单
 
@@ -226,3 +233,10 @@ PR 的标签描述状态，`type/*` 从关联的 issue 继承。
 | gate/linux-ut-failed | E99695 | Linux 单元测试失败 |
 | gate/linux-st-failed | E99695 | Linux 系统测试失败 |
 | gate/ai-review-failed | E99695 | AI 审查失败 |
+| gate/type-check-failed | E99695 | 类型检查失败 |
+| gate/secrets-failed | E99695 | 密钥扫描发现问题 |
+| gate/workflow-lint-failed | E99695 | 工作流检查失败 |
+| gate/dependencies-failed | E99695 | 锁文件与依赖声明不一致 |
+| gate/contract-failed | E99695 | 契约测试失败 |
+| gate/install-failed | E99695 | 安装冒烟测试失败 |
+| gate/linux-st-cross-failed | E99695 | 跨组件系统测试失败 |

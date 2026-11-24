@@ -16,6 +16,26 @@ TeamUp 的 main 分支只接受合入门禁的自动合入。仓库 owner（`Jia
 
 草稿只运行第 2 层，不占 UT、ST 和审查的名额。转为 ready for review 时 `CI` 重新运行，第 3 层随之启动。
 
+### 待补充的检查（契约）
+
+下列检查按本节实现；实现合入后，状态从"计划"改为"启用"，并加入 `.github/ci/policy.json` 的必需检查。job 名、runner 标签、命令和失败标签以本表为准，实现方不得私自改名。
+
+| Job | 层 | runner（标签 = 名称的短横线形式） | 命令或判定 | 必需 | 失败标签 | 状态 |
+| --- | --- | --- | --- | --- | --- | --- |
+| `1 · PR Routing` | 1 | 门禁写入的提交状态（`merge-gate-01`） | 门禁的路由结论：PR 走自动路径还是等待 owner | 否，只报告 | – | 计划 |
+| `1 · Protected Changes` | 1 | 同上 | 改了受保护路径、删除测试或新增 skip/xfail 时为红，owner 加 `ready` 后为绿 | 否，只报告 | – | 计划 |
+| `1 · Automation Limits` | 1 | 同上 | 改动超过 300 个文件、PR 作者不受信或审查重跑次数用尽时为红 | 否，只报告 | – | 计划 |
+| `2 · Type Check` | 2 | `type-check-01` | `uv run --no-sync mypy`，配置在根 `pyproject.toml` 的 `[tool.mypy]`，覆盖 `server/src`、`client/src`、`plugin/mcp/src` | 是 | `gate/type-check-failed` | 计划 |
+| `2 · Secrets` | 2 | `secrets-01` | `gitleaks dir . --config .gitleaks.toml --redact --exit-code 1` | 是 | `gate/secrets-failed` | 计划 |
+| `2 · Workflow Lint` | 2 | `workflow-lint-01` | `actionlint` 与 `zizmor --offline .github/workflows`（配置 `.github/zizmor.yml`） | 是 | `gate/workflow-lint-failed` | 计划 |
+| `2 · Dependencies` | 2 | `dependencies-01` | `uv.lock` 与各 `pyproject.toml` 一致（锁文件检查）；`pip-audit` 漏洞报告写入 job 摘要，只报告不失败 | 是（仅锁文件检查） | `gate/dependencies-failed` | 计划 |
+| `3 · Contract` | 3 | `contract-01` | `uv run --no-sync pytest -q tests/contract`：HTTP API、SSE 事件和 MCP 工具 schema 与 `tests/contract/golden/` 的快照一致 | 是 | `gate/contract-failed` | 计划 |
+| `3 · Install` | 3 | `install-01`–`03` | `uv run --no-sync pytest -q tests/install`：构建三个包的 wheel，装进全新虚拟环境，命令行入口可用 | 是 | `gate/install-failed` | 计划 |
+| `3 · Linux UT` 覆盖率下限 | 3 | `linux-ut-01`–`03` | `pytest --cov` 加 `--cov-fail-under=<下限>`，下限写在根 `pyproject.toml` 的 `[tool.coverage.report] fail_under` | 是（随 `3 · Linux UT`） | `gate/linux-ut-failed` | 计划 |
+| `3 · Linux ST · 跨组件` | 3 | `linux-st-cross-01`–`03` | `uv run --no-sync pytest -q tests/system`：Server、Client 守护进程和 MCP 一起启动，走完登记、建房、公告、消息与提醒的链路 | 是 | `gate/linux-st-cross-failed` | 计划 |
+
+第 2 层的四项在草稿上也运行；第 3 层只在 PR 标为 ready for review 之后运行。第 1 层的三个状态由门禁写入，不运行 PR 代码，也不在必需检查里，合入与否仍只看 `merge-gate`。
+
 受保护路径和必需检查写在 [`.github/ci/policy.json`](../../.github/ci/policy.json)。该文件本身也受保护。
 
 ## 合入规则
