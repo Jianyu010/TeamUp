@@ -13,6 +13,7 @@ from ._desktop import PREVIEW_LIMIT, TITLE_LIMIT, clean
 from ._harness import owned_socket, wake_prompt
 from ._notices import binding_scope
 from ._protocol import is_integer, is_string, is_uuid
+from ._task_notices import drain_task_reminders
 from ._upstream import unavailable
 from .ipc import ClientError
 
@@ -54,7 +55,7 @@ def _addresses(value):
         isinstance(value, list)
         and len(value) <= 100
         and all(is_uuid(item) for item in value)
-        and len(set(value)) == len(value)
+        and len({item.lower() for item in value}) == len(value)
     )
 
 
@@ -108,17 +109,13 @@ OPERATIONS = {
         {**PAGE, "status": _task_status},
     ),
     "get_task": Operation("GET", "/rooms/{room_id}/tasks/{task_id}", TASK),
-    "join_task": Operation(
-        "POST", "/rooms/{room_id}/tasks/{task_id}/join", TASK
-    ),
+    "join_task": Operation("POST", "/rooms/{room_id}/tasks/{task_id}/join", TASK),
     "report_progress": Operation(
         "POST",
         "/rooms/{room_id}/tasks/{task_id}/progress",
         {**TASK, "client_progress_id": MESSAGE_KEY, "note": BOARD_TEXT},
     ),
-    "finish_task": Operation(
-        "POST", "/rooms/{room_id}/tasks/{task_id}/finish", TASK
-    ),
+    "finish_task": Operation("POST", "/rooms/{room_id}/tasks/{task_id}/finish", TASK),
     "task_history": Operation(
         "GET", "/rooms/{room_id}/tasks/{task_id}/events", TASK, PAGE
     ),
@@ -415,7 +412,9 @@ class Coordinator:
         return tuple(
             ConsoleSession(
                 hashlib.sha256(json.dumps(identity).encode()).hexdigest(),
-                self._leases[identity].kind if identity in self._leases else identity[0],
+                self._leases[identity].kind
+                if identity in self._leases
+                else identity[0],
                 identity[1],
                 session.binding.member_token,
             )
@@ -537,6 +536,7 @@ class Coordinator:
     async def _drain_with_hints(self, binding, session, lines):
         wake = session.inbox_changed
         reader = asyncio.create_task(self._read_hints(lines, wake))
+        reminders_supported = True
         try:
             while True:
                 wake.clear()
@@ -545,6 +545,16 @@ class Coordinator:
                     session.scope,
                     (session.notices_changed, session.harness_changed),
                 )
+                if reminders_supported:
+                    try:
+                        reminders_supported = await drain_task_reminders(
+                            self._upstream.request,
+                            binding.member_token,
+                            self._notifier.show,
+                        )
+                    except ClientError:
+                        # A task-delivery error must not interrupt room inbox handling.
+                        pass
                 if reader.done():
                     await reader
                     return

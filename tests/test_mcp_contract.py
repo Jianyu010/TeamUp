@@ -113,6 +113,13 @@ def test_stdio_passes_approved_binding_and_surfaces_ipc_error():
                 "teamup_send_message",
                 "teamup_read_messages",
                 "teamup_search_room",
+                "teamup_create_task",
+                "teamup_list_tasks",
+                "teamup_get_task",
+                "teamup_join_task",
+                "teamup_report_progress",
+                "teamup_finish_task",
+                "teamup_task_history",
                 "teamup_notifications",
             }
             search_schema = tools["teamup_search_room"].inputSchema
