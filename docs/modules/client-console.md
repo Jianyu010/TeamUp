@@ -12,7 +12,7 @@ Viewing the console does not register, join, acknowledge, open conversations, or
 
 ## Task operations
 
-The Tasks tab uses `GET /api/tasks?room=UUID&status=open|finished&after=N` to aggregate pages through the owner's current approved room sessions. It uses `GET /api/task-events?session=ID&room=UUID&task=UUID&after=N` to read one session's authorized task history. Failed scoped reads retain their status in the browser.
+The Tasks tab uses `GET /api/tasks?room=UUID&status=open|finished&after=N` to aggregate pages through the owner's current approved room sessions. The task records include their visible session IDs and the cursor is serialized as a decimal string. It uses `GET /api/task-events?session=ID&room=UUID&task=UUID&after=N` to read one session's authorized task history. Failed scoped reads retain their status in the browser.
 
 Task actions use `POST /api/tasks/{task_id}/{join|progress|finish}?session=ID&room=UUID` with the launch credential and exact loopback Origin. Progress carries JSON `client_progress_id` and `note`. Join and finish carry an empty body. The selected session must still be approved when the request is forwarded. Provider errors are returned using their task error codes. The browser can only call these named actions.
 

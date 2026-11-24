@@ -170,3 +170,42 @@ button:focus-visible, select:focus-visible, input:focus-visible {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition-duration: .01ms !important; }
 }
+
+.room-tabs { display: flex; gap: 4px; }
+.task-board {
+  min-height: 0; display: grid; grid-template-rows: auto auto minmax(0, 1fr); gap: 6px;
+}
+.task-toolbar { display: flex; align-items: center; gap: 6px; padding-top: 5px; flex-wrap: wrap; }
+#task-lane-nav { display: none; gap: 3px; }
+#task-status:empty { display: none; }
+.task-lanes { min-height: 0; display: grid; gap: 7px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.task-lanes[data-finished="true"] { grid-template-columns: minmax(0, 1fr); }
+.task-lane {
+  display: grid; grid-template-rows: auto minmax(0,1fr); min-height: 0;
+  border: 1px solid var(--line); border-radius: 7px; background: var(--panel);
+}
+.task-lane h3 { text-align: center; font-size: 13px; margin: 8px 4px 4px; }
+.task-list { padding: 5px; }
+.task-group { color: var(--muted); font-size: 11px; margin: 5px 2px 4px; }
+.task-card {
+  margin-bottom: 5px; padding: 6px; background: var(--raised); border: 1px solid var(--edge);
+  border-radius: 5px; overflow-wrap: anywhere; font-size: 12px;
+}
+.task-card summary { cursor: pointer; font-weight: 580; outline-offset: 2px; }
+.task-card p { padding-top: 4px; }
+.task-card .stalled { color: #dbab86; }
+.task-expanded { margin-top: 4px; }
+.task-expanded strong { font-size: 11px; color: #e9ece6; }
+.task-expanded label { color: var(--muted); display: grid; margin-top: 6px; }
+.task-expanded textarea {
+  font: inherit; color: inherit; background: var(--shell); border: 1px solid var(--edge);
+  border-radius: 4px; width: 100%; padding: 4px;
+}
+.task-expanded button { border-color: var(--edge); color: var(--accent); padding: 3px 5px; margin-top: 4px; }
+.task-actions { display: flex; flex-wrap: wrap; gap: 4px; }
+@media (max-width: 900px) {
+  #task-lane-nav:not([hidden]) { display: flex; }
+  #task-lane-nav button { padding-inline: 4px; }
+  .task-lanes { grid-template-columns: minmax(0, 1fr); }
+  .task-lane[data-selected="false"] { display: none; }
+}

@@ -141,3 +141,64 @@ def test_loopback_listener_requires_its_credential_and_serves_bundled_assets():
                 ).status_code == 400
 
     asyncio.run(scenario())
+
+
+def test_task_actions_require_same_origin_and_keep_session_scope():
+    task = "2f47cb81-36dc-42eb-8736-8f51a303455a"
+
+    async def scenario():
+        requests = []
+
+        async def upstream(method, path, token, *, query=None, body=None):
+            requests.append((method, path, token, query, body))
+            if method == "POST" and token == "reviewer-secret":
+                raise ClientError("board_ack_required", "Current board needed")
+            if method == "GET":
+                return {
+                    "tasks": [{"task_id": task, "task_number": 1, "version": 1}],
+                    "next_after": None,
+                }
+            return {"task_id": task, "task_number": 1, "status": "open"}
+
+        async with serve_console(ConsoleReader(sessions, upstream)) as url:
+            origin, token = url.split("#")
+            async with httpx.AsyncClient(trust_env=False) as client:
+                auth = {"Authorization": "Bearer " + token}
+                endpoint = origin + f"api/tasks/{task}/join"
+                params = {"session": "review", "room": ROOM}
+                rejected = await client.post(endpoint, headers=auth, params=params)
+                assert rejected.status_code == 403
+                assert requests == []
+                auth["Origin"] = origin.rstrip("/")
+                rejected = await client.post(endpoint, headers=auth, params=params)
+                assert rejected.status_code == 409
+                assert rejected.json()["state"] == "board_ack_required"
+                assert requests[-1][2] == "reviewer-secret"
+                params["session"] = "primary"
+                taken = await client.post(endpoint, headers=auth, params=params)
+                assert (
+                    taken.status_code == 200 and taken.json()["task"]["task_id"] == task
+                )
+                assert requests[-1] == (
+                    "POST",
+                    f"/rooms/{ROOM}/tasks/{task}/join",
+                    "backend-secret",
+                    None,
+                    None,
+                )
+                page = await client.get(
+                    origin + "api/tasks",
+                    headers=auth,
+                    params={"room": ROOM, "status": "open"},
+                )
+                assert page.json()["tasks"] == [
+                    {
+                        "task_id": task,
+                        "task_number": "1",
+                        "version": 1,
+                        "visible_to": ["primary", "review"],
+                    }
+                ]
+                assert "-secret" not in page.text
+
+    asyncio.run(scenario())
