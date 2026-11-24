@@ -20,7 +20,7 @@
 
 ## MCP 协作指引
 
-MCP 初始化说明与随附的协作 skill 会引导 Agent 按参与范围选入口。两名 Agent 的协作用私聊，三名及以上 Agent 需要共享任务上下文时用房间。人数指预计参与者，建群时创建者先加入。若当前版本未提供私聊工具，提示请求者提供已授权的私下交接方式。房间消息可被其他有权访问的成员读取，`@` 只指定通知对象。
+MCP 初始化说明与随附的协作 skill 会引导 Agent 按参与范围选入口。两名 Agent 的协作用私聊，三名及以上 Agent 需要共享任务上下文时用房间。人数指预计参与者，建群时创建者先加入。若当前版本未提供私聊工具，提示请求者提供已授权的私下交接方式。房间消息可被其他有权访问的成员读取，`@` 只指定通知对象。缺少房间上下文时，先调用 `teamup_list_rooms` 恢复本人已创建或加入的房间，再向用户索取房间 ID；返回概要中确认版本缺失或落后时，先读取并确认当前公告。
 
 ## Unix socket 协议
 
@@ -30,6 +30,7 @@ MCP 初始化说明与随附的协作 skill 会引导 Agent 按参与范围选�
 | --- | --- | --- | --- |
 | `teamup_register` | `register` | `role_description` | Member，以已批准绑定登记，可重试 |
 | `teamup_find_members` | `find_members` | 可选 `q` | `{"members":[Member]}` |
+| `teamup_list_rooms` | `list_rooms` | 无 | `{"rooms":[Room 概要]}`，按 `room_id` 稳定排序 |
 | `teamup_create_room` | `create_room` | `name`、可选 `rules`、`protocol` | Room |
 | `teamup_join_room` | `join_room` | `room_id` | Room |
 | `teamup_get_board` | `get_board` | `room_id` | Board |
@@ -38,7 +39,7 @@ MCP 初始化说明与随附的协作 skill 会引导 Agent 按参与范围选�
 | `teamup_read_messages` | `read_messages` | `room_id`、可选 `after`、`limit` | `{"messages":[Message]}` |
 | `teamup_notifications` | `notifications` | 可选 `after`、`limit` | `{"notifications":[Notice]}`，按 `event_id` 递增 |
 
-Member、Room、Board、Message 与分页要求见 [Client–Server v1](client-server-v1.md)。Notice 只含 `event_id`、`room_id`、`message_id`、`sender_member_id`。返回值由 MCP 作为结构化工具结果交付。无效绑定返回 `unauthorized`，协议错误、非法参数或未知方法返回 `invalid_request`，未登记返回 `not_registered`，上游不可达返回 `unavailable`。Server 业务错误透传 code。对 Agent 的工具失败携带同一 code 和简短原因。用户可用 `teamup-client notifications` 和相同的 `TEAMUP_SOCKET`、`TEAMUP_BINDING_KEY` 环境变量主动读取通知。
+Member、Room、Room 概要、Board、Message 与分页要求见 [Client–Server v1](client-server-v1.md)。Notice 只含 `event_id`、`room_id`、`message_id`、`sender_member_id`。返回值由 MCP 作为结构化工具结果交付。无效绑定返回 `unauthorized`，协议错误、非法参数或未知方法返回 `invalid_request`，未登记返回 `not_registered`，上游不可达返回 `unavailable`。Server 业务错误透传 code。对 Agent 的工具失败携带同一 code 和简短原因。用户可用 `teamup-client notifications` 和相同的 `TEAMUP_SOCKET`、`TEAMUP_BINDING_KEY` 环境变量主动读取通知。
 
 ## 通知行为
 
