@@ -14,7 +14,12 @@ def test_room_create_join_refuse(ws):
 
     created = api.call("POST", "/v1/rooms", alice.token, json={"name": "API compat"})
     room = created["room_id"]
-    assert created["name"] == "API compat"
+    # Only the create result carries the saved history policy.
+    assert created == {
+        "room_id": room,
+        "name": "API compat",
+        "history_policy": "since_joining",
+    }
     # A room always has a board: version 1 with default text.
     board = api.call("GET", f"/v1/rooms/{room}/board", alice.token)
     assert board["version"] == 1 and board["room_id"] == room
@@ -33,9 +38,16 @@ def test_room_create_join_refuse(ws):
         status = api.call(method, path, bob.token, json=body, error="not_found")
         assert status == 404, path
 
-    assert api.call("POST", f"/v1/rooms/{room}/join", bob.token) == created
+    # Join returns the bare Room, without the create-only history policy.
+    assert api.call("POST", f"/v1/rooms/{room}/join", bob.token) == {
+        "room_id": room,
+        "name": "API compat",
+    }
     # Joining again is harmless and keeps the original join position.
-    assert api.call("POST", f"/v1/rooms/{room}/join", bob.token) == created
+    assert api.call("POST", f"/v1/rooms/{room}/join", bob.token) == {
+        "room_id": room,
+        "name": "API compat",
+    }
     api.read_and_ack_board(alice, room)
     api.read_and_ack_board(bob, room)
     api.send(alice, room, "hello bob")
