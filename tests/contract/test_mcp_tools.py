@@ -8,9 +8,10 @@ import sys
 import tempfile
 from pathlib import Path
 
-from conftest import ROOT
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 async def list_tools(socket_path):

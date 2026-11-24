@@ -1,9 +1,11 @@
 """The Server's HTTP surface: routes, and request/response schemas from OpenAPI."""
 
 import re
+from pathlib import Path
 
-from conftest import ROOT
 from teamup_server.main import create_app
+
+ROOT = Path(__file__).resolve().parents[2]
 
 DOCS = ("docs/modules/client-server-v1.md", "docs/modules/account-login-v1.md")
 METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}

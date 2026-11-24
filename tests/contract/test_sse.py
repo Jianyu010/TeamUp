@@ -8,13 +8,15 @@ import sys
 from base64 import urlsafe_b64encode
 from contextlib import contextmanager
 from hashlib import sha256
+from pathlib import Path
 from queue import Queue
 from threading import Thread
 from time import monotonic, sleep
 
 import httpx
 import pytest
-from conftest import ROOT
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def credential(label):
