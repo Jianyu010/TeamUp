@@ -38,27 +38,40 @@ def live_server(db_path):
         "TEAMUP_ENROLLMENT_KEYS": json.dumps({"alice": credential("enroll-alice")}),
     }
     command = [sys.executable, "-m", "teamup_server.main", "--db", str(db_path)]
+    # stderr goes to a file: a pipe nobody drains can fill and block the server, and
+    # reading a live process's pipe on failure would wait for EOF forever.
+    stderr_path = db_path.with_name(db_path.name + ".stderr")
+    # No read timeout: the SSE stream is idle between frames; frame() bounds each wait.
+    timeout = httpx.Timeout(10, read=None)
     with (
+        open(stderr_path, "w") as stderr,
         subprocess.Popen(
             [*command, "--port", str(port)],
             env=env,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
+            stderr=stderr,
         ) as process,
-        httpx.Client(base_url=f"http://127.0.0.1:{port}", trust_env=False) as client,
+        httpx.Client(
+            base_url=f"http://127.0.0.1:{port}", trust_env=False, timeout=timeout
+        ) as client,
     ):
         try:
             deadline = monotonic() + 10
             while monotonic() < deadline and process.poll() is None:
                 try:
                     client.get("/v1/members/me")
-                except httpx.ConnectError:
+                except httpx.TransportError:  # not listening yet, or not answering
                     sleep(0.02)
                     continue
                 break
             else:
-                pytest.fail("Server did not start: " + str(process.stderr.read()))
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+                pytest.fail("Server did not start: " + stderr_path.read_text())
             yield client, process
         finally:
             if process.poll() is None:

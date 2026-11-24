@@ -1681,6 +1681,32 @@ def test_a_plain_pr_reports_the_automatic_route() -> None:
     assert {u for _c, u in gh.layer1_posts} == {"run"}
 
 
+def test_one_judgement_reads_the_files_and_reviews_once() -> None:
+    class Counting(FakeGitHub):
+        def __init__(self) -> None:
+            super().__init__()
+            self.counts: dict[str, int] = {}
+
+        def _count(self, name: str) -> None:
+            self.counts[name] = self.counts.get(name, 0) + 1
+
+        def file_entries(self, number: int) -> list[dict[str, Any]]:
+            self._count("files")
+            return super().file_entries(number)
+
+        def reviews(self, number: int) -> list[dict[str, Any]]:
+            self._count("reviews")
+            return super().reviews(number)
+
+    gh = Counting()
+    gh.review_list = []  # no review yet: layer 1 also looks at the review runs
+    _l1(gh)
+    assert gh.counts == {"files": 1, "reviews": 1}
+    assert gh.memo is None  # the next judgement reads afresh
+    auto(gh, 7, REQUIRED, "run")
+    assert gh.counts == {"files": 2, "reviews": 2}
+
+
 def test_a_protected_path_fails_the_status_and_names_the_path() -> None:
     gh = FakeGitHub()
     gh.paths = [".github/ci/policy.json", "src/a.py"]

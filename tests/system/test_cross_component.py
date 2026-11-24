@@ -7,7 +7,7 @@ public entry points.
 
 import asyncio
 
-from _stack import deploy, tool
+from _stack import deploy, tool, wait_for
 
 
 async def walk(server, alice, bob):
@@ -46,7 +46,12 @@ async def walk(server, alice, bob):
     # member's inbox is empty and a repeated ack is idempotent.
     token = bob.bindings[0]["member_token"]
     try:
-        assert api.call("GET", "/v1/inbox", token)["events"] == []
+        # The ack is a separate request after the notice, so wait for it to land.
+        wait_for(
+            lambda: api.call("GET", "/v1/inbox", token)["events"] == [],
+            timeout=10,
+            what="the Client to ack the mention",
+        )
         event_id = notice["event_id"]
         ack = api.call("POST", f"/v1/inbox/{event_id}/ack", token)
         assert ack == {"event_id": event_id}

@@ -154,6 +154,8 @@ class GitHub:
         self.deadline: float | None = (
             None  # ``time.monotonic()`` after which no call is made
         )
+        # Reads shared within one judgement (``judging``); None outside one.
+        self.memo: dict[tuple[Any, ...], Any] | None = None
 
     def call(self, method: str, path: str, body: Any = None) -> Any:
         """One REST call; returns parsed JSON (None for an empty body)."""
@@ -452,7 +454,11 @@ class GitHub:
 
     def status_of(self, sha: str, context: str) -> tuple[str, str]:
         """The latest (state, description) of commit status ``context`` on ``sha`` ("", "" if none)."""
-        data = self.call("GET", f"/commits/{sha}/status?per_page=100") or {}
+        data = _memo(
+            self,
+            ("status", sha),
+            lambda: self.call("GET", f"/commits/{sha}/status?per_page=100") or {},
+        )
         for status in data.get("statuses") or []:
             if status.get("context") == context:
                 return str(status.get("state") or ""), str(
@@ -666,6 +672,45 @@ def _short(problem: str) -> str:
     return problem.removeprefix(ROUTING).split(";")[0]
 
 
+def _memo(gh: Any, key: tuple[Any, ...], read: Callable[[], Any]) -> Any:
+    """``read()``, shared with the rest of the current judgement (``judging``)."""
+    memo = getattr(gh, "memo", None)
+    if memo is None:
+        return read()
+    if key not in memo:
+        memo[key] = read()
+    return memo[key]
+
+
+class judging:
+    """Within the block, ``gh``'s file, review and status reads are made once.
+
+    One judgement (``auto_problems`` and then ``layer1``) reads the same snapshot; a new
+    judgement, such as a re-judge after GitHub recomputed ``mergeable``, reads afresh.
+    """
+
+    def __init__(self, gh: Any) -> None:
+        self.gh = gh
+
+    def __enter__(self) -> None:
+        self.gh.memo = {}
+
+    def __exit__(self, *_: object) -> None:
+        self.gh.memo = None
+
+
+def _file_entries(gh: Any, number: int) -> list[dict[str, Any]]:
+    return _memo(gh, ("files", number), lambda: gh.file_entries(number))
+
+
+def _reviews(gh: Any, number: int) -> list[dict[str, Any]]:
+    return _memo(gh, ("reviews", number), lambda: gh.reviews(number))
+
+
+def _review_runs(gh: Any, sha: str) -> list[dict[str, Any]]:
+    return _memo(gh, ("review_runs", sha), lambda: gh.review_runs(sha))
+
+
 def layer1_verdicts(
     gh: GitHub, pull: dict[str, Any], ready: bool
 ) -> dict[str, tuple[str, str]]:
@@ -676,7 +721,7 @@ def layer1_verdicts(
     """
     number, sha = int(pull["number"]), pull["head"]["sha"]
     policy = load_policy()
-    entries = gh.file_entries(number)
+    entries = _file_entries(gh, number)
     limit = int(policy.get("max_changed_files") or 300)
     problems = routing_problems(entries, {**policy, "max_changed_files": NO_LIMIT})
     paths = sorted({str(e.get("filename") or "") for e in entries})
@@ -691,9 +736,9 @@ def layer1_verdicts(
     if (
         not exempt
         and not pull.get("draft")
-        and not _own_reviews(sha, gh.reviews(number))
+        and not _own_reviews(sha, _reviews(gh, number))
     ):
-        runs = gh.review_runs(sha)
+        runs = _review_runs(gh, sha)
         latest = max(
             runs,
             key=lambda r: str(r.get("run_started_at") or r.get("created_at") or ""),
@@ -1021,13 +1066,13 @@ def auto_problems(gh: GitHub, pull: dict[str, Any], required: list[str]) -> list
         return ["tier 1 ran before the PR's base changed; push to run it again"]
     problems = tier1_problems(runs, required)
     policy = load_policy()
-    entries = gh.file_entries(number)
+    entries = _file_entries(gh, number)
     problems += routing_problems(entries, policy)
     paths = sorted({str(e.get("filename") or "") for e in entries})
     if review_exempt(paths, policy):
         return problems
-    reviews = gh.reviews(number)
-    review_runs = gh.review_runs(sha) if _own_reviews(sha, reviews) else []
+    reviews = _reviews(gh, number)
+    review_runs = _review_runs(gh, sha) if _own_reviews(sha, reviews) else []
     review_issues = review_problems(sha, reviews, review_runs, gh.review_jobs, since)
     if not review_issues:
         review_issues = review_finding_problems(gh, pull, reviews)
@@ -1069,10 +1114,11 @@ def _judge(
         and pull.get("mergeable") is None
         and pull.get("state", "open") == "open"
     )
-    problems = auto_problems(
-        gh, {**pull, "mergeable": True} if unknown else pull, required
-    )
-    layer1(gh, pull, run_url)
+    with judging(gh):
+        problems = auto_problems(
+            gh, {**pull, "mergeable": True} if unknown else pull, required
+        )
+        layer1(gh, pull, run_url)
     routing = [p for p in problems if p.startswith(ROUTING)]
     rest = [p for p in problems if not p.startswith(ROUTING)]
     if rest in ([NO_REVIEW], [UNATTRIBUTED]):
