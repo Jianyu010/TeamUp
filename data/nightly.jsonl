@@ -1,0 +1,1 @@
+{"schema":1,"suite":"nightly","sha":"cad878eb669d3883b4881adb303625ae1aeea3c7","version":null,"started_at":null,"finished_at":"2026-11-24T16:02:59Z","host":null,"scenarios":[{"id":"summary","title":"summary.json was not produced","status":"error","duration_s":0,"detail":"the step that writes it crashed or timed out"}],"metrics":[]}
