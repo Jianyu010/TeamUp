@@ -296,7 +296,7 @@ class Gateway:
         def dm_history(
             token: _Bearer, dm_id: _Identifier, after: _After = 0, limit: _Limit = 50
         ) -> dict:
-            return {"messages": collaboration.dm_history(token, dm_id, after, limit)}
+            return collaboration.dm_history(token, dm_id, after, limit)
 
         @app.get("/v1/inbox", dependencies=[Depends(_require_query_utf8)])
         def inbox(
