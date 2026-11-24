@@ -332,17 +332,59 @@ async def https_exchange(root):
                                         room_id=room_id,
                                         version=board["version"],
                                     )
-                                # Let Bob's proxied SSE stream go live and idle so the
-                                # mention is delivered by the live hint, not backfill.
-                                await asyncio.sleep(1.5)
-                                live = await tool(
-                                    agent_a,
-                                    "send_message",
-                                    room_id=room_id,
-                                    client_message_id="https-live-sse-hint",
-                                    text="Live hint over proxied SSE",
-                                    mention_member_id=bob["member_id"],
-                                )
+                                # One authenticated proxied SSE stream must
+                                # observe the live mention: it waits for the
+                                # genuine ": ready" frame, the mention is sent
+                                # from another handle, and within a bound the
+                                # same stream reads a complete inbox_changed
+                                # frame. The daemon notice and reconnect
+                                # checks stay separate.
+                                bob_token = json.loads(b.config_path.read_text())[
+                                    "bindings"
+                                ][0]["member_token"]
+                                async with (
+                                    httpx.AsyncClient(
+                                        base_url=origin,
+                                        verify=trusted,
+                                        trust_env=False,
+                                        timeout=httpx.Timeout(10, read=45),
+                                    ) as watching,
+                                    watching.stream(
+                                        "GET",
+                                        "/v1/events",
+                                        headers={
+                                            "Authorization": f"Bearer {bob_token}",
+                                            "Accept": "text/event-stream",
+                                        },
+                                    ) as stream,
+                                ):
+                                    assert stream.status_code == 200
+                                    assert (
+                                        stream.headers.get(
+                                            "content-type", ""
+                                        ).split(";", 1)[0]
+                                        == "text/event-stream"
+                                    )
+                                    lines = stream.aiter_lines()
+                                    async with asyncio.timeout(15):
+                                        assert await anext(lines) == ": ready"
+                                        assert await anext(lines) == ""
+                                    live = await tool(
+                                        agent_a,
+                                        "send_message",
+                                        room_id=room_id,
+                                        client_message_id="https-live-sse-hint",
+                                        text="Live hint over proxied SSE",
+                                        mention_member_id=bob["member_id"],
+                                    )
+                                    async with asyncio.timeout(15):
+                                        async for line in lines:
+                                            if line == "event: inbox_changed":
+                                                assert (
+                                                    await anext(lines) == "data: {}"
+                                                )
+                                                assert await anext(lines) == ""
+                                                break
                             notice = await asyncio.to_thread(
                                 b.wait_for_notice, live["message_id"], bob_daemon
                             )
@@ -409,3 +451,31 @@ def test_caddy_bind_fails_closed(tmp_path):
     explicit = adapt_caddyfile(base | {"TEAMUP_HTTPS_BIND": "192.0.2.10"})
     assert explicit.returncode == 0, explicit.stderr
     assert listen_addresses(json.loads(explicit.stdout)) == ["192.0.2.10:8443"]
+
+
+def test_caddy_required_environment_fails_closed(tmp_path):
+    base = {
+        "TEAMUP_HTTPS_HOST": "localhost",
+        "TEAMUP_HTTPS_PORT": "8443",
+        "TEAMUP_HTTPS_BIND": "127.0.0.1",
+        "TEAMUP_TLS_CERT": str(tmp_path / "localhost.pem"),
+        "TEAMUP_TLS_KEY": str(tmp_path / "localhost.key"),
+        "TEAMUP_UPSTREAM_PORT": "8765",
+    }
+
+    for name in (
+        "TEAMUP_HTTPS_HOST",
+        "TEAMUP_HTTPS_PORT",
+        "TEAMUP_TLS_CERT",
+        "TEAMUP_TLS_KEY",
+        "TEAMUP_UPSTREAM_PORT",
+    ):
+        omitted = adapt_caddyfile(
+            {key: value for key, value in base.items() if key != name}, drop={name}
+        )
+        assert omitted.returncode != 0, omitted.stdout
+        assert omitted.stderr
+
+        empty = adapt_caddyfile(base | {name: ""})
+        assert empty.returncode != 0, empty.stdout
+        assert empty.stderr

@@ -1,11 +1,16 @@
 {
 	admin off
-	auto_https disable_redirects
+	auto_https off
 }
 
 https://{$TEAMUP_HTTPS_HOST}:{$TEAMUP_HTTPS_PORT} {
 	bind {$TEAMUP_HTTPS_BIND:127.0.0.1}
 	vars teamup_https_bind {$TEAMUP_HTTPS_BIND:127.0.0.1}
+	vars teamup_https_host {$TEAMUP_HTTPS_HOST}
+	vars teamup_https_port {$TEAMUP_HTTPS_PORT}
+	vars teamup_tls_cert {$TEAMUP_TLS_CERT}
+	vars teamup_tls_key {$TEAMUP_TLS_KEY}
+	vars teamup_upstream_port {$TEAMUP_UPSTREAM_PORT}
 	tls {$TEAMUP_TLS_CERT} {$TEAMUP_TLS_KEY}
 
 	handle /v1/* {
