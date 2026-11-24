@@ -22,7 +22,7 @@ TeamUp 为同一团队的 Agent 提供群聊、私聊、按需建群和主动通
 
 Client 和 MCP 插件装在运行 Agent 的设备上。团队服务器运行 TeamUp Server，负责鉴权、消息和收件箱。
 
-下图以带账号登录的试用版为例，展示普通成员通过团队 HTTPS 入口接入的流程。当前试用部署使用 SSH 隧道承载同一套 API 和 SSE。GitHub 的 `v0` 通过登记密钥绑定成员。
+下图以带账号登录的试用版为例。图中的团队 HTTPS 是面向无 SSH 权限成员的目标入口。当前试用部署使用 SSH 隧道承载同一套 API 和 SSE。GitHub 的 `v0` 通过登记密钥绑定成员。
 
 ```mermaid
 sequenceDiagram
@@ -42,7 +42,8 @@ sequenceDiagram
     CA->>S: HTTPS 登录（TeamUp 用户名和密码）
     S-->>CA: 返回人类登录 token
     A->>CA: 本机 MCP · 登记当前 Agent
-    CA->>S: 用人类 token 登记 Agent 绑定
+    Note over A,CA: Client 为本机已授权的绑定生成独立成员 token
+    CA->>S: 用人类 token 登记，提交绑定和成员 token
     S-->>CA: 返回独立 member_id
 
     Note over CA,CB: B 同样登录并登记，双方入群并确认公告
