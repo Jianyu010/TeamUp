@@ -38,9 +38,10 @@ OLD_FRACTIONAL = "2020-01-01T00:00:00.123456Z"
 
 @contextmanager
 def retention_api(db_path, *, hours=1):
-    with live_server(
-        db_path, extra=("--room-retention-hours", str(hours))
-    ) as (client, _):
+    with live_server(db_path, extra=("--room-retention-hours", str(hours))) as (
+        client,
+        _,
+    ):
         yield client
 
 
@@ -140,9 +141,9 @@ def test_expire_due_batches_compare_true_utc_and_keep_counters(tmp_path, monkeyp
     # Fresh messages never expire, with or without an explicit clock.
     assert collaboration.expire_due(timedelta(hours=1)) == RetentionPass(0, 0, False)
     moment = datetime(2026, 1, 1, tzinfo=UTC)
-    assert collaboration.expire_due(
-        timedelta(hours=1), now=moment
-    ) == RetentionPass(0, 0, False)
+    assert collaboration.expire_due(timedelta(hours=1), now=moment) == RetentionPass(
+        0, 0, False
+    )
 
     # Plain and fractional RFC 3339 stamps both count; batches stay bounded.
     expire_in_sqlite(
@@ -153,15 +154,15 @@ def test_expire_due_batches_compare_true_utc_and_keep_counters(tmp_path, monkeyp
         },
     )
     monkeypatch.setattr(collaboration_module, "_EXPIRE_BATCH", 1)
-    assert collaboration.expire_due(
-        timedelta(hours=1), now=moment
-    ) == RetentionPass(1, 1, True)
-    assert collaboration.expire_due(
-        timedelta(hours=1), now=moment
-    ) == RetentionPass(1, 1, True)
-    assert collaboration.expire_due(
-        timedelta(hours=1), now=moment
-    ) == RetentionPass(0, 0, False)
+    assert collaboration.expire_due(timedelta(hours=1), now=moment) == RetentionPass(
+        1, 1, True
+    )
+    assert collaboration.expire_due(timedelta(hours=1), now=moment) == RetentionPass(
+        1, 1, True
+    )
+    assert collaboration.expire_due(timedelta(hours=1), now=moment) == RetentionPass(
+        0, 0, False
+    )
 
     page = collaboration.history(token, room_id, 0, 50)
     assert page == {
@@ -189,12 +190,12 @@ def test_expire_due_batches_compare_true_utc_and_keep_counters(tmp_path, monkeyp
             fifth["message_id"]: "2025-12-31T23:00:00.000001Z",
         },
     )
-    assert collaboration.expire_due(
-        timedelta(hours=1), now=moment
-    ) == RetentionPass(1, 1, True)
-    assert collaboration.expire_due(
-        timedelta(hours=1), now=moment
-    ) == RetentionPass(0, 0, False)
+    assert collaboration.expire_due(timedelta(hours=1), now=moment) == RetentionPass(
+        1, 1, True
+    )
+    assert collaboration.expire_due(timedelta(hours=1), now=moment) == RetentionPass(
+        0, 0, False
+    )
     edge = collaboration.history(token, room_id, 0, 50)
     assert [message["message_id"] for message in edge["messages"]] == [
         third["message_id"],
@@ -236,9 +237,9 @@ def test_retention_startup_pass_empties_expired_rooms(tmp_path):
         assert get(client, "sender", f"{room_path}/messages").json() == {
             "messages": [first, second]
         }
-        assert set(
-            get(client, "sender", f"{room_path}/search?q=needle").json()
-        ) == {"matches"}
+        assert set(get(client, "sender", f"{room_path}/search?q=needle").json()) == {
+            "matches"
+        }
         watermark = second["message_id"]
 
     expire_in_sqlite(
@@ -364,7 +365,7 @@ def test_v3_upgrade_prunes_timestamps_and_keeps_null_times(tmp_path):
         assert get(client, "old", "/inbox").json() == {"events": []}
         error(post(client, "old", "/inbox/17/ack"), 404, "not_found")
     with closing(sqlite3.connect(db_path)) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
 
 
 def test_retention_startup_pass_drives_bounded_batches_to_completion(tmp_path):
@@ -378,7 +379,7 @@ def test_retention_startup_pass_drives_bounded_batches_to_completion(tmp_path):
     batch = 520
     with closing(sqlite3.connect(db_path)) as connection, connection:
         connection.executemany(
-            "INSERT INTO messages VALUES (?, ?, ?, ?, ?, NULL, ?)",
+            "INSERT INTO messages VALUES (?, ?, NULL, ?, ?, ?, NULL, ?)",
             [
                 (
                     1000 + index,
@@ -397,12 +398,14 @@ def test_retention_startup_pass_drives_bounded_batches_to_completion(tmp_path):
         )
     with retention_api(db_path) as client:
         wait_for(
-            lambda: get(client, "sender", f"{room_path}/messages?limit=100").json()
-            == {
-                "messages": [],
-                "expired_through_message_id": 1519,
-                "history_truncated": True,
-            },
+            lambda: (
+                get(client, "sender", f"{room_path}/messages?limit=100").json()
+                == {
+                    "messages": [],
+                    "expired_through_message_id": 1519,
+                    "history_truncated": True,
+                }
+            ),
             timeout=10,
         )
         sent = send(client, room_path, "after-bulk", text="fresh").json()
@@ -424,16 +427,19 @@ def test_retention_periodic_pass_prunes_while_streams_stay_live(tmp_path):
 
         def read_stream():
             try:
-                with httpx.Client(
-                    base_url=str(client.base_url), trust_env=False, timeout=None
-                ) as streaming, streaming.stream(
-                    "GET",
-                    "/v1/events",
-                    headers={
-                        "Authorization": f"Bearer {credential('target')}",
-                        "Accept": "text/event-stream",
-                    },
-                ) as response:
+                with (
+                    httpx.Client(
+                        base_url=str(client.base_url), trust_env=False, timeout=None
+                    ) as streaming,
+                    streaming.stream(
+                        "GET",
+                        "/v1/events",
+                        headers={
+                            "Authorization": f"Bearer {credential('target')}",
+                            "Accept": "text/event-stream",
+                        },
+                    ) as response,
+                ):
                     assert response.status_code == 200
                     for line in response.iter_lines():
                         if line:
@@ -448,12 +454,14 @@ def test_retention_periodic_pass_prunes_while_streams_stay_live(tmp_path):
         expire_in_sqlite(db_path, {doomed["message_id"]: OLD})
         # The periodic pass commits within the documented cadence.
         wait_for(
-            lambda: get(client, "sender", f"{room_path}/messages").json()
-            == {
-                "messages": [],
-                "expired_through_message_id": doomed["message_id"],
-                "history_truncated": True,
-            },
+            lambda: (
+                get(client, "sender", f"{room_path}/messages").json()
+                == {
+                    "messages": [],
+                    "expired_through_message_id": doomed["message_id"],
+                    "history_truncated": True,
+                }
+            ),
             timeout=RETENTION_CADENCE.total_seconds() + 10,
         )
         assert get(client, "target", "/inbox").json() == {"events": []}
@@ -464,9 +472,7 @@ def test_retention_periodic_pass_prunes_while_streams_stay_live(tmp_path):
         fresh = send(client, room_path, "alive", text="still here").json()
         next_event_line(lines)
         assert lines.get(timeout=3) == "data: {}"
-        assert (
-            get(client, "target", "/inbox").json()["events"][0]["message"] == fresh
-        )
+        assert get(client, "target", "/inbox").json()["events"][0]["message"] == fresh
 
 
 def test_retention_metadata_follows_policy_floor_and_pagination(tmp_path):
@@ -528,7 +534,9 @@ def test_retention_metadata_follows_policy_floor_and_pagination(tmp_path):
             "history_truncated": True,
         }
         assert get(
-            client, "sender", f"{retained}/messages?limit=2&before={first['message_id']}"
+            client,
+            "sender",
+            f"{retained}/messages?limit=2&before={first['message_id']}",
         ).json() == {
             "messages": [],
             "expired_through_message_id": watermark,

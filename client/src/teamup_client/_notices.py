@@ -45,18 +45,42 @@ class NoticeStore:
                     PRIMARY KEY (binding_scope, event_id)
                 ) WITHOUT ROWID
             """)
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS dm_notices (
+                    binding_scope TEXT NOT NULL,
+                    event_id INTEGER NOT NULL,
+                    dm_id TEXT NOT NULL,
+                    message_id INTEGER NOT NULL,
+                    sender_member_id TEXT NOT NULL,
+                    PRIMARY KEY (binding_scope, event_id)
+                ) WITHOUT ROWID
+            """)
 
     def record(self, scope, notice):
+        fields = {
+            key: value for key, value in notice.items() if key not in ("kind", "scope")
+        }
         with self._db:
-            result = self._db.execute(
-                """
-                INSERT INTO notices (
-                    binding_scope, event_id, room_id, message_id, sender_member_id
-                ) VALUES (:scope, :event_id, :room_id, :message_id, :sender_member_id)
-                ON CONFLICT (binding_scope, event_id) DO NOTHING
-                """,
-                {"scope": scope, **notice},
-            )
+            if notice.get("kind") == "dm":
+                result = self._db.execute(
+                    """
+                    INSERT INTO dm_notices (
+                        binding_scope, event_id, dm_id, message_id, sender_member_id
+                    ) VALUES (:scope, :event_id, :dm_id, :message_id, :sender_member_id)
+                    ON CONFLICT (binding_scope, event_id) DO NOTHING
+                    """,
+                    {"scope": scope, **fields},
+                )
+            else:
+                result = self._db.execute(
+                    """
+                    INSERT INTO notices (
+                        binding_scope, event_id, room_id, message_id, sender_member_id
+                    ) VALUES (:scope, :event_id, :room_id, :message_id, :sender_member_id)
+                    ON CONFLICT (binding_scope, event_id) DO NOTHING
+                    """,
+                    {"scope": scope, **fields},
+                )
         return result.rowcount == 1
 
     def page(self, scope, after, limit):
@@ -64,11 +88,36 @@ class NoticeStore:
             return []
         cursor = self._db.execute(
             """
-            SELECT event_id, room_id, message_id, sender_member_id
-            FROM notices WHERE binding_scope = ? AND event_id > ?
-            ORDER BY event_id LIMIT ?
+            SELECT event_id, room_id, dm_id, message_id, sender_member_id
+            FROM (
+                SELECT event_id, room_id, NULL AS dm_id, message_id, sender_member_id
+                FROM notices WHERE binding_scope = ? AND event_id > ?
+                UNION ALL
+                SELECT event_id, NULL AS room_id, dm_id, message_id, sender_member_id
+                FROM dm_notices WHERE binding_scope = ? AND event_id > ?
+            ) ORDER BY event_id LIMIT ?
             """,
-            (scope, after, limit),
+            (scope, after, scope, after, limit),
         )
-        fields = ("event_id", "room_id", "message_id", "sender_member_id")
-        return [dict(zip(fields, row, strict=True)) for row in cursor]
+        rows = []
+        for event_id, room_id, dm_id, message_id, sender in cursor:
+            if dm_id is None:
+                rows.append(
+                    {
+                        "event_id": event_id,
+                        "room_id": room_id,
+                        "message_id": message_id,
+                        "sender_member_id": sender,
+                    }
+                )
+            else:
+                rows.append(
+                    {
+                        "event_id": event_id,
+                        "kind": "dm",
+                        "dm_id": dm_id,
+                        "message_id": message_id,
+                        "sender_member_id": sender,
+                    }
+                )
+        return rows

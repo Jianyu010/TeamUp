@@ -69,7 +69,9 @@ class Maintenance:
 
 
 def room_retention(
-    collaboration: Collaboration, hours: int | None, cadence: timedelta = RETENTION_CADENCE
+    collaboration: Collaboration,
+    hours: int | None,
+    cadence: timedelta = RETENTION_CADENCE,
 ) -> Maintenance | None:
     """Build the room retention scheduler, or ``None`` when retention is off."""
     if hours is None:

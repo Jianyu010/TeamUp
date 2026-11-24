@@ -158,9 +158,7 @@ def send(client, room_path, key, text="hello", target=None):
 
 
 def find(client, label, room_path, q, **params):
-    response = get(
-        client, label, f"{room_path}/search?{urlencode({'q': q, **params})}"
-    )
+    response = get(client, label, f"{room_path}/search?{urlencode({'q': q, **params})}")
     assert response.status_code == 200, response.text
     return response.json()["matches"]
 
@@ -547,11 +545,9 @@ def test_retained_room_reads_pre_join_history_after_board_ack(team):
     error(get(team, "target", f"{room_path}/messages"), 409, "board_ack_required")
     confirm(team, "target", room_path)
     assert get(team, "target", f"{room_path}/messages").json() == {"messages": [early]}
-    assert (
-        get(team, "target", f"{room_path}/messages?after={early['message_id']}")
-        .json()
-        == {"messages": []}
-    )
+    assert get(
+        team, "target", f"{room_path}/messages?after={early['message_id']}"
+    ).json() == {"messages": []}
     later = send(team, room_path, "later").json()
     assert get(team, "target", f"{room_path}/messages").json() == {
         "messages": [early, later]
@@ -582,41 +578,51 @@ def test_history_before_pages_backwards_without_duplicates(team):
     ]
     assert walk == [messages[3:5], messages[1:3], messages[:1], []]
     # Both bounds apply together and huge supported ints stay bounded.
-    assert get(
-        team, "sender", f"{room_path}/messages?after={ids[0]}&before={ids[4]}&limit=2"
-    ).json()["messages"] == messages[2:4]
-    assert get(
-        team, "sender", f"{room_path}/messages?after={ids[1]}&before={ids[3]}"
-    ).json()["messages"] == messages[2:3]
+    assert (
+        get(
+            team,
+            "sender",
+            f"{room_path}/messages?after={ids[0]}&before={ids[4]}&limit=2",
+        ).json()["messages"]
+        == messages[2:4]
+    )
+    assert (
+        get(
+            team, "sender", f"{room_path}/messages?after={ids[1]}&before={ids[3]}"
+        ).json()["messages"]
+        == messages[2:3]
+    )
     assert get(
         team, "sender", f"{room_path}/messages?after={2**70}&before={2**70 + 5}"
     ).json() == {"messages": []}
     # Legacy forward paging is unchanged.
-    assert get(team, "sender", f"{room_path}/messages?limit=2").json()["messages"] == (
-        messages[:2]
+    assert (
+        get(team, "sender", f"{room_path}/messages?limit=2").json()["messages"]
+        == (messages[:2])
     )
-    assert get(
-        team, "sender", f"{room_path}/messages?after={ids[1]}&limit=2"
-    ).json()["messages"] == messages[2:4]
+    assert (
+        get(team, "sender", f"{room_path}/messages?after={ids[1]}&limit=2").json()[
+            "messages"
+        ]
+        == messages[2:4]
+    )
     # A member with the same window reads the same backwards pages.
-    assert get(
-        team, "target", f"{room_path}/messages?limit=2&before={2**70}"
-    ).json()["messages"] == messages[3:5]
+    assert (
+        get(team, "target", f"{room_path}/messages?limit=2&before={2**70}").json()[
+            "messages"
+        ]
+        == messages[3:5]
+    )
     # A late joiner cannot page backwards past its join floor.
     join(team, "reader", room_path)
     confirm(team, "reader", room_path)
     newcomer = send(team, room_path, "newcomer").json()
-    assert (
-        get(team, "reader", f"{room_path}/messages?before={newcomer['message_id']}")
-        .json()
-        == {"messages": []}
-    )
-    assert (
-        get(
-            team, "reader", f"{room_path}/messages?before={newcomer['message_id'] + 1}"
-        ).json()
-        == {"messages": [newcomer]}
-    )
+    assert get(
+        team, "reader", f"{room_path}/messages?before={newcomer['message_id']}"
+    ).json() == {"messages": []}
+    assert get(
+        team, "reader", f"{room_path}/messages?before={newcomer['message_id'] + 1}"
+    ).json() == {"messages": [newcomer]}
     # Third parties and invalid bounds fail like the rest of the contract.
     assert enroll(team, "outsider").status_code == 200
     error(
@@ -632,12 +638,50 @@ def test_history_before_pages_backwards_without_duplicates(team):
         )
 
 
+def test_history_before_above_the_sqlite_max_is_an_unbounded_upper_edge(tmp_path):
+    db_path = tmp_path / "team.sqlite3"
+    with api(db_path) as client:
+        assert enroll(client, "sender").status_code == 200
+        room_path = room(client)
+        confirm(client, "sender", room_path)
+        lowly = send(client, room_path, "lowly", text="an ordinary id").json()
+        room_id = room_path.rsplit("/", 1)[-1]
+        sender_id = member(client, "sender")
+    with closing(sqlite3.connect(db_path)) as connection, connection:
+        connection.execute(
+            """
+            INSERT INTO messages (
+                message_id, room_id, sender_member_id, client_message_id, text
+            ) VALUES (?, ?, ?, 'max-id', 'the valid max id')
+            """,
+            (2**63 - 1, room_id, sender_id),
+        )
+    with api(db_path) as client:
+        maximum = {
+            **lowly,
+            "message_id": 2**63 - 1,
+            "client_message_id": "max-id",
+            "text": "the valid max id",
+            "created_at": None,
+        }
+        # A before cursor above the SQLite max pages the latest window unbounded.
+        for before in (2**63, 2**70):
+            assert get(
+                client, "sender", f"{room_path}/messages?before={before}"
+            ).json() == {"messages": [lowly, maximum]}
+        assert get(client, "sender", f"{room_path}/messages?after={2**63}").json() == {
+            "messages": []
+        }
+
+
 def test_search_denies_third_parties_and_unconfirmed_boards(team):
     room_path = room(team)
     confirm(team, "sender", room_path)
     send(team, room_path, "s-1", text="Find the shared needle here")
     join(team, "target", room_path)
-    error(get(team, "target", f"{room_path}/search?q=needle"), 409, "board_ack_required")
+    error(
+        get(team, "target", f"{room_path}/search?q=needle"), 409, "board_ack_required"
+    )
     error(get(team, "reader", f"{room_path}/search?q=needle"), 404, "not_found")
     error(get(team, "target", f"/rooms/{uuid4()}/search?q=needle"), 404, "not_found")
     error(team.get(f"/v1{room_path}/search?q=needle"), 401, "unauthorized")
@@ -662,10 +706,12 @@ def test_search_denies_third_parties_and_unconfirmed_boards(team):
         422,
         "invalid_request",
     )
-    error(get(team, "sender", f"{room_path}/search?q={'n' * 201}"), 422, "invalid_request")
-    assert get(
-        team, "sender", f"{room_path}/search?q=needle&after={2**70}"
-    ).json() == {"matches": []}
+    error(
+        get(team, "sender", f"{room_path}/search?q={'n' * 201}"), 422, "invalid_request"
+    )
+    assert get(team, "sender", f"{room_path}/search?q=needle&after={2**70}").json() == {
+        "matches": []
+    }
     assert get(team, "sender", f"{room_path}/search?q={'n' * 200}").json() == {
         "matches": []
     }
@@ -674,9 +720,7 @@ def test_search_denies_third_parties_and_unconfirmed_boards(team):
 def test_search_authorizes_like_history_per_room_policy(team):
     limited = room(team)
     confirm(team, "sender", limited)
-    early = send(
-        team, limited, "limited-pre", text="needle sent before joining"
-    ).json()
+    early = send(team, limited, "limited-pre", text="needle sent before joining").json()
     join(team, "target", limited)
     confirm(team, "target", limited)
     late = send(team, limited, "limited-post", text="needle sent after joining").json()
@@ -693,19 +737,22 @@ def test_search_authorizes_like_history_per_room_policy(team):
     assert find(team, "target", limited, "NEEDLE") == find(
         team, "target", limited, "needle", after=0
     )
-    assert [match["message_id"] for match in find(team, "target", limited, "needle")] == [
-        late["message_id"]
-    ]
+    assert [
+        match["message_id"] for match in find(team, "target", limited, "needle")
+    ] == [late["message_id"]]
     # retained exposes pre-join text after the board acknowledgment.
     assert get(team, "target", f"{kept}/messages").json()["messages"] == [
         kept_early,
         kept_late,
     ]
-    assert [
-        match["message_id"] for match in find(team, "target", kept, "needle")
-    ] == [kept_early["message_id"], kept_late["message_id"]]
+    assert [match["message_id"] for match in find(team, "target", kept, "needle")] == [
+        kept_early["message_id"],
+        kept_late["message_id"],
+    ]
     # The creator's own window covers both messages and stays room-scoped.
-    assert [match["message_id"] for match in find(team, "sender", limited, "needle")] == [
+    assert [
+        match["message_id"] for match in find(team, "sender", limited, "needle")
+    ] == [
         early["message_id"],
         late["message_id"],
     ]
@@ -724,17 +771,21 @@ def test_search_matches_literals_and_bounded_snippets(team):
     corpus = {
         "plain": "The needle is here",
         "meta": "Needles % _ * ? ( ) [ ] ^ $ | done",
-        "escaped": "it's a \"quoted\" C:\\temp path",
+        "escaped": 'it\'s a "quoted" C:\\temp path',
         "unicode": "Der Weg führt über die Straße",
         "cjk": "会话历史记录 needle",
         "longneedle": "y" * 10 + "n" * 250,
         "later": "a" * 300 + "needle" + "b" * 300,
         "twice": "needle" + "x" * 300 + "needle",
         "expansive": "z" * 5 + "ß" * 300,
+        "fussball": "Fußball",
+        "turkish": "ß" + "w" * 100 + "İstanbul",
+        "drift": "y" * 90 + "ß" + "z" * 300,
         "nomatch": "nothing relevant",
     }
     sent = {
-        key: send(team, room_path, key, text=text).json() for key, text in corpus.items()
+        key: send(team, room_path, key, text=text).json()
+        for key, text in corpus.items()
     }
 
     found = find(team, "target", room_path, "NEEDLE")
@@ -749,7 +800,7 @@ def test_search_matches_literals_and_bounded_snippets(team):
         assert match["created_at"] == by_id[match["message_id"]]["created_at"]
 
     snippets = {match["message_id"]: match["snippet"] for match in found}
-    assert snippets[sent["plain"]["message_id"]] == "the needle is here"
+    assert snippets[sent["plain"]["message_id"]] == "The needle is here"
     # The window holds at most 200 characters and leads the match with context.
     assert snippets[sent["later"]["message_id"]] == "a" * 80 + "needle" + "b" * 114
     # The snippet stays around the first of two matches.
@@ -758,24 +809,39 @@ def test_search_matches_literals_and_bounded_snippets(team):
     (wide,) = find(team, "target", room_path, "n" * 200)
     assert wide["message_id"] == sent["longneedle"]["message_id"]
     assert wide["snippet"] == "n" * 200
-    # A needle that casefolds beyond 200 characters stays bounded.
+    # A needle that casefolds beyond 200 characters stays bounded in original characters.
     (folded,) = find(team, "target", room_path, "ß" * 200)
     assert folded["message_id"] == sent["expansive"]["message_id"]
-    assert folded["snippet"] == "s" * 200
-    # Case folding matches Unicode text; the snippet keeps the matched form.
+    assert folded["snippet"] == "ß" * 200
+    # Case folding matches Unicode text; the snippet quotes the original.
     (strasse,) = find(team, "target", room_path, "STRASSE")
     assert strasse["message_id"] == sent["unicode"]["message_id"]
-    assert strasse["snippet"] == "der weg führt über die strasse"
+    assert strasse["snippet"] == "Der Weg führt über die Straße"
     (cjk,) = find(team, "target", room_path, "历史")
     assert cjk["message_id"] == sent["cjk"]["message_id"]
     assert cjk["snippet"] == "会话历史记录 needle"
     # Pattern metacharacters and quotes match literally.
     (meta,) = find(team, "target", room_path, "% _ * ? ( ) [ ] ^ $ |")
     assert meta["message_id"] == sent["meta"]["message_id"]
-    assert meta["snippet"] == "needles % _ * ? ( ) [ ] ^ $ | done"
-    (quoted,) = find(team, "target", room_path, "it's a \"quoted\" C:\\temp")
+    assert meta["snippet"] == "Needles % _ * ? ( ) [ ] ^ $ | done"
+    (quoted,) = find(team, "target", room_path, 'it\'s a "quoted" C:\\temp')
     assert quoted["message_id"] == sent["escaped"]["message_id"]
-    assert quoted["snippet"] == "it's a \"quoted\" c:\\temp path"
+    assert quoted["snippet"] == 'it\'s a "quoted" C:\\temp path'
+    # Matches ending inside or spanning a casefold expansion keep the original characters.
+    (fussball,) = find(team, "target", room_path, "uß")
+    assert fussball["message_id"] == sent["fussball"]["message_id"]
+    assert fussball["snippet"] == "Fußball"
+    (spanned,) = find(team, "target", room_path, "ußb")
+    assert spanned["message_id"] == sent["fussball"]["message_id"]
+    assert spanned["snippet"] == "Fußball"
+    # A match starting inside an İ expansion still maps back to the original character.
+    (turkish,) = find(team, "target", room_path, "̇")
+    assert turkish["message_id"] == sent["turkish"]["message_id"]
+    assert turkish["snippet"] == "w" * 80 + "İstanbul"
+    # Expansions before the match do not shift the original-character window.
+    (drifted,) = find(team, "target", room_path, "ßz")
+    assert drifted["message_id"] == sent["drift"]["message_id"]
+    assert drifted["snippet"] == "y" * 80 + "ß" + "z" * 119
     # after and limit page matches exactly like history, empty pages are valid.
     first = find(team, "target", room_path, "needle", limit=2)
     assert [match["message_id"] for match in first] == expected[:2]
@@ -799,11 +865,9 @@ def test_created_at_is_utc_rfc3339_and_shared_across_send_retry_history_inbox(te
     sent = send(team, room_path, "once", target=target).json()
     assert_utc_timestamp(sent["created_at"])
     assert get(team, "sender", f"{room_path}/messages").json() == {"messages": [sent]}
-    assert (
-        get(team, "sender", f"{room_path}/messages?after={sent['message_id']}")
-        .json()
-        == {"messages": []}
-    )
+    assert get(
+        team, "sender", f"{room_path}/messages?after={sent['message_id']}"
+    ).json() == {"messages": []}
     assert send(team, room_path, "once", target=target).json() == sent
     target_events = get(team, "target", "/inbox").json()["events"]
     assert target_events == [

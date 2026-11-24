@@ -43,6 +43,9 @@ _MEMBER = "member_id, role_description"
 _MESSAGE = """
     m.message_id, m.room_id, m.sender_member_id, m.client_message_id, m.text, m.mention_member_id, m.created_at
 """
+_DM_MESSAGE = """
+    m.message_id, m.dm_id, m.sender_member_id, m.client_message_id, m.text, m.created_at
+"""
 _SNIPPET = 200
 _SNIPPET_LEAD = 80
 _INBOX = """
@@ -53,6 +56,73 @@ _INBOX = """
     WHERE e.member_id = ? AND e.event_id > ? AND e.acknowledged = 0
         AND rm.acked_board_version = r.version
 """
+_DM_EVENT_MESSAGE = (
+    "message_id",
+    "dm_id",
+    "sender_member_id",
+    "client_message_id",
+    "text",
+    "created_at",
+)
+_ROOM_EVENT_MESSAGE = (
+    "message_id",
+    "room_id",
+    "sender_member_id",
+    "client_message_id",
+    "text",
+    "mention_member_id",
+    "created_at",
+)
+
+_DMS_TABLE = """
+    CREATE TABLE dms (
+        dm_id TEXT PRIMARY KEY,
+        member_low TEXT NOT NULL REFERENCES members(member_id),
+        member_high TEXT NOT NULL REFERENCES members(member_id),
+        UNIQUE (member_low, member_high),
+        CHECK (member_low < member_high)
+    )
+"""
+
+_MESSAGES_TABLE = """
+    CREATE TABLE messages (
+        message_id INTEGER PRIMARY KEY,
+        room_id TEXT REFERENCES rooms(room_id),
+        dm_id TEXT REFERENCES dms(dm_id),
+        sender_member_id TEXT NOT NULL REFERENCES members(member_id),
+        client_message_id TEXT NOT NULL,
+        text TEXT NOT NULL,
+        mention_member_id TEXT REFERENCES members(member_id),
+        created_at TEXT,
+        CHECK ((room_id IS NULL) <> (dm_id IS NULL))
+    )
+"""
+
+_MESSAGE_INDEXES = (
+    "CREATE INDEX room_history ON messages (room_id, message_id)",
+    "CREATE INDEX dm_history ON messages (dm_id, message_id)",
+    """
+    CREATE UNIQUE INDEX room_message_retry ON messages (sender_member_id, client_message_id)
+        WHERE room_id IS NOT NULL
+    """,
+    """
+    CREATE UNIQUE INDEX dm_message_retry ON messages (dm_id, sender_member_id, client_message_id)
+        WHERE dm_id IS NOT NULL
+    """,
+)
+
+_INBOX_EVENTS_TABLE = """
+    CREATE TABLE inbox_events (
+        event_id INTEGER PRIMARY KEY,
+        member_id TEXT NOT NULL REFERENCES members(member_id),
+        message_id INTEGER NOT NULL REFERENCES messages(message_id),
+        kind TEXT NOT NULL CHECK (kind IN ('message', 'mention', 'dm')),
+        acknowledged INTEGER NOT NULL DEFAULT 0 CHECK (acknowledged IN (0, 1)),
+        UNIQUE (member_id, message_id)
+    )
+"""
+
+_PENDING_INBOX_INDEX = "CREATE INDEX pending_inbox ON inbox_events (member_id, event_id) WHERE acknowledged = 0"
 
 _SCHEMA = (
     """
@@ -88,32 +158,11 @@ _SCHEMA = (
         PRIMARY KEY (room_id, member_id)
     )
     """,
-    """
-    CREATE TABLE messages (
-        message_id INTEGER PRIMARY KEY,
-        room_id TEXT NOT NULL REFERENCES rooms(room_id),
-        sender_member_id TEXT NOT NULL REFERENCES members(member_id),
-        client_message_id TEXT NOT NULL,
-        text TEXT NOT NULL,
-        mention_member_id TEXT REFERENCES members(member_id),
-        created_at TEXT,
-        UNIQUE (sender_member_id, client_message_id)
-    )
-    """,
-    "CREATE INDEX room_history ON messages (room_id, message_id)",
-    """
-    CREATE TABLE inbox_events (
-        event_id INTEGER PRIMARY KEY,
-        member_id TEXT NOT NULL REFERENCES members(member_id),
-        message_id INTEGER NOT NULL REFERENCES messages(message_id),
-        kind TEXT NOT NULL CHECK (kind IN ('message', 'mention')),
-        acknowledged INTEGER NOT NULL DEFAULT 0 CHECK (acknowledged IN (0, 1)),
-        UNIQUE (member_id, message_id)
-    )
-    """,
-    """
-    CREATE INDEX pending_inbox ON inbox_events (member_id, event_id) WHERE acknowledged = 0
-    """,
+    _DMS_TABLE,
+    _MESSAGES_TABLE,
+    *_MESSAGE_INDEXES,
+    _INBOX_EVENTS_TABLE,
+    _PENDING_INBOX_INDEX,
     """
     CREATE TABLE id_counters (
         counter TEXT PRIMARY KEY CHECK (counter IN ('message_id', 'event_id')),
@@ -159,6 +208,88 @@ _HISTORY_SCHEMA = (
 _RETENTION_SCHEMA = ("ALTER TABLE rooms ADD COLUMN expired_through_message_id INTEGER",)
 
 
+def _has_table(connection: sqlite3.Connection, name: str) -> bool:
+    return (
+        connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)
+        ).fetchone()
+        is not None
+    )
+
+
+_MIGRATED_MESSAGES_TABLE = """
+    CREATE TABLE migrated_messages (
+        message_id INTEGER PRIMARY KEY,
+        room_id TEXT REFERENCES rooms(room_id),
+        dm_id TEXT REFERENCES dms(dm_id),
+        sender_member_id TEXT NOT NULL REFERENCES members(member_id),
+        client_message_id TEXT NOT NULL,
+        text TEXT NOT NULL,
+        mention_member_id TEXT REFERENCES members(member_id),
+        created_at TEXT,
+        CHECK ((room_id IS NULL) <> (dm_id IS NULL))
+    )
+"""
+
+_MIGRATED_INBOX_EVENTS_TABLE = """
+    CREATE TABLE migrated_inbox_events (
+        event_id INTEGER PRIMARY KEY,
+        member_id TEXT NOT NULL REFERENCES members(member_id),
+        message_id INTEGER NOT NULL REFERENCES migrated_messages(message_id),
+        kind TEXT NOT NULL CHECK (kind IN ('message', 'mention', 'dm')),
+        acknowledged INTEGER NOT NULL DEFAULT 0 CHECK (acknowledged IN (0, 1)),
+        UNIQUE (member_id, message_id)
+    )
+"""
+
+
+def _migrate_dm_schema(connection: sqlite3.Connection) -> None:
+    """Grow the canonical record families by the DM family, in place.
+
+    The messages table gains a nullable dm_id (exactly one of room_id and
+    dm_id is set), the per-sender retry key becomes family-scoped unique
+    indexes, and inbox events learn the "dm" kind. Existing rows keep
+    their IDs, order and columns. A v0 upgrade sample may predate the
+    inbox_events table, so its rows are carried over only when present.
+    """
+    connection.execute(_DMS_TABLE)
+    connection.execute(_MIGRATED_MESSAGES_TABLE)
+    connection.execute(
+        """
+        INSERT INTO migrated_messages (
+            message_id, room_id, dm_id, sender_member_id, client_message_id, text,
+            mention_member_id, created_at
+        )
+        SELECT message_id, room_id, NULL, sender_member_id, client_message_id, text,
+            mention_member_id, created_at
+        FROM messages
+        """
+    )
+    carried_inbox = False
+    if _has_table(connection, "inbox_events"):
+        connection.execute(_MIGRATED_INBOX_EVENTS_TABLE)
+        connection.execute(
+            """
+            INSERT INTO migrated_inbox_events (
+                event_id, member_id, message_id, kind, acknowledged
+            )
+            SELECT event_id, member_id, message_id, kind, acknowledged
+            FROM inbox_events
+            """
+        )
+        connection.execute("DROP TABLE inbox_events")
+        carried_inbox = True
+    connection.execute("DROP TABLE messages")
+    connection.execute("ALTER TABLE migrated_messages RENAME TO messages")
+    if carried_inbox:
+        connection.execute("ALTER TABLE migrated_inbox_events RENAME TO inbox_events")
+    else:
+        connection.execute(_INBOX_EVENTS_TABLE)
+    for statement in _MESSAGE_INDEXES:
+        connection.execute(statement)
+    connection.execute(_PENDING_INBOX_INDEX)
+
+
 def _seed_id_counters(connection: sqlite3.Connection) -> None:
     connection.execute(
         """
@@ -202,6 +333,7 @@ def _expiry_micros(stamp: object) -> int | None:
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=UTC)
     return (moment.astimezone(UTC) - _EPOCH) // timedelta(microseconds=1)
+
 
 ChangeListener = Callable[[], None]
 ObserveInbox = Callable[[ChangeListener], AbstractContextManager[None]]
@@ -309,6 +441,36 @@ def _room_member(
     return record
 
 
+def _dm_participant(
+    connection: sqlite3.Connection, dm_id: str, member_id: str
+) -> sqlite3.Row:
+    record = connection.execute(
+        """
+        SELECT member_low, member_high FROM dms
+        WHERE dm_id = ? AND ? IN (member_low, member_high)
+        """,
+        (dm_id, member_id),
+    ).fetchone()
+    if record is None:
+        raise CollaborationError("not_found")
+    return record
+
+
+def _available_member(
+    connection: sqlite3.Connection, member_id: str
+) -> sqlite3.Row | None:
+    return connection.execute(
+        """
+        SELECT member_id FROM members
+        WHERE member_id = ? AND NOT EXISTS (
+            SELECT 1 FROM accounts
+            WHERE accounts.owner_id = members.owner_id AND disabled = 1
+        )
+        """,
+        (member_id,),
+    ).fetchone()
+
+
 def _require_current_board(authorization: sqlite3.Row) -> None:
     if authorization["acked_board_version"] != authorization["version"]:
         raise CollaborationError("board_ack_required")
@@ -381,6 +543,35 @@ def _room_transcript(
     return rows
 
 
+def _snippet(body: str, needle: str, hit: int) -> str:
+    """A bounded window of the original body around the first folded match.
+
+    ``hit`` is the 1-based casefolded offset of ``needle``; folded offsets are
+    mapped back to whole original characters so expansions such as ``ß`` and
+    ``İ`` never split or reshape the quoted text.
+    """
+    folded_start = hit - 1
+    folded_end = folded_start + len(needle)
+    start = end = 0
+    offset = 0
+    for index, character in enumerate(body):
+        width = len(character.casefold())
+        if offset < folded_end and offset + width > folded_start:
+            if not end:
+                start = index
+            end = index + 1
+        elif end:
+            break
+        offset += width
+    length = end - start
+    if length <= _SNIPPET - _SNIPPET_LEAD:
+        lead = _SNIPPET_LEAD
+    else:
+        lead = max(_SNIPPET - length, 0)
+    window = max(start - lead, 0)
+    return body[window : window + _SNIPPET]
+
+
 class Collaboration:
     """Public operations and post-commit inbox subscriptions."""
 
@@ -412,11 +603,13 @@ class Collaboration:
                     connection.execute(statement)
                 _seed_id_counters(connection)
             if version in (1, 2, 3):
+                _migrate_dm_schema(connection)
+            if version in (1, 2, 3, 4):
                 for statement in _RETENTION_SCHEMA:
                     connection.execute(statement)
-            if version in (0, 1, 2, 3):
-                connection.execute("PRAGMA user_version = 4")
-            elif version != 4:
+            if version in (0, 1, 2, 3, 4):
+                connection.execute("PRAGMA user_version = 5")
+            elif version != 5:
                 raise ValueError("Unsupported TeamUp database schema version")
 
     def _connect(self) -> sqlite3.Connection:
@@ -789,6 +982,7 @@ class Collaboration:
                 f"""
                 SELECT {_MESSAGE} FROM messages AS m
                 WHERE sender_member_id = ? AND client_message_id = ?
+                    AND m.room_id IS NOT NULL
                 """,
                 (sender, client_message_id),
             ).fetchone()
@@ -871,6 +1065,94 @@ class Collaboration:
         self._notify(visible_recipients)
         return message
 
+    def open_dm(self, token: str, peer_member_id: str) -> dict:
+        with self._transaction(write=True) as connection:
+            member_id = _member(connection, token)["member_id"]
+            if peer_member_id == member_id:
+                raise CollaborationError("invalid_peer")
+            if _available_member(connection, peer_member_id) is None:
+                raise CollaborationError("invalid_peer")
+            member_low, member_high = sorted((member_id, peer_member_id))
+            connection.execute(
+                """
+                INSERT INTO dms (dm_id, member_low, member_high) VALUES (?, ?, ?)
+                ON CONFLICT (member_low, member_high) DO NOTHING
+                """,
+                (str(uuid4()), member_low, member_high),
+            )
+            dm_id = connection.execute(
+                "SELECT dm_id FROM dms WHERE member_low = ? AND member_high = ?",
+                (member_low, member_high),
+            ).fetchone()["dm_id"]
+            return {"dm_id": dm_id, "peer_member_id": peer_member_id}
+
+    def send_dm(
+        self, token: str, dm_id: str, client_message_id: str, text: str
+    ) -> dict:
+        with self._transaction(write=True) as connection:
+            sender = _member(connection, token)["member_id"]
+            dm = _dm_participant(connection, dm_id, sender)
+            peer = dm["member_high"] if sender == dm["member_low"] else dm["member_low"]
+            existing = connection.execute(
+                f"""
+                SELECT {_DM_MESSAGE} FROM messages AS m
+                WHERE m.dm_id = ? AND m.sender_member_id = ? AND m.client_message_id = ?
+                """,
+                (dm_id, sender, client_message_id),
+            ).fetchone()
+            if existing is not None:
+                if existing["text"] != text:
+                    raise CollaborationError("conflict")
+                return dict(existing)
+            if _available_member(connection, peer) is None:
+                raise CollaborationError("not_found")
+            message_id = _next_id(connection, "message_id")
+            connection.execute(
+                """
+                INSERT INTO messages (
+                    message_id, room_id, dm_id, sender_member_id, client_message_id,
+                    text, mention_member_id, created_at
+                ) VALUES (?, NULL, ?, ?, ?, ?, NULL, ?)
+                """,
+                (
+                    message_id,
+                    dm_id,
+                    sender,
+                    client_message_id,
+                    text,
+                    _rfc3339_utc_now(),
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO inbox_events (event_id, member_id, message_id, kind)
+                VALUES (?, ?, ?, 'dm')
+                """,
+                (_next_id(connection, "event_id"), peer, message_id),
+            )
+            message = dict(
+                connection.execute(
+                    f"SELECT {_DM_MESSAGE} FROM messages AS m WHERE m.message_id = ?",
+                    (message_id,),
+                ).fetchone()
+            )
+        self._notify((peer,))
+        return message
+
+    def dm_history(self, token: str, dm_id: str, after: int, limit: int) -> list[dict]:
+        with self._transaction() as connection:
+            member_id = _member(connection, token)["member_id"]
+            _dm_participant(connection, dm_id, member_id)
+            cursor = min(max(after, 0), _SQLITE_MAX_ID)
+            rows = connection.execute(
+                f"""
+                SELECT {_DM_MESSAGE} FROM messages AS m
+                WHERE m.dm_id = ? AND m.message_id > ? ORDER BY m.message_id LIMIT ?
+                """,
+                (dm_id, cursor, limit),
+            )
+            return [dict(record) for record in rows]
+
     def history(
         self,
         token: str,
@@ -882,7 +1164,7 @@ class Collaboration:
         with self._transaction() as connection:
             membership = _authorized_membership(connection, token, room_id)
             cursor = min(max(after, _transcript_floor(membership)), _SQLITE_MAX_ID)
-            upper = None if before is None else min(before, _SQLITE_MAX_ID)
+            upper = None if before is None or before > _SQLITE_MAX_ID else before
             rows = _room_transcript(
                 connection,
                 room_id,
@@ -908,53 +1190,77 @@ class Collaboration:
                 "teamup_casefold", 1, str.casefold, deterministic=True
             )
             needle = query.casefold()
-            lead = (
-                _SNIPPET_LEAD
-                if len(needle) <= _SNIPPET - _SNIPPET_LEAD
-                else max(_SNIPPET - len(needle), 0)
-            )
             rows = connection.execute(
                 """
-                WITH scan AS (
-                    SELECT m.message_id, m.sender_member_id, m.created_at,
-                        m.text AS body, instr(teamup_casefold(m.text), ?) AS hit
-                    FROM messages AS m
-                    WHERE m.room_id = ? AND m.message_id > ?
-                        AND instr(teamup_casefold(m.text), ?) > 0
-                    ORDER BY m.message_id
-                    LIMIT ?
-                )
-                SELECT message_id, sender_member_id, created_at,
-                    substr(teamup_casefold(body), max(1, hit - ?), ?) AS snippet
-                FROM scan
+                SELECT m.message_id, m.sender_member_id, m.created_at, m.text AS body,
+                    instr(teamup_casefold(m.text), ?) AS hit
+                FROM messages AS m
+                WHERE m.room_id = ? AND m.message_id > ?
+                    AND instr(teamup_casefold(m.text), ?) > 0
+                ORDER BY m.message_id
+                LIMIT ?
                 """,
-                (needle, room_id, cursor, needle, limit, lead, _SNIPPET),
-            )
+                (needle, room_id, cursor, needle, limit),
+            ).fetchall()
             return {
-                "matches": [dict(record) for record in rows],
+                "matches": [
+                    {
+                        "message_id": row["message_id"],
+                        "sender_member_id": row["sender_member_id"],
+                        "created_at": row["created_at"],
+                        "snippet": _snippet(row["body"], needle, row["hit"]),
+                    }
+                    for row in rows
+                ],
                 **_expiry_metadata(
                     membership["expired_through_message_id"], cursor, None
                 ),
             }
 
-    def inbox(self, token: str, after: int, limit: int) -> list[dict]:
+    def inbox(
+        self, token: str, after: int, limit: int, kinds: Iterable[str]
+    ) -> list[dict]:
+        kind_filter = tuple(kinds)
+        if not kind_filter:
+            raise CollaborationError("invalid_request")
         with self._transaction() as connection:
             member_id = _member(connection, token)["member_id"]
             rows = connection.execute(
                 f"""
-                SELECT e.event_id, e.kind, {_MESSAGE} {_INBOX}
+                SELECT e.event_id, e.kind, m.message_id, m.room_id, m.dm_id,
+                    m.sender_member_id, m.client_message_id, m.text,
+                    m.mention_member_id, m.created_at
+                FROM inbox_events AS e
+                JOIN messages AS m ON m.message_id = e.message_id
+                WHERE e.member_id = ? AND e.event_id > ? AND e.acknowledged = 0
+                    AND e.kind IN ({", ".join("?" * len(kind_filter))})
+                    AND (
+                        m.dm_id IS NOT NULL
+                        OR EXISTS (
+                            SELECT 1 FROM room_members AS rm
+                            JOIN rooms AS r ON r.room_id = rm.room_id
+                            WHERE rm.room_id = m.room_id AND rm.member_id = e.member_id
+                                AND rm.acked_board_version = r.version
+                        )
+                    )
                 ORDER BY e.event_id LIMIT ?
                 """,
-                (member_id, min(after, _SQLITE_MAX_ID), limit),
+                (member_id, min(after, _SQLITE_MAX_ID), *kind_filter, limit),
             )
             events = []
             for record in rows:
-                message = dict(record)
-                event = {
-                    "event_id": message.pop("event_id"),
-                    "kind": message.pop("kind"),
-                }
-                events.append({**event, "message": message})
+                message_columns = (
+                    _DM_EVENT_MESSAGE if record["kind"] == "dm" else _ROOM_EVENT_MESSAGE
+                )
+                events.append(
+                    {
+                        "event_id": record["event_id"],
+                        "kind": record["kind"],
+                        "message": {
+                            column: record[column] for column in message_columns
+                        },
+                    }
+                )
             return events
 
     def acknowledge_event(self, token: str, event_id: int) -> None:
@@ -964,7 +1270,7 @@ class Collaboration:
                 raise CollaborationError("not_found")
             event = connection.execute(
                 """
-                SELECT m.room_id, e.acknowledged FROM inbox_events AS e
+                SELECT m.room_id, m.dm_id, e.acknowledged FROM inbox_events AS e
                 JOIN messages AS m ON m.message_id = e.message_id
                 WHERE e.event_id = ? AND e.member_id = ?
                 """,
@@ -972,8 +1278,9 @@ class Collaboration:
             ).fetchone()
             if event is None:
                 raise CollaborationError("not_found")
-            room = _room_member(connection, event["room_id"], member_id)
-            _require_current_board(room)
+            if event["dm_id"] is None:
+                room = _room_member(connection, event["room_id"], member_id)
+                _require_current_board(room)
             if event["acknowledged"]:
                 return
             connection.execute(
@@ -1004,7 +1311,7 @@ class Collaboration:
             due = connection.execute(
                 """
                 SELECT message_id, room_id FROM messages
-                WHERE created_at IS NOT NULL
+                WHERE room_id IS NOT NULL AND created_at IS NOT NULL
                     AND teamup_expiry_micros(created_at) <= ?
                 ORDER BY message_id LIMIT ?
                 """,
