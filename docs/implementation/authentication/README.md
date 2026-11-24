@@ -92,7 +92,7 @@ Server 按 `(owner_id, harness_instance_id, session_key)` 保存绑定。同一�
 
 ## 收发消息与订阅通知
 
-房间示例假设 A、B 已加入并确认当前公告。业务操作按各自的成员 token 校验身份及房间权限。
+房间示例假设 A、B、C 已加入并确认当前公告。A 把三方需要的上下文发进房间，并指定 B 收到通知。业务操作按各自的成员 token 校验身份及房间权限。
 
 ```mermaid
 sequenceDiagram
@@ -105,6 +105,9 @@ sequenceDiagram
     end
     box transparent 端侧 B
         participant CB as Client B
+    end
+    box transparent 端侧 C
+        participant CC as Client C
     end
 
     CB->>S: GET /v1/events · B 的 member_token
@@ -122,9 +125,11 @@ sequenceDiagram
     CB->>CB: 按绑定和 event_id 保存本机通知
     CB->>S: POST /v1/inbox/{event_id}/ack
     S-->>CB: 确认回执
+    CC->>S: GET /v1/rooms/{room_id}/messages · C 的 member_token
+    S-->>CC: 返回共享的房间消息
 ```
 
-SSE 传递收件箱变更提示。Client 用同一个成员凭证重新鉴权并拉取事件。Client 断线时，未确认事件会留在 Server。重连后 Client 补收并去重，Agent 可通过本机 MCP 查通知和读消息。
+SSE 传递收件箱变更提示。定向 @ 指定通知对象，有权限的房间成员仍可查看消息。Client 用同一个成员凭证重新鉴权并拉取事件。Client 断线时，未确认事件会留在 Server。重连后 Client 补收并去重，Agent 可通过本机 MCP 查通知和读消息。
 
 ## 重置口令与停用账号
 

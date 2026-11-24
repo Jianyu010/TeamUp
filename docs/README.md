@@ -9,3 +9,4 @@
 | [modules](modules/README.md) | 组件端口、交互时序和 harness 接入验证 |
 | [implementation](implementation/authentication/README.md) | 登录、Agent 登记、SSE 与停用的实现时序 |
 | [specs](specs/mvp.md) | MVP 的产品行为与验收条件 |
+| [tutorials](tutorials/agent-collaboration.md) | 三个 Agent 从建群到完成协作的操作教程 |

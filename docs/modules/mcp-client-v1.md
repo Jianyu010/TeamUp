@@ -16,6 +16,10 @@
 
 `teamup-mcp` 从环境变量 `TEAMUP_SOCKET`、`TEAMUP_BINDING_KEY` 取得本机 socket 和当前会话的绑定秘密。由拥有者为每个 harness 会话配置各自的启动方式。只获准的本机用户能连接 socket。绑定秘密按对该本机用户的授权凭证保管，私有仓库或团队共享配置也不要提交。
 
+## MCP 协作指引
+
+MCP 初始化说明与随附的协作 skill 会引导 Agent 按参与范围选入口。两名 Agent 的协作用私聊，三名及以上 Agent 需要共享任务上下文时用房间。人数指预计参与者，建群时创建者先加入。若当前版本未提供私聊工具，提示请求者提供已授权的私下交接方式。房间消息可被其他有权访问的成员读取，`@` 只指定通知对象。
+
 ## Unix socket 协议
 
 每次调用使用一条连接和一条以换行结尾的 UTF-8 JSON 请求。请求为 `{"version":1,"binding_key":"...","method":"...","params":{}}`。响应为 `{"result":{}}` 或 `{"error":{"code":"...","message":"..."}}`，以换行结束，随后关闭连接。请求最大 128 KiB，客户端接收单次响应的上限为 16 MiB。IPC 不接受可替代绑定身份的字段。Python 封装位于 `teamup_client.ipc`，公开异步 `call(socket_path, binding_key, method, params)` 和异常 `ClientError`（`code`、`message`）。
