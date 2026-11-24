@@ -1,4 +1,5 @@
 import sqlite3
+import subprocess
 from contextlib import closing
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -14,10 +15,13 @@ from test_contract import (
     error,
     get,
     join,
+    live_server,
     member,
     post,
     room,
     send,
+    server_command,
+    server_env,
 )
 from test_direct_messages import dm_events, dm_read, dm_send, enroll_team, open_dm
 
@@ -565,3 +569,90 @@ def test_v4_upgrade_adds_dm_watermark_and_prunes_legacy_whole_second_rows(tmp_pa
         assert (
             get(client, "late", "/inbox?kinds=dm").json()["events"][0]["event_id"] == 19
         )
+
+
+def test_cli_guards_dm_retention_hours(tmp_path):
+    db_path = tmp_path / "team.sqlite3"
+    for invalid in ("0", "-3", "876001", "1000000000000", "abc", "2.5"):
+        result = subprocess.run(
+            [*server_command(db_path), "--dm-retention-hours", invalid],
+            env=server_env(),
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        assert result.returncode != 0, invalid
+        assert "--dm-retention-hours" in result.stderr, invalid
+    accepted = subprocess.run(
+        [
+            *server_command(db_path),
+            "--host",
+            "0.0.0.0",
+            "--dm-retention-hours",
+            "876000",
+        ],
+        env=server_env(),
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    assert accepted.returncode != 0
+    assert "TLS" in accepted.stderr
+
+
+def test_dm_retention_startup_pass_prunes_only_dm_content(tmp_path):
+    db_path = tmp_path / "team.sqlite3"
+    with api(db_path) as client:
+        enroll_team(client, labels=("sender", "target"))
+        target = member(client, "target")
+        room_path = room(client)
+        join(client, "target", room_path)
+        confirm(client, "sender", room_path)
+        confirm(client, "target", room_path)
+        room_message = send(client, room_path, "room-keep", text="room needle").json()
+        dm_id = open_dm(client, "sender", target).json()["dm_id"]
+        dm_send(client, "sender", dm_id, "one", "first private")
+        second = dm_send(client, "target", dm_id, "two", "second private").json()
+        target_event = dm_events(client, "target", kinds="dm")[0]
+
+    # Age every message out together: only the DM family may leave.
+    with closing(sqlite3.connect(db_path)) as connection, connection:
+        connection.execute("UPDATE messages SET created_at = '2020-01-01T00:00:00Z'")
+    with live_server(db_path, extra=("--dm-retention-hours", "1")) as (client, _):
+        assert dm_read(client, "sender", dm_id).json() == {
+            "messages": [],
+            "expired_through_message_id": second["message_id"],
+            "history_truncated": True,
+        }
+        assert get(client, "sender", f"{room_path}/messages").json() == {
+            "messages": [{**room_message, "created_at": "2020-01-01T00:00:00Z"}]
+        }
+        assert [
+            match["snippet"]
+            for match in get(client, "target", f"{room_path}/search?q=needle").json()[
+                "matches"
+            ]
+        ] == ["room needle"]
+        room_events = dm_events(client, "target", kinds=None)
+        assert [event["message"]["message_id"] for event in room_events] == [
+            room_message["message_id"]
+        ]
+        assert post(
+            client, "target", f"/inbox/{room_events[0]['event_id']}/ack"
+        ).json() == {"event_id": room_events[0]["event_id"]}
+        assert dm_events(client, "target", kinds="dm") == []
+        assert dm_events(client, "sender", kinds="dm") == []
+        error(
+            post(client, "target", f"/inbox/{target_event['event_id']}/ack"),
+            404,
+            "not_found",
+        )
+        fresh = dm_send(client, "sender", dm_id, "fresh", "fresh private").json()
+        assert fresh["message_id"] > second["message_id"]
+        assert dm_read(client, "target", dm_id).json() == {
+            "messages": [fresh],
+            "expired_through_message_id": second["message_id"],
+            "history_truncated": True,
+        }

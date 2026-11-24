@@ -2,7 +2,7 @@
 
 import logging
 from collections.abc import Callable
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from functools import partial
 from threading import Event, Thread
 from typing import Self
@@ -68,22 +68,50 @@ class Maintenance:
             self._stopping.wait(self._cadence)
 
 
-def room_retention(
+def retention(
     collaboration: Collaboration,
-    hours: int | None,
+    room_hours: int | None,
+    dm_hours: int | None,
     cadence: timedelta = RETENTION_CADENCE,
 ) -> Maintenance | None:
-    """Build the room retention scheduler, or ``None`` when retention is off."""
+    """Build the shared retention scheduler, or ``None`` when both sides are off.
+
+    Each family's flag is validated on its own; one enabled side is enough
+    to schedule the single maintenance loop, and omitting both keeps the
+    runtime free of any retention scheduling.
+    """
+    room_age = _validated_age("--room-retention-hours", room_hours)
+    dm_age = _validated_age("--dm-retention-hours", dm_hours)
+    if room_age is None and dm_age is None:
+        return None
+    return Maintenance(
+        partial(_pass_more_due, collaboration, room_age, dm_age), cadence
+    )
+
+
+def _validated_age(flag: str, hours: int | None) -> timedelta | None:
     if hours is None:
         return None
     if not 1 <= hours <= MAX_RETENTION_HOURS:
         raise ValueError(
-            f"--room-retention-hours must be an integer between 1 and {MAX_RETENTION_HOURS}"
+            f"{flag} must be an integer between 1 and {MAX_RETENTION_HOURS}"
         )
-    return Maintenance(
-        partial(_pass_more_due, collaboration, timedelta(hours=hours)), cadence
-    )
+    return timedelta(hours=hours)
 
 
-def _pass_more_due(collaboration: Collaboration, max_age: timedelta) -> bool:
-    return collaboration.expire_due(max_age).more_due
+def _pass_more_due(
+    collaboration: Collaboration,
+    room_max_age: timedelta | None,
+    dm_max_age: timedelta | None,
+) -> bool:
+    # Both enabled families purge inside the same cycle without short
+    # circuit, so a busy room backlog never defers the DM pass (or the
+    # other way round); either side's more-due work repeats the cycle.
+    more_due = False
+    if room_max_age is not None:
+        more_due = collaboration.expire_due(room_max_age).more_due
+    if dm_max_age is not None:
+        more_due = (
+            collaboration.expire_due_dms(datetime.now(UTC) - dm_max_age)[1] or more_due
+        )
+    return more_due

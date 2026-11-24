@@ -31,6 +31,7 @@ from test_contract import (
     server_command,
     server_env,
 )
+from test_direct_messages import dm_send, open_dm
 
 OLD = "2020-01-01T00:00:00Z"
 OLD_FRACTIONAL = "2020-01-01T00:00:00.123456Z"
@@ -605,3 +606,44 @@ def test_retention_metadata_follows_policy_floor_and_pagination(tmp_path):
                 }
             ]
         }
+
+
+def test_retention_startup_runs_both_enabled_passes(tmp_path):
+    db_path = tmp_path / "team.sqlite3"
+    with api(db_path) as client:
+        for label in ("sender", "target"):
+            assert enroll(client, label).status_code == 200
+        target_id = member(client, "target")
+        room_path = room(client)
+        join(client, "target", room_path)
+        for label in ("sender", "target"):
+            confirm(client, label, room_path)
+        room_message = send(client, room_path, "room-old", text="room needle").json()
+        dm_id = open_dm(client, "sender", target_id).json()["dm_id"]
+        dm_message = dm_send(client, "sender", dm_id, "dm-old", "dm needle").json()
+        room_event = get(client, "target", "/inbox").json()["events"][0]
+
+    # Both families are due together; both enabled passes must commit.
+    with closing(sqlite3.connect(db_path)) as connection, connection:
+        connection.execute("UPDATE messages SET created_at = '2020-01-01T00:00:00Z'")
+    with live_server(
+        db_path, extra=("--room-retention-hours", "1", "--dm-retention-hours", "1")
+    ) as (client, _):
+        assert get(client, "sender", f"{room_path}/messages").json() == {
+            "messages": [],
+            "expired_through_message_id": room_message["message_id"],
+            "history_truncated": True,
+        }
+        assert get(client, "sender", f"/dms/{dm_id}/messages").json() == {
+            "messages": [],
+            "expired_through_message_id": dm_message["message_id"],
+            "history_truncated": True,
+        }
+        assert get(client, "target", "/inbox").json() == {"events": []}
+        error(
+            post(client, "target", f"/inbox/{room_event['event_id']}/ack"),
+            404,
+            "not_found",
+        )
+        fresh_room = send(client, room_path, "room-fresh", text="fresh needle").json()
+        assert fresh_room["message_id"] > room_message["message_id"]
