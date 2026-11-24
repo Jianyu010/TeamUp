@@ -915,6 +915,29 @@ def test_search_matches_literals_and_bounded_snippets(team):
     assert find(team, "target", room_path, "needle", after=0) == found
 
 
+def test_search_quotes_oversized_folded_match_from_its_start(team):
+    room_path = room(team)
+    join(team, "target", room_path)
+    for label in ("sender", "target"):
+        confirm(team, label, room_path)
+    # The query is 101 characters but casefolds to 202, so the match covers
+    # 202 original characters and cannot fit a 200-character snippet.
+    oversized = send(team, room_path, "oversized-folded", text="ss" * 101).json()
+
+    (match,) = find(team, "target", room_path, "ß" * 101)
+    assert set(match) == {"message_id", "sender_member_id", "created_at", "snippet"}
+    assert match["message_id"] == oversized["message_id"]
+    assert match["sender_member_id"] == member(team, "sender")
+    assert match["created_at"] == oversized["created_at"]
+    # The snippet quotes the oversized match from its start up to the cap.
+    assert match["snippet"] == "s" * 200
+    assert oversized["text"].startswith(match["snippet"])
+    # The full original text stays readable via the stable message ID under current auth.
+    history = get(team, "target", f"{room_path}/messages").json()["messages"]
+    by_id = {message["message_id"]: message for message in history}
+    assert by_id[oversized["message_id"]]["text"] == oversized["text"] == "ss" * 101
+
+
 def test_created_at_is_utc_rfc3339_and_shared_across_send_retry_history_inbox(team):
     room_path = room(team)
     join(team, "target", room_path)
