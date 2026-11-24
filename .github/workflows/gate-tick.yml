@@ -1,0 +1,74 @@
+# Gate tick (ported from tweakie #92): GitHub fires scheduled workflows late or not at all (tweakie
+# saw its `*/15` run every 3-5 hours). This job dispatches the gate sweep every 15 minutes and, on
+# the hour, nightly.yml / weekly.yml when one is due and has not run yet (scripts/ci/cadence.py).
+# Then it hands over to a fresh run of itself before its token expires. It runs on a trusted
+# runner of its own, `teamup-tick`, so it never holds a merge or gate runner.
+name: Gate tick
+
+on:
+  schedule:
+    - cron: "7 * * * *" # keeps one run waiting to take over a chain that died
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: gate-tick
+  cancel-in-progress: false
+
+jobs:
+  tick:
+    runs-on: [self-hosted, teamup-tick]
+    timeout-minutes: 270
+    permissions:
+      actions: write # dispatch gate-queue.yml, nightly.yml, weekly.yml and this workflow
+      contents: read
+    steps:
+      - name: Fetch main's cadence check (contents API, not git)
+        timeout-minutes: 2
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/tick"
+          for f in scripts/ci/gate.py scripts/ci/cadence.py .github/ci/policy.json; do
+            mkdir -p "$RUNNER_TEMP/tick/$(dirname "$f")"
+            curl -fsSL --connect-timeout 10 --max-time 15 --retry 3 --retry-delay 2 --retry-max-time 55 --retry-all-errors \
+              -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github.raw" \
+              -o "$RUNNER_TEMP/tick/$f" "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/contents/$f?ref=$REF"
+          done
+      - name: Dispatch the sweep every 15 minutes and due suites hourly, then hand over
+        working-directory: ${{ runner.temp }}/tick
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+          TICKS: 16 # 16 x 15 min = 4 h, then a fresh run (and a fresh token)
+        run: |
+          dispatch() {
+            curl -fsS --connect-timeout 10 --max-time 20 --retry 3 --retry-delay 5 \
+              -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/workflows/$1/dispatches" \
+              -d '{"ref":"main"}'
+          }
+          fails=0
+          for i in $(seq "$TICKS"); do
+            if dispatch gate-queue.yml; then
+              echo "tick $i: sweep dispatched"; fails=0
+            else
+              fails=$((fails + 1))
+              echo "::warning::tick $i: the sweep dispatch failed"
+              if [ "$fails" -ge 2 ]; then echo "::error::two sweep dispatches in a row failed"; exit 1; fi
+            fi
+            if [ $((i % 4)) -eq 1 ]; then
+              for suite in nightly weekly dashboard; do
+                if python3 -E -s -m scripts.ci.cadence due "$suite"; then
+                  dispatch "$suite.yml" && echo "tick $i: $suite dispatched" \
+                    || echo "::warning::tick $i: the $suite dispatch failed"
+                fi
+              done
+            fi
+            if [ "$i" -lt "$TICKS" ]; then sleep 900; fi
+          done
+          dispatch gate-tick.yml
+          echo "handed over to a new run"

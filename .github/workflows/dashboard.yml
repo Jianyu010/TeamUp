@@ -1,0 +1,57 @@
+# Dashboards (docs/ci/README.md): a daily line of repository statistics (stars, watchers, issues,
+# PRs, releases, traffic) to data/repo.jsonl on the ci-data branch, and the static pages from
+# dashboards/site/ synced to that branch's root, which GitHub Pages serves.
+#
+# Dispatched daily by gate-tick.yml (09:30 Asia/Shanghai) and on every push to main that changes
+# the pages. Runs main's scripts only, on a trusted runner.
+name: Dashboard
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [dashboards/site/**]
+
+concurrency:
+  group: dashboard
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  publish:
+    name: dashboard data and pages
+    runs-on: [self-hosted, teamup-merge]
+    timeout-minutes: 10
+    permissions:
+      contents: write # the ci-data branch
+    steps:
+      - name: Fetch main's scripts and pages (API tarball)
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+          curl -sSfL --connect-timeout 10 --max-time 180 --retry 5 --retry-all-errors \
+            -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            -o "$RUNNER_TEMP/tree.tar.gz" "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/tarball/$GITHUB_SHA"
+          tar -xzf "$RUNNER_TEMP/tree.tar.gz" -C "$GITHUB_WORKSPACE" --strip-components=1 --no-same-owner \
+            --wildcards '*/scripts/ci/*' '*/.github/ci/*' '*/dashboards/site/*'
+          rm -f "$RUNNER_TEMP/tree.tar.gz"
+      - name: Repository statistics
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        env:
+          # Traffic (clones, views) needs push access: the merge token has it, the workflow token
+          # does not. Without it those fields stay null.
+          GITHUB_TOKEN: ${{ secrets.TEAMUP_MERGE_TOKEN || github.token }}
+        run: python3 -E -s scripts/ci/repo_stats.py --repo "$GITHUB_REPOSITORY" --out stats.json
+      - name: Publish
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ -f stats.json ]; then
+            python3 -E -s -m scripts.ci.results publish --kind repo stats.json
+          fi
+          python3 -E -s -m scripts.ci.results sync-site dashboards/site
