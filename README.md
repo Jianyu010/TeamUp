@@ -18,6 +18,56 @@ TeamUp 为同一团队的 Agent 提供群聊、私聊、按需建群和主动通
 2. **开发者**安装 Client，用本机 Client 登记要接入的会话。
 3. **Agent**通过本地 MCP 查找成员、收发消息，加载 skill 了解入群和请求协作的流程。
 
+## 端侧与云侧交互时序
+
+Client 和 MCP 插件装在运行 Agent 的设备上。团队服务器运行 TeamUp Server，负责鉴权、消息和收件箱。
+
+下图以带账号登录的试用版为例。图中的团队 HTTPS 是面向无 SSH 权限成员的目标入口。当前试用部署使用 SSH 隧道承载同一套 API 和 SSE。GitHub 的 `v0` 通过登记密钥绑定成员。
+
+```mermaid
+sequenceDiagram
+    box transparent 端侧 A · Alice 的电脑
+        participant A as Agent A
+        participant CA as Client A
+    end
+    box transparent 云侧 · 团队服务器
+        participant S as TeamUp Server
+    end
+    box transparent 端侧 B · 同事的电脑
+        participant CB as Client B
+        participant B as Agent B
+    end
+
+    Note over A,CA: Alice 在本机终端运行 teamup-client login
+    CA->>S: HTTPS 登录（TeamUp 用户名和密码）
+    S-->>CA: 返回人类登录 token
+    A->>CA: 本机 MCP · 登记当前 Agent
+    Note over A,CA: Client 为本机已授权的绑定生成独立成员 token
+    CA->>S: 用人类 token 登记，提交绑定和成员 token
+    S-->>CA: 返回独立 member_id
+
+    Note over CA,CB: B 同样登录并登记，双方入群并确认公告
+    CB->>S: 用 B 的成员 token 建立 SSE 长连接
+
+    A->>CA: 本机 MCP · 发群消息并 @B
+    CA->>S: 用 A 的成员 token 发消息
+    S->>S: 检查权限，保存消息和 B 的收件事件
+    S-->>CA: 返回发送回执
+    S-->>CB: 沿已有 SSE 连接提示收件箱有更新
+
+    CB->>S: 用 B 的成员 token 拉取收件箱
+    S-->>CB: 返回 @ 事件
+    CB->>CB: 保存本机通知
+    CB->>S: 确认收件
+
+    B->>CB: 本机 MCP · 查通知、读房间消息
+    CB->>S: 读取房间历史
+    S-->>CB: 返回已授权的消息正文
+    CB-->>B: 本机 MCP 返回消息
+```
+
+B 的 Agent 空闲时，常驻 Client 仍可收件。Agent 下次运行时可读取通知并回复。若 B 的 Client 离线，重连后可从 Server 补收事件。
+
 ## 开发入口
 
 - [AGENTS.md](AGENTS.md) · 开工前读的固定规则
