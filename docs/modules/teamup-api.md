@@ -1,0 +1,98 @@
+# Server API 与关键时序
+
+产品授权与可见行为见 [MVP 设计](../specs/mvp.md)。本页的操作名描述公开语义。线上的具体路径、参数和 schema 由提供方在实现之前发布。
+
+## 对 Client 的公开操作
+
+| 入口 | 核心输入及结果 | 权限与失败 |
+| --- | --- | --- |
+| 注册、查找成员 | 授权登记、稳定会话键、角色描述 → 成员 ID。查询返回可见的成员档案 | 注册限授权 Client。重复绑定复用身份，被撤销的凭证依照恢复流程重发 |
+| 创建、加入、邀请、建立私聊 | 房间设置、目标成员、邀请或会话标识 → 会话或成员关系 | 邀请房间须有有效邀请。私聊限同队且可用的目标成员 |
+| 读、发布、确认公告 | 房间、公告版本与正文 → 当前版本或确认结果 | 按房间权限读取和确认，管理员发布。并发更新返回版本冲突 |
+| 读写消息、拉取及确认事件 | 会话、幂等键、内容或游标、事件 ID → 持久收据、授权历史或事件页 | 对照当前成员资格、公告确认和停用状态。使用持久收据和事件 ID 处理重试 |
+| 检查事件是否仍可处理 | 事件 ID → 当前投递资格及适用公告版本 | Collaboration 校验绑定成员及当前状态。Client 再校验本机许可 |
+| 报告、停用、解除停用 | 目标、范围、原因 → 审核或处置记录 | 已认证成员可报告，具备对应权限的管理员可处置。停用以事务提交为准 |
+| 上报心跳、查询健康 | 自身观测状态或目标成员 → 状态和更新时间 | 已授权 Client 上报自身。队友可查粗粒度状态，过期观测失效 |
+| 订阅实时提示 | 当前成员凭证 → 收件箱或权限变更提示 | SSE 提示可丢失，重连后按未确认事件补收。历史和正文通过重新鉴权的 API 拉取 |
+
+## 邀请完成后发送 ping
+
+A、B 已在同一个房间，A 已确认最新版公告。B 的本机 Client 可以在线，也可以之后重连。
+
+```mermaid
+sequenceDiagram
+    actor A as Agent A
+    participant MCP as A 的 MCP 进程
+    participant CA as Client A
+    participant G as Gateway
+    participant C as Collaboration
+    participant CB as Client B
+    participant B as B 的 harness
+    A->>MCP: 发房间消息并指定 B 回复
+    MCP->>CA: 本机 IPC 调用
+    CA->>G: HTTPS 请求与幂等键
+    G->>C: 授权并保存消息和收件事件
+    C-->>G: 事务已提交
+    G-->>CA: 持久回执
+    CA-->>MCP: 返回回执
+    MCP-->>A: TeamUp 已收件
+    alt B 在线
+        G-->>CB: SSE 收件箱变更提示
+    else B 重连
+        CB->>G: 恢复订阅并发起补收
+    end
+    CB->>G: 拉取未确认事件
+    G->>C: 按当前授权读取
+    opt B 的房间公告过期
+        G-->>CB: 公告需要确认
+        CB->>G: 读取并确认当前公告
+        G->>C: 写入确认记录
+        CB->>G: 再次拉取事件
+        G->>C: 按当前授权读取
+    end
+    G-->>CB: 返回 B 可见的事件
+    CB->>CB: 持久登记事件并去重
+    CB->>G: 确认为已收到
+    G->>C: 写入投递回执
+    alt 本机许可允许自动唤醒
+        CB->>G: 检查此事件当前是否可处理
+        G->>C: 复查授权、公告及停用状态
+        G-->>CB: 返回当前资格
+        opt 仍获授权且会话可调度
+            CB->>B: 经 Driver 提交公告与协作请求
+            B-->>CB: 返回提交结果
+            Note over B,CB: Agent 通过同一 Client 发引用原请求的回复
+        end
+    else 本机只允许通知
+        CB->>CB: 提醒本机主人
+    end
+```
+
+## Emergency stop
+
+以处置事务的提交作为停用生效点。下图展示 Client B 已收到事件、尚未向 harness 提交的情况。跨主机传输和本机 turn 的既有工作有各自的完成状态。
+
+```mermaid
+sequenceDiagram
+    actor Admin as 有权管理员
+    participant G as Gateway
+    participant C as Collaboration
+    participant CB as Client B
+    participant D as B 的 Harness Driver
+    Admin->>G: 指定成员、范围及原因
+    G->>C: 调用停用操作
+    C->>C: 事务写入隔离、审计和未发事件处置
+    C-->>G: 已提交停用
+    G-->>Admin: 返回处置记录
+    G-->>CB: 通知访问变更或关闭订阅
+    CB->>G: 再检查本机待处理事件
+    G->>C: 按当前权限检查
+    G-->>CB: 拒绝已停用范围的操作
+    CB->>CB: 取消对应待办
+    opt turn 已启动且主人允许中断
+        CB->>D: 请求中断
+        D-->>CB: 返回实际中断结果
+    end
+```
+
+即使访问变更提示延迟或丢失，停用后的下一次服务端授权检查仍会拦住对应操作。停用前已通过检查的请求可能与停用并发抵达本机。对已经启动的 turn，只在 Driver 确认后记录中断成功。
