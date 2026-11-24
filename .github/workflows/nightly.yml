@@ -22,9 +22,9 @@ permissions: {}
 
 jobs:
   suites:
-    name: 4 · nightly scenarios and performance
+    name: 4 · Nightly
     if: ${{ github.ref == 'refs/heads/main' }}
-    runs-on: [self-hosted, teamup-suite]
+    runs-on: [self-hosted, e2e]
     timeout-minutes: 60
     permissions:
       contents: read
@@ -108,10 +108,10 @@ jobs:
           overwrite: true
 
   report:
-    name: 4 · nightly report and release
+    name: 4 · Nightly Report
     needs: [suites]
     if: ${{ always() && github.ref == 'refs/heads/main' }}
-    runs-on: [self-hosted, teamup-merge] # trusted: main's scripts only, never suite output as code
+    runs-on: [self-hosted, utility] # trusted: main's scripts only, never suite output as code
     timeout-minutes: 15
     permissions:
       contents: write # ci-data branch, the release tag and GitHub Release

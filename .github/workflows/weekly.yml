@@ -24,9 +24,9 @@ permissions: {}
 
 jobs:
   suites:
-    name: 4 · weekly agent scenarios
+    name: 4 · Weekly
     if: ${{ github.ref == 'refs/heads/main' }}
-    runs-on: [self-hosted, teamup-suite]
+    runs-on: [self-hosted, e2e]
     timeout-minutes: 120
     permissions:
       contents: read
@@ -104,10 +104,10 @@ jobs:
           overwrite: true
 
   report:
-    name: 4 · weekly report and release
+    name: 4 · Weekly Report
     needs: [suites]
     if: ${{ always() && github.ref == 'refs/heads/main' }}
-    runs-on: [self-hosted, teamup-merge] # trusted: main's scripts only, never suite output as code
+    runs-on: [self-hosted, utility] # trusted: main's scripts only, never suite output as code
     timeout-minutes: 15
     permissions:
       contents: write # ci-data branch, the release tag and GitHub Release

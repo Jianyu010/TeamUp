@@ -10,7 +10,7 @@
 # - a draft conversion, ready-for-review or `pr/hold` change re-judges the automatic route;
 # - the owner's `ready` passes the gate without the AI review (and is how a PR that layer 1 holds,
 #   e.g. one that touches .github/, gets through); any later push or edit removes it.
-name: Gate
+name: Merge Gate
 
 on:
   pull_request_target:
@@ -20,10 +20,11 @@ permissions: {}
 
 jobs:
   guard:
+    name: 5 · Merge Gate
     if: >-
       ${{ !github.event.pull_request.draft
       || !contains(fromJSON('["opened","reopened","synchronize","edited"]'), github.event.action) }}
-    runs-on: [self-hosted, teamup-merge] # trusted hp-laptop runner: never runs PR code
+    runs-on: [self-hosted, merge-gate] # trusted hp-laptop runner: never runs PR code
     timeout-minutes: 5
     permissions:
       actions: write # dispatch main's review workflow
