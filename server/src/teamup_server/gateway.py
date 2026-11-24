@@ -67,7 +67,13 @@ _MemberToken = Annotated[
 ]
 _Identifier = Annotated[str, AfterValidator(_uuid)]
 _After = Annotated[int, Query(ge=0)]
+_Before = Annotated[int, Query(ge=1)]
 _Limit = Annotated[int, Query(ge=1, le=100)]
+_SearchText = Annotated[
+    str,
+    Query(min_length=1, max_length=200),
+    AfterValidator(_nonblank),
+]
 
 
 class _Body(BaseModel):
@@ -256,9 +262,27 @@ class Gateway:
 
         @app.get("/v1/rooms/{room_id}/messages")
         def history(
-            token: _Bearer, room_id: _Identifier, after: _After = 0, limit: _Limit = 50
+            token: _Bearer,
+            room_id: _Identifier,
+            after: _After = 0,
+            limit: _Limit = 50,
+            before: _Before | None = None,
         ) -> dict:
-            return {"messages": collaboration.history(token, room_id, after, limit)}
+            return {
+                "messages": collaboration.history(token, room_id, after, limit, before)
+            }
+
+        @app.get(
+            "/v1/rooms/{room_id}/search", dependencies=[Depends(_require_query_utf8)]
+        )
+        def search_room(
+            token: _Bearer,
+            room_id: _Identifier,
+            q: _SearchText,
+            after: _After = 0,
+            limit: _Limit = 50,
+        ) -> dict:
+            return {"matches": collaboration.search(token, room_id, q, after, limit)}
 
         @app.post("/v1/dms", dependencies=[Depends(_require_utf8)])
         def open_dm(token: _Bearer, body: _OpenDM) -> dict:

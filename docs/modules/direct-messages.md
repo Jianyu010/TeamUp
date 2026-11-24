@@ -21,7 +21,7 @@
 | Notice（扩展，本机） | DM 的本地 Notice 为类型化五字段 `{event_id, kind:"dm", dm_id, message_id, sender_member_id}`，不含正文；既有 `mention` 的本地 Notice 保持原四字段 `{event_id, room_id, message_id, sender_member_id}` 输出不变 |
 
 - `message_id` 与房间消息共用同一个全局递增分配器：跨房间与 DM 全局唯一、只增不复用，会话内按提交顺序严格递增。房间与 DM 是 Collaboration 内两个独立的 canonical record 家族，每条记录只存一份正文；投递事件与消息一样共用 #6 的全局 delivery 分配器。
-- 房间 Message 的线上形状本期不变；是否同样向房间读取暴露时间戳由 #6 决定（见已议定）。
+- 房间 Message 的线上形状本期不变；是否同样向房间读取暴露时间戳已由 #6 落定：随 [会话历史、搜索与保留](conversation-history.md) 的增量，房间 Message 也暴露 `created_at`（见已议定）。
 
 ## 操作
 

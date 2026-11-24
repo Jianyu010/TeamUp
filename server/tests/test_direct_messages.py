@@ -17,6 +17,7 @@ from test_contract import (
     credential,
     enroll,
     error,
+    find,
     get,
     join,
     live_server,
@@ -303,6 +304,40 @@ def test_dm_privacy_is_indistinguishable_and_leaks_no_existence(tmp_path):
         assert dm_events(client, "reader") == []
         profiles = get(client, "reader", "/members").json()["members"]
         assert {record["member_id"] for record in profiles} >= {sender, target}
+
+
+def test_authorized_room_search_never_returns_dm_phrases(tmp_path):
+    db_path = tmp_path / "team.sqlite3"
+    with api(db_path) as client:
+        enroll_team(client, labels=("sender", "target"))
+        target = member(client, "target")
+        room_path = room(client)
+        join(client, "target", room_path)
+        confirm(client, "sender", room_path)
+        confirm(client, "target", room_path)
+        room_message = send(
+            client, room_path, "room-1", text="the room keeps its own words"
+        ).json()
+        dm_id = open_dm(client, "sender", target).json()["dm_id"]
+        dm_message = dm_send(
+            client, "sender", dm_id, "dm-search", "zephyr-veil passphrase 7f3d"
+        ).json()
+        assert dm_message["text"] == "zephyr-veil passphrase 7f3d"
+
+        # Both participants are authorized to search the room, yet the unique DM
+        # phrase stays absent from every result; the room's own text still matches.
+        for label in ("sender", "target"):
+            assert find(client, label, room_path, "zephyr-veil") == []
+            assert find(client, label, room_path, "passphrase 7f3d") == []
+            assert find(client, label, room_path, "ZEPHYR-VEIL PASSPHRASE 7F3D") == []
+            assert [
+                match["message_id"]
+                for match in find(client, label, room_path, "its own words")
+            ] == [room_message["message_id"]]
+
+        # The phrase remains readable only through the DM's own history.
+        assert dm_read(client, "target", dm_id).json() == {"messages": [dm_message]}
+        assert dm_read(client, "sender", dm_id).json() == {"messages": [dm_message]}
 
 
 def test_dm_works_without_any_board_flow(tmp_path):

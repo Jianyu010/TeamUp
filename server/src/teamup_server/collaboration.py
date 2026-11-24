@@ -44,6 +44,8 @@ _MESSAGE = """
 _DM_MESSAGE = """
     m.message_id, m.dm_id, m.sender_member_id, m.client_message_id, m.text, m.created_at
 """
+_SNIPPET = 200
+_SNIPPET_LEAD = 80
 _INBOX = """
     FROM inbox_events AS e
     JOIN messages AS m ON m.message_id = e.message_id
@@ -446,6 +448,86 @@ def _available_member(
 def _require_current_board(authorization: sqlite3.Row) -> None:
     if authorization["acked_board_version"] != authorization["version"]:
         raise CollaborationError("board_ack_required")
+
+
+def _authorized_membership(
+    connection: sqlite3.Connection, token: str, room_id: str
+) -> sqlite3.Row:
+    member_id = _member(connection, token)["member_id"]
+    membership = _room_member(connection, room_id, member_id)
+    _require_current_board(membership)
+    return membership
+
+
+def _transcript_floor(membership: sqlite3.Row) -> int:
+    """The oldest message ID a current membership is authorized to page from."""
+    if membership["history_policy"] == "retained":
+        return 0
+    return membership["joined_after"]
+
+
+def _room_transcript(
+    connection: sqlite3.Connection,
+    room_id: str,
+    *,
+    after: int = 0,
+    before: int | None = None,
+    limit: int = 50,
+    newest_first: bool = False,
+) -> list[sqlite3.Row]:
+    """One ascending page of the canonical room transcript owned by Collaboration.
+
+    ``newest_first`` picks the page closest below ``before`` (or the latest page
+    when no upper bound is given) instead of the page following ``after``.
+    """
+    if limit <= 0:
+        return []
+    bounds = "message_id > ?"
+    bound_values: list[object] = [after]
+    if before is not None:
+        bounds += " AND message_id < ?"
+        bound_values.append(before)
+    rows = connection.execute(
+        f"""
+        SELECT {_MESSAGE} FROM messages AS m
+        WHERE room_id = ? AND {bounds}
+        ORDER BY message_id {"DESC" if newest_first else ""}
+        LIMIT ?
+        """,
+        (room_id, *bound_values, limit),
+    ).fetchall()
+    if newest_first:
+        rows.reverse()
+    return rows
+
+
+def _snippet(body: str, needle: str, hit: int) -> str:
+    """A bounded window of the original body around the first folded match.
+
+    ``hit`` is the 1-based casefolded offset of ``needle``; folded offsets are
+    mapped back to whole original characters so expansions such as ``ß`` and
+    ``İ`` never split or reshape the quoted text.
+    """
+    folded_start = hit - 1
+    folded_end = folded_start + len(needle)
+    start = end = 0
+    offset = 0
+    for index, character in enumerate(body):
+        width = len(character.casefold())
+        if offset < folded_end and offset + width > folded_start:
+            if not end:
+                start = index
+            end = index + 1
+        elif end:
+            break
+        offset += width
+    length = end - start
+    if length <= _SNIPPET - _SNIPPET_LEAD:
+        lead = _SNIPPET_LEAD
+    else:
+        lead = max(_SNIPPET - length, 0)
+    window = max(start - lead, 0)
+    return body[window : window + _SNIPPET]
 
 
 class Collaboration:
@@ -1026,25 +1108,57 @@ class Collaboration:
             )
             return [dict(record) for record in rows]
 
-    def history(self, token: str, room_id: str, after: int, limit: int) -> list[dict]:
+    def history(
+        self,
+        token: str,
+        room_id: str,
+        after: int,
+        limit: int,
+        before: int | None = None,
+    ) -> list[dict]:
         with self._transaction() as connection:
-            member_id = _member(connection, token)["member_id"]
-            membership = _room_member(connection, room_id, member_id)
-            _require_current_board(membership)
-            floor = (
-                0
-                if membership["history_policy"] == "retained"
-                else membership["joined_after"]
-            )
-            cursor = min(max(after, floor), _SQLITE_MAX_ID)
-            rows = connection.execute(
-                f"""
-                SELECT {_MESSAGE} FROM messages AS m
-                WHERE room_id = ? AND message_id > ? ORDER BY message_id LIMIT ?
-                """,
-                (room_id, cursor, limit),
+            membership = _authorized_membership(connection, token, room_id)
+            rows = _room_transcript(
+                connection,
+                room_id,
+                after=min(max(after, _transcript_floor(membership)), _SQLITE_MAX_ID),
+                before=None if before is None or before > _SQLITE_MAX_ID else before,
+                limit=limit,
+                newest_first=before is not None,
             )
             return [dict(record) for record in rows]
+
+    def search(
+        self, token: str, room_id: str, query: str, after: int, limit: int
+    ) -> list[dict]:
+        with self._transaction() as connection:
+            membership = _authorized_membership(connection, token, room_id)
+            cursor = min(max(after, _transcript_floor(membership)), _SQLITE_MAX_ID)
+            connection.create_function(
+                "teamup_casefold", 1, str.casefold, deterministic=True
+            )
+            needle = query.casefold()
+            rows = connection.execute(
+                """
+                SELECT m.message_id, m.sender_member_id, m.created_at, m.text AS body,
+                    instr(teamup_casefold(m.text), ?) AS hit
+                FROM messages AS m
+                WHERE m.room_id = ? AND m.message_id > ?
+                    AND instr(teamup_casefold(m.text), ?) > 0
+                ORDER BY m.message_id
+                LIMIT ?
+                """,
+                (needle, room_id, cursor, needle, limit),
+            ).fetchall()
+            return [
+                {
+                    "message_id": row["message_id"],
+                    "sender_member_id": row["sender_member_id"],
+                    "created_at": row["created_at"],
+                    "snippet": _snippet(row["body"], needle, row["hit"]),
+                }
+                for row in rows
+            ]
 
     def inbox(
         self, token: str, after: int, limit: int, kinds: Iterable[str]
