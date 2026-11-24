@@ -1,6 +1,6 @@
 # Client–Server v1
 
-本契约用于 TeamUp 最小闭环。提供方为 Server Gateway，业务状态归 Collaboration，消费方为 Client。本文锁定首轮登记、公共房间、公告确认、历史、定向通知及补收。私聊、邀请房间、公告发布、停用、健康和 harness 唤醒仍按 [MVP 设计](../specs/mvp.md) 演进。
+本契约用于 TeamUp 最小闭环。提供方为 Server Gateway，业务状态归 Collaboration，消费方为 Client。本文锁定首轮登记、公共房间、公告确认、历史、定向通知及补收，并增量提供成员本人房间列表。私聊、邀请房间、公告发布、停用、健康和 harness 唤醒仍按 [MVP 设计](../specs/mvp.md) 演进。
 
 新增的人类账号登录与停用规则见 [账号登录 v1](account-login-v1.md)。
 
@@ -18,6 +18,7 @@ Server 启动读取 `TEAMUP_ENROLLMENT_KEYS` JSON 对象，键为 owner ID，值
 | --- | --- |
 | Member | `member_id` UUID 字符串，`role_description` 字符串 |
 | Room | `room_id` UUID 字符串，`name` 字符串 |
+| Room 概要 | `room_id` UUID 字符串，`name` 字符串，`acked_board_version` 正整数或 null，`current_board_version` 正整数，`latest_message_id` 正整数或 null |
 | Board | `room_id`，`version` 正整数，`rules`，`protocol` |
 | Message | `message_id` 正整数，`room_id`，`sender_member_id`，`client_message_id`，`text`，`mention_member_id`（UUID 字符串或 null） |
 | Event | `event_id` 正整数，`kind` 为 `message` 或 `mention`，`message` 为 Message |
@@ -34,6 +35,7 @@ Server 启动读取 `TEAMUP_ENROLLMENT_KEYS` JSON 对象，键为 owner ID，值
 | `GET /v1/members/me` | Bearer 成员 token | 当前 Member |
 | `GET /v1/members?q=...` | 可选角色子串，默认空串 | `{"members":[Member]}`，按 ID 稳定排序，最多 100 条，大小写不敏感 |
 | `POST /v1/rooms` | `{"name":"...","rules":"...","protocol":"..."}` | Room。创建者同时加入。公告初始版本为 1，两段文字可省略，各有默认值 |
+| `GET /v1/rooms` | 无正文 | `{"rooms":[Room 概要]}`，按 `room_id` 稳定排序。仅含当前成员在 `room_members` 有行的房间，创建者经其既有成员关系包含在内。`acked_board_version` 为该成员已确认的版本，确认前为 null；`current_board_version` 为房间当前版本；`latest_message_id` 为该房间最新消息 ID，空房间为 null。概要属于成员范围数据，不要求当前公告已确认，也不提供按任意房间 ID 的查询、可加入状态或房间发现 |
 | `POST /v1/rooms/{room_id}/join` | 无正文 | Room。当前只提供团队公开房间。重复加入保留原加入位置 |
 | `GET /v1/rooms/{room_id}/board` | 无正文 | Board。加入后即可读取，Server 记录该成员取到的版本 |
 | `POST /v1/rooms/{room_id}/board/ack` | `{"version":1}` | `{"version":1}`。确认限房间成员，要求当前版本，且该成员已先读取该版本 |

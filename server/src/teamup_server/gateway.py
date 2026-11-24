@@ -210,6 +210,10 @@ class Gateway:
                 token, body.name, body.rules, body.protocol
             )
 
+        @app.get("/v1/rooms")
+        def list_rooms(token: _Bearer) -> dict:
+            return {"rooms": collaboration.list_rooms(token)}
+
         @app.post("/v1/rooms/{room_id}/join", dependencies=[Depends(_reject_body)])
         def join_room(token: _Bearer, room_id: _Identifier) -> dict:
             return collaboration.join_room(token, room_id)
