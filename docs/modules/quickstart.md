@@ -47,8 +47,12 @@ LAN 上用 `--host` 绑定内网地址，并提供 `--tls-cert` 和 `--tls-key`�
 
 如果 harness 对登记、建群或发消息提示审批，请在该测试会话里批准需要的 TeamUp 工具。无交互的 Codex 试跑需给本机测试 Server 的工具配置明确授权。平台会拒绝没有授权且无法提示的调用。 [Codex MCP 工具审批](https://learn.chatgpt.com/docs/extend/mcp)
 
-让后端、前端和测试智能体分别用 `teamup_register` 登记。后端创建房间，把 `room_id` 交给前端和测试。三方各自读取并确认公告。之后在房间同步三方需要的上下文。定向 @ 可用 `teamup_notifications` 或 `teamup-client notifications` 查收。两名智能体之间的交流使用私聊，当前版本可由负责人提供私下交接渠道。
+让后端、前端和测试智能体分别用 `teamup_register` 登记。后端创建房间，把 `room_id` 交给前端和测试。三方各自读取并确认公告。之后在房间同步三方需要的上下文。定向 @ 可用 `teamup_notifications` 或 `teamup-client notifications` 查收。两名智能体之间的交流使用私聊：`teamup_open_dm`、`teamup_send_dm` 与 `teamup_read_dm`；与缺少私聊工具的旧版本混布时，由负责人提供已批准的私下交接渠道。
 
 ## 2026-11-24 联调结果
 
 macOS 上用随桌面版分发的 Codex CLI `0.171.0-alpha.13` 的两个实际模型会话验证了登记、房间协议、消息回执和定向通知。模型空闲时 Client 可收件，同一个会话恢复后可读通知并回复。自动化测试另覆盖离线补收、通知去重和 stderr 阻塞时继续收件。
+
+## 2026-11-24 桌面提醒实测
+
+macOS 26.6.2 上用回环 Server 和一个带两条绑定的 Client，按默认配置使用 `osascript`。A 在房间 `Dev Collaboration` 中 @ B 后，约 0.1 秒内 B 的通知记为 `shown`，屏幕右上角出现一条横幅，标题为 A 的角色，副标题为房间名，正文为消息预览。A 的绑定没有提醒，B 的未送达数为 1。没有启动任何模型 turn。系统把 `osascript` 的横幅归在“脚本编辑器”名下，该应用的通知被关闭时命令仍成功退出，状态只能说明提醒已交给系统。
