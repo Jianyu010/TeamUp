@@ -35,6 +35,18 @@ MEMBERS = [
     "00000000-0000-4000-8000-000000000002",
 ]
 ROOM = "00000000-0000-4000-8000-000000000003"
+SEARCH = {
+    "matches": [
+        {
+            "message_id": 3,
+            "sender_member_id": MEMBERS[1],
+            "created_at": "2026-11-24T00:00:00Z",
+            "snippet": "the plan continues",
+        }
+    ],
+    "expired_through_message_id": 2,
+    "history_truncated": True,
+}
 CLI = (sys.executable, "-m", "teamup_client.main")
 
 
@@ -151,6 +163,8 @@ class TeamupGateway:
                     },
                     409,
                 )
+            elif path == f"/v1/rooms/{ROOM}/search":
+                await self.json_response(writer, SEARCH)
             else:
                 await self.json_response(writer, {"room_id": ROOM, "name": "team"})
         finally:
@@ -481,6 +495,36 @@ def test_ipc_enforces_binding_and_maps_contract_operations():
                             key_a,
                             "invalid_request",
                         ),
+                        (
+                            "create_room",
+                            {"name": "team", "history_policy": "kept"},
+                            key_a,
+                            "invalid_request",
+                        ),
+                        (
+                            "read_messages",
+                            {"room_id": ROOM, "before": 0},
+                            key_a,
+                            "invalid_request",
+                        ),
+                        (
+                            "search_room",
+                            {"room_id": ROOM},
+                            key_a,
+                            "invalid_request",
+                        ),
+                        (
+                            "search_room",
+                            {"room_id": ROOM, "q": "   "},
+                            key_a,
+                            "invalid_request",
+                        ),
+                        (
+                            "search_room",
+                            {"room_id": ROOM, "q": "x" * 201},
+                            key_a,
+                            "invalid_request",
+                        ),
                         ("nonsense", {}, key_a, "invalid_request"),
                     ]:
                         with pytest.raises(ClientError) as error:
@@ -521,6 +565,14 @@ def test_ipc_enforces_binding_and_maps_contract_operations():
                             {"name": "team"},
                         ),
                         (
+                            "create_room",
+                            {"name": "team", "history_policy": "retained"},
+                            "POST",
+                            "/v1/rooms",
+                            {},
+                            {"name": "team", "history_policy": "retained"},
+                        ),
+                        (
                             "join_room",
                             {"room_id": ROOM},
                             "POST",
@@ -552,10 +604,32 @@ def test_ipc_enforces_binding_and_maps_contract_operations():
                             {"after": ["0"], "limit": ["2"]},
                             None,
                         ),
+                        (
+                            "read_messages",
+                            {"room_id": ROOM, "after": 2, "before": 9, "limit": 2},
+                            "GET",
+                            f"/v1/rooms/{ROOM}/messages",
+                            {"after": ["2"], "before": ["9"], "limit": ["2"]},
+                            None,
+                        ),
+                        (
+                            "search_room",
+                            {"room_id": ROOM, "q": "plan", "after": 0, "limit": 2},
+                            "GET",
+                            f"/v1/rooms/{ROOM}/search",
+                            {"q": ["plan"], "after": ["0"], "limit": ["2"]},
+                            None,
+                        ),
                     ]
                     for method, params, verb, route, query, body in cases:
                         await call(socket, key_b, method, params)
                         assert (verb, route, query, token_b, body) in upstream.calls
+                    assert (
+                        await call(
+                            socket, key_b, "search_room", {"room_id": ROOM, "q": "plan"}
+                        )
+                        == SEARCH
+                    )
                     with pytest.raises(ClientError) as error:
                         await call(
                             socket,

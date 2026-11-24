@@ -13,11 +13,19 @@ ROLE = partial(is_string, limit=200)
 BOARD_TEXT = partial(is_string, limit=8_000)
 MESSAGE_KEY = partial(is_string, limit=128)
 SEARCH = partial(is_string, require_content=False)
+QUERY = partial(is_string, limit=200)
 AFTER = partial(is_integer, minimum=0)
+BEFORE = partial(is_integer, minimum=1)
 POSITIVE = partial(is_integer, minimum=1)
 LIMIT = partial(is_integer, minimum=1, maximum=100)
 PAGE = {"after": AFTER, "limit": LIMIT}
+HISTORY = {"after": AFTER, "before": BEFORE, "limit": LIMIT}
 ROOM = {"room_id": is_uuid}
+HISTORY_POLICIES = ("retained", "since_joining")
+
+
+def _history_policy(value):
+    return value in HISTORY_POLICIES
 
 
 def _mention(value):
@@ -36,7 +44,14 @@ OPERATIONS = {
     "register": Operation("POST", "/members", {"role_description": ROLE}),
     "find_members": Operation("GET", "/members", optional={"q": SEARCH}),
     "create_room": Operation(
-        "POST", "/rooms", {"name": ROLE}, {"rules": BOARD_TEXT, "protocol": BOARD_TEXT}
+        "POST",
+        "/rooms",
+        {"name": ROLE},
+        {
+            "rules": BOARD_TEXT,
+            "protocol": BOARD_TEXT,
+            "history_policy": _history_policy,
+        },
     ),
     "join_room": Operation("POST", "/rooms/{room_id}/join", ROOM),
     "get_board": Operation("GET", "/rooms/{room_id}/board", ROOM),
@@ -49,7 +64,10 @@ OPERATIONS = {
         {**ROOM, "client_message_id": MESSAGE_KEY, "text": BOARD_TEXT},
         {"mention_member_id": _mention},
     ),
-    "read_messages": Operation("GET", "/rooms/{room_id}/messages", ROOM, PAGE),
+    "read_messages": Operation("GET", "/rooms/{room_id}/messages", ROOM, HISTORY),
+    "search_room": Operation(
+        "GET", "/rooms/{room_id}/search", {**ROOM, "q": QUERY}, PAGE
+    ),
     "notifications": Operation(optional=PAGE),
 }
 
