@@ -274,6 +274,65 @@ def test_new_database_is_private_to_its_owner(tmp_path):
         assert S_IMODE(db_path.stat().st_mode) == 0o600
 
 
+def test_list_rooms_returns_membership_scoped_room_metadata(team):
+    error(team.get("/v1/rooms"), 401, "unauthorized")
+
+    def summary(room_id, name, **fields):
+        return {
+            "room_id": room_id,
+            "name": name,
+            "acked_board_version": None,
+            "current_board_version": 1,
+            "latest_message_id": None,
+            **fields,
+        }
+
+    rooms = {
+        name: post(team, "sender", "/rooms", json={"name": name}).json()["room_id"]
+        for name in ("alpha", "beta", "gamma")
+    }
+    assert get(team, "reader", "/rooms").json() == {"rooms": []}
+    assert get(team, "target", "/rooms").json() == {"rooms": []}
+    assert get(team, "sender", "/rooms").json() == {
+        "rooms": [
+            summary(room_id, name)
+            for room_id, name in sorted(
+                (room_id, name) for name, room_id in rooms.items()
+            )
+        ]
+    }
+    join(team, "target", f"/rooms/{rooms['alpha']}")
+    confirm(team, "sender", f"/rooms/{rooms['alpha']}")
+    message = send(team, f"/rooms/{rooms['alpha']}", "hello").json()
+    assert get(team, "reader", "/rooms").json() == {"rooms": []}
+    assert get(team, "target", "/rooms").json() == {
+        "rooms": [
+            summary(rooms["alpha"], "alpha", latest_message_id=message["message_id"])
+        ]
+    }
+    confirm(team, "target", f"/rooms/{rooms['alpha']}")
+    assert get(team, "target", "/rooms").json() == {
+        "rooms": [
+            summary(
+                rooms["alpha"],
+                "alpha",
+                acked_board_version=1,
+                latest_message_id=message["message_id"],
+            )
+        ]
+    }
+    sender_rooms = get(team, "sender", "/rooms").json()["rooms"]
+    assert [room["room_id"] for room in sender_rooms] == sorted(rooms.values())
+    by_id = {room["room_id"]: room for room in sender_rooms}
+    assert by_id[rooms["alpha"]] == summary(
+        rooms["alpha"],
+        "alpha",
+        acked_board_version=1,
+        latest_message_id=message["message_id"],
+    )
+    assert by_id[rooms["beta"]] == summary(rooms["beta"], "beta")
+
+
 def test_room_history_starts_at_first_join_and_requires_board_ack(team):
     room_path = room(
         team, rules="  Keep secrets private. ", protocol=" Discuss openly. "

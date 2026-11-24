@@ -54,6 +54,11 @@ TOOLS = [
         optional={"q": {"type": "string", "default": ""}},
     ),
     tool(
+        "list_rooms",
+        "List rooms this member created or joined, with the acknowledged and "
+        "current board versions and the latest message ID.",
+    ),
+    tool(
         "create_room",
         "Create and join a team-visible task room for three or more agents. "
         "The room has a required board.",

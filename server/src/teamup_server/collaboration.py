@@ -1419,6 +1419,24 @@ class Collaboration:
                 )
         return dict(room)
 
+    def list_rooms(self, token: str) -> list[dict]:
+        with self._transaction() as connection:
+            member_id = _member(connection, token)["member_id"]
+            rows = connection.execute(
+                """
+                SELECT r.room_id, r.name, r.version AS current_board_version,
+                    rm.acked_board_version, (
+                        SELECT MAX(m.message_id) FROM messages AS m
+                        WHERE m.room_id = r.room_id
+                    ) AS latest_message_id
+                FROM room_members AS rm JOIN rooms AS r ON r.room_id = rm.room_id
+                WHERE rm.member_id = ?
+                ORDER BY r.room_id
+                """,
+                (member_id,),
+            )
+            return [dict(record) for record in rows]
+
     def read_board(self, token: str, room_id: str) -> dict:
         with self._transaction(write=True) as connection:
             member_id = _member(connection, token)["member_id"]

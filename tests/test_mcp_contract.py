@@ -66,10 +66,11 @@ def test_stdio_passes_approved_binding_and_surfaces_ipc_error():
                     "history_truncated": True,
                 },
             ),
+            ("list_rooms", {}, {"rooms": []}),
             ("notifications", {}, {"notifications": []}),
         ]
         # Unread counts the Client reports after each successful non-notice tool.
-        unread = iter([0, 2, 0, 0, 0, 0])
+        unread = iter([0, 2, 0, 0, 0, 0, 0])
         seen = []
 
         async def serve(reader, writer):
@@ -151,9 +152,16 @@ def test_stdio_passes_approved_binding_and_surfaces_ipc_error():
                 "required": ["dm_id"],
                 "additionalProperties": False,
             }
+            assert tools["teamup_list_rooms"].inputSchema == {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": False,
+            }
             assert tools.keys() == {
                 "teamup_register",
                 "teamup_find_members",
+                "teamup_list_rooms",
                 "teamup_create_room",
                 "teamup_join_room",
                 "teamup_get_board",
@@ -199,6 +207,7 @@ def test_stdio_passes_approved_binding_and_surfaces_ipc_error():
                 [],
                 [],
                 [],
+                [],
             ]
 
         def ipc(method, params):
@@ -223,6 +232,8 @@ def test_stdio_passes_approved_binding_and_surfaces_ipc_error():
             ipc("read_dm", requests[5][1]),
             status,
             ipc("search_room", requests[6][1]),
+            status,
+            ipc("list_rooms", requests[7][1]),
             status,
             ipc("notifications", {}),
         ]
