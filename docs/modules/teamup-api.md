@@ -17,7 +17,7 @@
 
 ## 邀请完成后发送 ping
 
-A、B 已在同一个房间，A 已确认最新版公告。B 的本机 Client 可以在线，也可以之后重连。
+A、B 和测试 Agent 已在同一个房间并确认公告。下图聚焦 A 发给房间的共享消息及 B 的定向通知。测试 Agent 可通过房间历史读取该消息。B 的本机 Client 可以在线，也可以之后重连。
 
 ```mermaid
 sequenceDiagram

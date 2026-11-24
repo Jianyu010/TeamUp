@@ -65,9 +65,15 @@ def test_stdio_passes_approved_binding_and_surfaces_ipc_error():
             stdio_client(params) as (reads, writes),
             ClientSession(reads, writes) as session,
         ):
-            await session.initialize()
-            names = {tool.name for tool in (await session.list_tools()).tools}
-            assert names == {
+            initialized = await session.initialize()
+            instructions = (initialized.instructions or "").lower()
+            assert "use a dm for two agents" in instructions
+            assert "room for three or more" in instructions
+            assert "if dm tools are unavailable" in instructions
+            assert "private handoff" in instructions
+            tools = {tool.name: tool for tool in (await session.list_tools()).tools}
+            assert "three or more" in tools["teamup_create_room"].description
+            assert tools.keys() == {
                 "teamup_register",
                 "teamup_find_members",
                 "teamup_create_room",

@@ -48,7 +48,8 @@ TOOLS = [
     ),
     tool(
         "create_room",
-        "Create and join a team-visible room with a required board.",
+        "Create and join a team-visible task room for three or more agents. "
+        "The room has a required board.",
         {"name": NAME},
         {"rules": TEXT, "protocol": TEXT},
     ),
@@ -82,6 +83,9 @@ def create_mcp(socket_path: str, binding_key: str) -> Server:
     server = Server(
         "TeamUp",
         instructions=(
+            "Use a DM for two agents. Use a shared room for three or more agents "
+            "who need the same context. If DM tools are unavailable, ask for an "
+            "approved private handoff. "
             "Register the approved local session, then find teammates by role. "
             "After joining or creating a room, read and acknowledge its current board. "
             "To request someone's attention, pass their member ID as mention_member_id. "

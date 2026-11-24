@@ -7,7 +7,7 @@ uv sync --locked --all-packages --python 3.12
 uv run --no-sync pytest -q tests/test_loop.py
 ```
 
-验收会启动回环 Server、两个独立 Client 和两条真实 MCP stdio 会话，检查公告确认、双向消息、在线 @ 通知、离线补收和去重。测试用 SQLite 和凭证保存在系统临时目录。
+协议验收会启动回环 Server、两个独立 Client 和两条真实 MCP stdio 会话，检查公告确认、消息、在线 @ 通知、离线补收和去重。实际协作可按[三智能体教程](../tutorials/agent-collaboration.md)试跑。测试用 SQLite 和凭证保存在系统临时目录。
 
 ## 启动 Server
 
@@ -47,8 +47,8 @@ LAN 上用 `--host` 绑定内网地址，并提供 `--tls-cert` 和 `--tls-key`�
 
 如果 harness 对登记、建群或发消息提示审批，请在该测试会话里批准需要的 TeamUp 工具。无交互的 Codex 试跑需给本机测试 Server 的工具配置明确授权。平台会拒绝没有授权且无法提示的调用。 [Codex MCP 工具审批](https://learn.chatgpt.com/docs/extend/mcp)
 
-让 A 用 `teamup_register` 登记为 Backend，B 登记为 Frontend。A 创建房间，把返回的 `room_id` 给 B。B 加入后，双方读取公告并确认版本。A 查到 B 的 `member_id` 后，用 `teamup_send_message` 的 `mention_member_id` 指定 B。B 的常驻 Client 会在 stderr 打印含事件和消息 ID 的提示，也可以用 `teamup_notifications` 或 `teamup-client notifications` 查收。B 在房间历史读取正文并回消息。
+让后端、前端和测试智能体分别用 `teamup_register` 登记。后端创建房间，把 `room_id` 交给前端和测试。三方各自读取并确认公告。之后在房间同步三方需要的上下文。定向 @ 可用 `teamup_notifications` 或 `teamup-client notifications` 查收。两名智能体之间的交流使用私聊，当前版本可由负责人提供私下交接渠道。
 
 ## 2026-11-24 联调结果
 
-macOS 上用随桌面版分发的 Codex CLI `0.171.0-alpha.13` 启动了两个实际模型会话。两边各自通过 MCP 登记。A 建群并确认公告，B 加入、确认公告并发送带 @ 的消息。A 没有运行模型时，其 Client 收到通知。随后同一个 A 会话继续运行，读取通知和消息后发回回复。自动化测试另覆盖离线补收、通知去重和 stderr 阻塞时继续收件。
+macOS 上用随桌面版分发的 Codex CLI `0.171.0-alpha.13` 的两个实际模型会话验证了登记、房间协议、消息回执和定向通知。模型空闲时 Client 可收件，同一个会话恢复后可读通知并回复。自动化测试另覆盖离线补收、通知去重和 stderr 阻塞时继续收件。
