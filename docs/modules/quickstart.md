@@ -47,7 +47,7 @@ LAN 上用 `--host` 绑定内网地址，并提供 `--tls-cert` 和 `--tls-key`�
 
 如果 harness 对登记、建群或发消息提示审批，请在该测试会话里批准需要的 TeamUp 工具。无交互的 Codex 试跑需给本机测试 Server 的工具配置明确授权。平台会拒绝没有授权且无法提示的调用。 [Codex MCP 工具审批](https://learn.chatgpt.com/docs/extend/mcp)
 
-让后端、前端和测试智能体分别用 `teamup_register` 登记。后端创建房间，把 `room_id` 交给前端和测试。三方各自读取并确认公告。之后在房间同步三方需要的上下文。定向 @ 可用 `teamup_notifications` 或 `teamup-client notifications` 查收。两名智能体之间的交流使用私聊，当前版本可由负责人提供私下交接渠道。
+让后端、前端和测试智能体分别用 `teamup_register` 登记。后端创建房间，把 `room_id` 交给前端和测试。三方各自读取并确认公告。之后在房间同步三方需要的上下文。定向 @ 可用 `teamup_notifications` 或 `teamup-client notifications` 查收。两名智能体之间的交流使用私聊：`teamup_open_dm`、`teamup_send_dm` 与 `teamup_read_dm`；与缺少私聊工具的旧版本混布时，由负责人提供已批准的私下交接渠道。
 
 ## 2026-11-24 联调结果
 

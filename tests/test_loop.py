@@ -367,3 +367,131 @@ def test_two_agent_mcp_loop_and_offline_notification():
                 await run_exchange(Path(directory), available_port())
 
         asyncio.run(run())
+
+
+async def run_dm_exchange(root, port):
+    a = Developer(root, "dm-alice", port)
+    b = Developer(root, "dm-bob", port)
+    keys = json.dumps({"alice": a.enrollment_key, "bob": b.enrollment_key})
+
+    with (
+        process(
+            "teamup_server.main",
+            "server/src",
+            ["--db", root / "dm-server.db", "--port", port],
+            root / "dm-server.log",
+            {"TEAMUP_ENROLLMENT_KEYS": keys},
+        ) as server,
+        a.daemon() as alice_daemon,
+    ):
+        wait_for(lambda: tcp_is_ready(port), server)
+        async with a.agent() as agent_a:
+            alice = await tool(agent_a, "register", role_description="Backend")
+            with b.daemon() as bob_daemon:
+                async with b.agent() as agent_b:
+                    bob = await tool(agent_b, "register", role_description="Frontend")
+                    assert (await tool(agent_a, "find_members", q="FRONT"))[
+                        "members"
+                    ] == [bob]
+
+                    dm = await tool(agent_a, "open_dm", member_id=bob["member_id"])
+                    assert dm == {
+                        "dm_id": dm["dm_id"],
+                        "peer_member_id": bob["member_id"],
+                    }
+                    sent = await tool(
+                        agent_a,
+                        "send_dm",
+                        dm_id=dm["dm_id"],
+                        client_message_id="dm-1",
+                        text="Private handoff for the adapter.",
+                    )
+                    assert set(sent) == {
+                        "message_id",
+                        "dm_id",
+                        "sender_member_id",
+                        "client_message_id",
+                        "text",
+                        "created_at",
+                    }
+                    retry = await tool(
+                        agent_a,
+                        "send_dm",
+                        dm_id=dm["dm_id"],
+                        client_message_id="dm-1",
+                        text="Private handoff for the adapter.",
+                    )
+                    assert retry == sent
+                    await tool(
+                        agent_a,
+                        "send_dm",
+                        error="conflict",
+                        dm_id=dm["dm_id"],
+                        client_message_id="dm-1",
+                        text="Changed intent",
+                    )
+
+                    notice = await asyncio.to_thread(
+                        b.wait_for_notice, sent["message_id"], bob_daemon
+                    )
+                    assert notice == {
+                        "event_id": notice["event_id"],
+                        "kind": "dm",
+                        "dm_id": dm["dm_id"],
+                        "message_id": sent["message_id"],
+                        "sender_member_id": alice["member_id"],
+                    }
+                    assert "text" not in notice
+                    # A DM notice never becomes a room mention: no desktop
+                    # reminder and no unread-mention hint on later tool calls.
+                    await asyncio.sleep(1)
+                    assert b.desktop_notices() == []
+                    response = await agent_b.call_tool("teamup_find_members", {})
+                    assert len(response.content) == 1
+                    assert (await tool(agent_b, "notifications"))["notifications"] == [
+                        notice
+                    ]
+                    assert await tool(
+                        agent_b, "open_dm", member_id=alice["member_id"]
+                    ) == {"dm_id": dm["dm_id"], "peer_member_id": alice["member_id"]}
+                    assert await tool(agent_b, "read_dm", dm_id=dm["dm_id"]) == {
+                        "messages": [sent]
+                    }
+
+                    reply = await tool(
+                        agent_b,
+                        "send_dm",
+                        dm_id=dm["dm_id"],
+                        client_message_id="dm-b1",
+                        text="Received, continuing privately.",
+                    )
+                    alice_notice = await asyncio.to_thread(
+                        a.wait_for_notice, reply["message_id"], alice_daemon
+                    )
+                    assert alice_notice["kind"] == "dm"
+                    assert alice_notice["dm_id"] == dm["dm_id"]
+                    assert alice_notice["message_id"] == reply["message_id"]
+                    assert alice_notice["sender_member_id"] == bob["member_id"]
+
+            with b.daemon():
+                async with b.agent() as agent_b:
+                    notifications = (await tool(agent_b, "notifications"))[
+                        "notifications"
+                    ]
+                    assert notifications == [notice]
+                    recovered = await tool(agent_b, "read_dm", dm_id=dm["dm_id"])
+                    assert recovered == {"messages": [sent, reply]}
+
+        server_log = (root / "dm-server.log").read_text(errors="replace")
+        assert "Private handoff for the adapter." not in server_log
+        assert "Received, continuing privately." not in server_log
+
+
+def test_dm_mcp_exchange_notices_and_recovery():
+    with tempfile.TemporaryDirectory(prefix="tu-dm-", dir="/tmp") as directory:
+
+        async def run():
+            async with asyncio.timeout(60):
+                await run_dm_exchange(Path(directory), available_port())
+
+        asyncio.run(run())

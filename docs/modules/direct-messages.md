@@ -1,6 +1,6 @@
 # Direct Messages（私聊）
 
-**契约已按 #3 协调定稿；Client/MCP 侧已随本契约交付，Server 侧由 #3 服务端工作树随后交付。** 跟踪 [Direct messages #3](https://github.com/Jianyu010/TeamUp/issues/3)，与 [conversation history #6](../specs/conversation-history.md) 协同；产品行为见 [collaboration-surfaces](../specs/collaboration-surfaces.md)。提供方为 Server Gateway（业务状态归 Collaboration），消费方为 Client、本机 MCP 插件与 CLI。本文只新增 DM 契约：已发布的房间接口（[Client–Server v1](client-server-v1.md)、[MCP–Client v1](mcp-client-v1.md)）保持不变，仅做本文显式声明的加法扩展。
+**契约已按 #3 协调定稿；Client/MCP 侧已随本契约交付，Server 侧（`dms` 存储、三条路由、收件箱 `kinds` 与 `kind: "dm"` 事件）已由 #3 Server 工作树交付；DM 与房间的保留到期清除由后续 #6 清理工作树在本变更落地后交付。** 跟踪 [Direct messages #3](https://github.com/Jianyu010/TeamUp/issues/3)，与 [conversation history #6](../specs/conversation-history.md) 协同；产品行为见 [collaboration-surfaces](../specs/collaboration-surfaces.md)。提供方为 Server Gateway（业务状态归 Collaboration），消费方为 Client、本机 MCP 插件与 CLI。本文只新增 DM 契约：已发布的房间接口（[Client–Server v1](client-server-v1.md)、[MCP–Client v1](mcp-client-v1.md)）保持不变，仅做本文显式声明的加法扩展。
 
 ## 定位与边界
 
@@ -21,7 +21,7 @@
 | Notice（扩展，本机） | DM 的本地 Notice 为类型化五字段 `{event_id, kind:"dm", dm_id, message_id, sender_member_id}`，不含正文；既有 `mention` 的本地 Notice 保持原四字段 `{event_id, room_id, message_id, sender_member_id}` 输出不变 |
 
 - `message_id` 与房间消息共用同一个全局递增分配器：跨房间与 DM 全局唯一、只增不复用，会话内按提交顺序严格递增。房间与 DM 是 Collaboration 内两个独立的 canonical record 家族，每条记录只存一份正文；投递事件与消息一样共用 #6 的全局 delivery 分配器。
-- 房间 Message 的线上形状本期不变；是否同样向房间读取暴露时间戳由 #6 决定（见已议定）。
+- 房间 Message 的线上形状本期不变；是否同样向房间读取暴露时间戳已由 #6 落定：随 [会话历史、搜索与保留](conversation-history.md) 的增量，房间 Message 也暴露 `created_at`（见已议定）。
 
 ## 操作
 
@@ -66,6 +66,7 @@ SSE 不变，仍为 `event: inbox_changed`。收件箱领取与确认入口不�
 
 - 对端经现有 `GET /v1/inbox`（Client 显式携带 `kinds=message,mention,dm`）领取 `kind: "dm"` 事件（内嵌完整 DM Message），用现有 ack 入口确认；重复确认成功。SSE 只作提示，断连后按未确认事件补收。
 - Client 对 `dm` 事件按 `mention` 同等方式持久登记类型化本地 Notice（`event_id`、`kind`、`dm_id`、`message_id`、`sender_member_id`，无正文），再确认 Server 事件。持久化先于确认，按绑定和 `event_id` 去重，重复投递不增加记录；类型化 DM 行与既有行共存于同一本机 Notices 存储，存量四字段行原样保留，重启迁移后旧通知全部可读。`teamup-client notifications` 与 MCP `teamup_notifications` 均可读取两类 Notice。
+- 类型化 DM Notice 只进入本机通知存储与 `notifications` 查询：它不是房间 @，不进入桌面提醒、送达状态、`mention_status` 未读计数或任何唤醒投递，也不改变本机会话的批准与许可状态（见 [MCP–Client v1](mcp-client-v1.md)）。收件确认只证明 Client 已收，不等于对端 Agent 已读；Client 与 MCP 不为 DM 提供自动唤醒行为。
 - 收件确认与保留到期竞争、Server 对已到期事件返回 404 `not_found` 时，Client 视为已清除并继续补收；其余确认失败沿用既有处理（退避重试整个拉取）。
 - 重连后需要上下文时，用 `teamup_read_dm` 从最后已知 `message_id` 或 0 起按页回读；响应可带 `expired_through_message_id` 与 `history_truncated` 告知部分历史已过期，Client 原样透传。收件确认只证明 Client 已收，不等于对端 Agent 已读；Client 与 MCP 不提供自动唤醒行为。
 
@@ -77,19 +78,19 @@ SSE 不变，仍为 `event: inbox_changed`。收件箱领取与确认入口不�
 
 ## 保留与升级
 
-- DM 保留与房间保留分开配置：`teamup-server --dm-retention-hours N`（环境变量 `TEAMUP_DM_RETENTION_HOURS`）；未配置即不限期。到期只作用于 DM：正文与未投递事件一并移除，不影响房间；分配器不复用被清除的 `message_id`。
+- DM 保留与房间保留分开配置：`teamup-server --dm-retention-hours N`（环境变量 `TEAMUP_DM_RETENTION_HOURS`）；未配置即不限期。到期只作用于 DM：正文与未投递事件一并移除，不影响房间；分配器不复用被清除的 `message_id`。该配置与到期清除任务由后续 #6 清理工作树交付，本变更未实现任何到期删除。
 - 到期后读取：若 `after` 落在被清除范围，响应附 `expired_through_message_id` 与 `history_truncated`，调用方据此得知部分历史已过期。Client 对该元数据原样透传。
-- 存储指引（Server 实现期定稿）：`dms` 表以无序对唯一；`messages` 增加 `dm_id`（与 `room_id` 恰一非空）和 `created_at`（存量房间行为 NULL，展示为未知；新写入必填）。房间现有读取边界与授权不变，全局分配器续用不重置。
+- 存储定稿（#3 Server 工作树按实现修订）：`dms` 表以 `dm_id` 为主键，按 `min`/`max` 规范序存成员对，并用 `(member_low, member_high)` 唯一约束保证一对一会话；`messages` 增加 `dm_id`，与 `room_id` 恰一非空（`created_at` 列已随 #6 存储基线就位，存量房间行为 NULL，展示为未知；DM 行均为新写入，必非空）。重试唯一键按记录家族分域：房间行维持 `(sender_member_id, client_message_id)` 唯一，DM 行为 `(dm_id, sender_member_id, client_message_id)`，因此同一 `client_message_id` 可分别用于房间与 DM；`inbox_events.kind` 约束扩展 `dm`。房间现有读取边界与授权不变，全局分配器续用不重置。
 - 升级顺序：Client 显式携带 `kinds` 请求，旧 Server 忽略未知参数、只回既有事件；新 Server 在 `kinds` 缺省时只回 `message`/`mention`，旧 Client 行为不变。Server 与 Client/MCP 可先后部署，`kinds` 即兼容边界（v1 无版本协商）。`kind: "dm"` 与类型化 DM Notice 为加法扩展，现有房间工具语义不变；MCP 协作指引保留“当前工具目录缺少私聊工具”的降级提示，用于与旧版本混布时引导已授权的私下交接。
 - 后续若给操作员 DM 读取权，须另立显式授权与审计，不在本期。
 
 ## 实施步骤
 
-1. Collaboration 迁移：`dms` 表、`messages.dm_id`/`created_at` 列与约束，复用全局分配器。（#3 Server 工作树）
-2. Gateway：三条路由、`invalid_peer` 映射、Event `dm`、日志元数据化。（#3 Server 工作树）
+1. Collaboration 迁移：`dms` 表、`messages.dm_id` 与恰一非空约束、按家族分域的重试唯一键、`inbox_events.kind` 扩展 `dm`，复用全局分配器。（#3 Server 工作树，已交付）
+2. Gateway：三条路由、`invalid_peer` 映射、Event `dm`、日志元数据化。（#3 Server 工作树，已交付）
 3. Client：`open_dm`/`send_dm`/`read_dm` IPC、`kinds` 拉取与 `dm` 事件的类型化本地 Notice 登记。（本变更交付）
 4. MCP：三个 DM 工具 schema 与协作 skill 文案更新；共享文档索引随实现更新。（本变更交付）
-5. DM 到期清除任务与 `expired_through_message_id`/`history_truncated` 边界返回。（#3 Server 工作树）
+5. DM 与房间的保留水位/到期清除任务与 `expired_through_message_id`/`history_truncated` 边界返回。（后续 #6 清理工作树，在本变更落地后交付；本变更不含任何到期删除）
 
 ## 测试与验收
 
@@ -97,18 +98,18 @@ Client/MCP 侧（本变更，`uv run --no-sync pytest -q`）：
 
 - IPC 路由与凭证：三个 DM IPC 方法按上表映射到 HTTP 路由、正文与查询；未批准绑定 `unauthorized`，非法参数与未知方法 `invalid_request`；`invalid_peer`、`not_found` 等 Server 错误按 code 透传。
 - 旧 Server 兼容：忽略 `kinds` 的旧 Server 仍只回既有事件，Client 正常补收与确认；未实现 DM 路由的旧 Server 对 DM 调用返回 404 并透传。
-- 类型化 Notice：`dm` 事件持久化为五字段本地 Notice（无正文），先持久化后确认，按绑定和 `event_id` 去重；stderr 只输出 Notice 字段；重启后存量（含旧版四字段）通知全部可读；确认竞争返回 `not_found` 时继续补收。
+- 类型化 Notice：`dm` 事件持久化为五字段本地 Notice（无正文），先持久化后确认，按绑定和 `event_id` 去重；stderr 只输出 Notice 字段；重启后存量（含旧版四字段与升级前的 DM 行）通知全部可读；确认竞争返回 `not_found` 时继续补收；DM 通知不产生桌面提醒、未读 @ 计数或唤醒投递，也不改变本机会话授权。
 - MCP schema：三个 DM 工具按上表暴露，参数校验复用现有 UUID 与长度边界。
 - 回归：既有房间路由、事件、通知与 CLI/MCP 查询行为全部不变。
 
-Server 侧（#3 Server 工作树验收）：
+Server 侧（#3 Server 工作树验收，`uv run --no-sync pytest -q`，由 `server/tests/test_direct_messages.py` 与 `tests/test_loop.py` 覆盖）：
 
 - 打开：重复打开、双向打开、并发打开同一对 → 同一 `dm_id`；对本人、未知成员或所属账号已停用的成员 → 422 `invalid_peer`。
 - 参与者隔离：第三成员对任意 `dm_id`（真实或随机）读取或发送 → 404；其收件箱永不含他人 DM 事件；`find_members` 仍返回成员档案，会话存在性不泄露。
 - 发送：文本上限、纯空白、未声明字段拒绝；同键同文重试返回原消息；改文 → 409；同一 `client_message_id` 在房间与 DM 互不冲突；对端账号停用后发送 → 404，既有参与者仍可回读历史。
 - 引用：DM 内引用房间消息，非房间成员的对端读取 → 404；房间内引用 DM 消息，非参与者 → 404。
 - 控制台与搜索：任何响应不含 DM 数据；持有房间 transcript 授权的操作员也拿不到 DM。
-- 到期：`--dm-retention-hours` 到期后正文与未投递事件移除，读取带 `expired_through_message_id`/`history_truncated`，分配器不复用 ID。
+- 到期：`--dm-retention-hours` 到期后正文与未投递事件移除，读取带 `expired_through_message_id`/`history_truncated`，分配器不复用 ID。（后续 #6 清理工作树验收；本变更读取端仅在保留边界生效时才会附带该元数据）
 - 回归：既有房间路由、事件与通知行为全部不变；迁移后房间历史顺序与加入边界不变。
 - 无公告要求：未走过任何公告流程的成员对可直接使用 DM。
 

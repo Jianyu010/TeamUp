@@ -702,7 +702,11 @@ def test_history_before_above_the_sqlite_max_is_an_unbounded_upper_edge(tmp_path
         sender_id = member(client, "sender")
     with closing(sqlite3.connect(db_path)) as connection, connection:
         connection.execute(
-            "INSERT INTO messages VALUES (?, ?, ?, 'max-id', 'the valid max id', NULL, NULL)",
+            """
+            INSERT INTO messages (
+                message_id, room_id, sender_member_id, client_message_id, text
+            ) VALUES (?, ?, ?, 'max-id', 'the valid max id')
+            """,
             (2**63 - 1, room_id, sender_id),
         )
     with api(db_path) as client:
