@@ -1,0 +1,83 @@
+# Layer 3 · AI review of a PR head by the hp-laptop OpenCode reviewer (ported from tweakie).
+#
+# The gate starts it: once layers 2-3 pass on a member's PR head that has no review run yet,
+# scripts/ci/gate.py (gate-queue.yml's `auto`) dispatches this workflow on main with the PR and
+# head. Drafts and red PRs are never dispatched, so they spend none of the shared LLM gateway.
+# The owner can also dispatch it by hand (force re-reviews a commit already reviewed).
+#
+# Security model (self-hosted runner on hp-laptop, label `opencode-review`):
+# - workflow_dispatch on main runs THIS file from main; the gate counts only runs on main.
+# - Nothing from the PR is checked out or executed. $OPENCODE_REVIEW_HOME/bin/review-pr fetches
+#   the diff through the API as data and sends it to a tool-less OpenCode agent; its output is
+#   validated before it is posted as a COMMENT review carrying the head's marker.
+# - No third-party actions, no secrets, no ${{ }} inside `run:`; inputs reach it through env.
+# - The run-name carries the PR head: the gate ties a review to the run that produced it.
+name: OpenCode Review
+run-name: "OpenCode review of #${{ inputs.pr }} at ${{ inputs.sha }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number to review
+        required: true
+      sha:
+        description: The PR head commit this run reviews (the gate reads it from the run-name)
+        required: true
+      force:
+        description: Review again even if this commit was already reviewed
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: write
+
+concurrency:
+  group: opencode-review-${{ github.repository }}-${{ inputs.pr }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    if: github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, opencode-review]
+    timeout-minutes: 35
+    steps:
+      - name: Review with OpenCode
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT: workflow_dispatch
+          PR: ${{ inputs.pr }}
+          FORCE: ${{ inputs.force && '1' || '0' }}
+          SHA: ${{ github.sha }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          if [ -z "${OPENCODE_REVIEW_HOME:-}" ] || [ ! -x "$OPENCODE_REVIEW_HOME/bin/review-pr" ]; then
+            echo "::error::This runner has no OpenCode review install (OPENCODE_REVIEW_HOME unset)"
+            exit 1
+          fi
+          exec python3 -I "$OPENCODE_REVIEW_HOME/bin/review-pr"
+
+  # A run dispatched with the workflow token starts no `workflow_run` when it ends, so this job
+  # re-judges the PR at once. It cannot fail the run: a lost wake is caught by the next sweep.
+  wake-gate:
+    needs: review
+    if: always() && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, teamup-merge]
+    timeout-minutes: 3
+    continue-on-error: true
+    permissions:
+      actions: write
+    steps:
+      - name: Dispatch the gate for this PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ inputs.pr }}
+        run: |
+          case "$PR" in ''|*[!0-9]*) echo "::error::pr input is not a PR number"; exit 1;; esac
+          curl -fsS --connect-timeout 10 --max-time 20 \
+            -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            -d "{\"ref\":\"main\",\"inputs\":{\"pr\":\"$PR\"}}" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/workflows/gate-queue.yml/dispatches"
