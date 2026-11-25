@@ -23,6 +23,7 @@ from ._local import LocalError, listen
 from ._login import login
 from ._notice_output import NoticeOutput
 from ._notices import open_store
+from ._protocol import is_string
 from ._upstream import connect
 from .ipc import ClientError, call
 
@@ -113,6 +114,11 @@ def main(argv=None):
     sign_in.add_argument("--config", required=True, type=Path)
     sign_in.add_argument("--username", required=True)
     commands.add_parser("init-binding")
+    install = commands.add_parser(
+        "init-install",
+        help="Generate a key that identifies sessions within a harness install",
+    )
+    install.add_argument("harness_instance_id")
     sessions = commands.add_parser("sessions", help="List or decide agent sessions")
     sessions.add_argument("--config", required=True, type=Path)
     sessions.add_argument("decision", nargs="?", choices=("approve", "reject"))
@@ -140,6 +146,20 @@ def main(argv=None):
                         "member_token": secrets.token_urlsafe(32),
                         "harness_instance_id": "edit-harness-instance-id",
                         "session_key": "edit-session-key",
+                    },
+                    indent=2,
+                )
+            )
+        elif args.command == "init-install":
+            if not is_string(args.harness_instance_id, 128):
+                raise ConfigError(
+                    "The harness instance ID must contain 1–128 characters"
+                )
+            print(
+                json.dumps(
+                    {
+                        "binding_key": secrets.token_urlsafe(32),
+                        "harness_instance_id": args.harness_instance_id,
                     },
                     indent=2,
                 )

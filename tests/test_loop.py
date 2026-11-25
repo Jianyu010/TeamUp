@@ -121,7 +121,7 @@ class Developer:
             yield child
 
     @asynccontextmanager
-    async def agent(self):
+    async def agent(self, env=None):
         launch = StdioServerParameters(
             command=sys.executable,
             args=["-m", "teamup_mcp.main"],
@@ -129,6 +129,7 @@ class Developer:
                 "PYTHONPATH": f"{ROOT / 'plugin/mcp/src'}:{ROOT / 'client/src'}",
                 "TEAMUP_SOCKET": str(self.socket_path),
                 "TEAMUP_BINDING_KEY": self.binding_key,
+                **(env or {}),
             },
         )
         async with (

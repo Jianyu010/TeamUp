@@ -252,13 +252,25 @@ class Coordinator:
         return session
 
     def _identity(self, key, session_ref):
-        if key in self._static:
-            return self._static[key], None
+        if identity := self._static.get(key):
+            if (
+                session_ref is not None
+                and session_ref["kind"] == "claude-code"
+                and session_ref["id"] != identity[1]
+            ):
+                raise ClientError(
+                    "unauthorized",
+                    "This static binding belongs to a different Claude Code session. "
+                    "Configure a per-session install with teamup-client init-install.",
+                )
+            return identity, None
         install = self._installs.get(key)
         if install is None:
             raise ClientError("unauthorized", "Unknown local binding")
         if session_ref is None:
-            raise ClientError("invalid_request", "This binding needs a session")
+            raise ClientError(
+                "invalid_request", "This install needs a session ID from its harness"
+            )
         return (install.harness_instance_id, session_ref["id"]), install
 
     async def _resolve(self, key, session_ref):
@@ -397,15 +409,8 @@ class Coordinator:
                 raise ClientError("not_found", "Unknown session")
             session = self._sessions.get(identity)
             if params["state"] == "approved" and session is None:
-                self._add_session(
-                    self._session_binding(
-                        {
-                            **self._notices.session(*identity),
-                            "harness_instance_id": identity[0],
-                            "session_key": identity[1],
-                        }
-                    )
-                )
+                row = self._notices.session(*identity)
+                self._add_session(self._session_binding(row))
             elif params["state"] == "rejected" and session is not None:
                 self._stop(self._sessions.pop(identity))
             return {"state": params["state"]}
