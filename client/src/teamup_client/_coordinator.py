@@ -3,7 +3,7 @@ import hashlib
 import json
 import secrets
 import sqlite3
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from functools import partial
 
@@ -543,8 +543,11 @@ class Coordinator:
 
     async def _drain_with_hints(self, binding, session, lines):
         wake = session.inbox_changed
-        reader = asyncio.create_task(self._read_hints(lines, wake))
-        reminders_supported = True
+        reminder_wake = asyncio.Event()
+        reader = asyncio.create_task(self._read_hints(lines, wake, reminder_wake))
+        reminders = asyncio.create_task(
+            self._watch_task_reminders(binding, reminder_wake)
+        )
         try:
             while True:
                 wake.clear()
@@ -553,40 +556,47 @@ class Coordinator:
                     session.scope,
                     (session.notices_changed, session.harness_changed),
                 )
-                if reminders_supported:
-                    try:
-                        reminders_supported = await drain_task_reminders(
-                            self._upstream.request,
-                            binding.member_token,
-                            self._notifier.show,
-                        )
-                    except ClientError:
-                        # A task-delivery error must not interrupt room inbox handling.
-                        pass
                 if reader.done():
                     await reader
                     return
                 await wake.wait()
         finally:
             reader.cancel()
-            await asyncio.gather(reader, return_exceptions=True)
+            reminders.cancel()
+            await asyncio.gather(reader, reminders, return_exceptions=True)
+
+    async def _watch_task_reminders(self, binding, wake):
+        while True:
+            wake.clear()
+            try:
+                if not await drain_task_reminders(
+                    self._upstream.request, binding.member_token, self._notifier.show
+                ):
+                    return
+            except ClientError:
+                with suppress(TimeoutError):
+                    await asyncio.wait_for(wake.wait(), timeout=5)
+            else:
+                await wake.wait()
 
     @staticmethod
-    async def _read_hints(lines, wake):
+    async def _read_hints(lines, *wakes):
         event = ""
         data = False
         try:
             async for line in lines:
                 if not line:
                     if event == "inbox_changed" and data:
-                        wake.set()
+                        for wake in wakes:
+                            wake.set()
                     event, data = "", False
                 elif line.startswith("event:"):
                     event = line.removeprefix("event:").removeprefix(" ")
                 elif line.startswith("data:"):
                     data = True
         finally:
-            wake.set()
+            for wake in wakes:
+                wake.set()
 
     async def _drain(self, token, scope, notices_changed):
         after = 0

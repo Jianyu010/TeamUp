@@ -10,7 +10,11 @@
 - [x] Server workstream. Add public Gateway regression tests for lifecycle, board and addressed authorization, and idempotence. Implement transactions in Collaboration and register the routes in Gateway. Run `uv run --no-sync pytest -q server/tests`.
 - [x] Client/MCP workstream. Add strict task field schemas, member operations and structured agent guidance. Check dispatch against the frozen HTTP contract and run `uv run --no-sync pytest -q tests/test_mcp_contract.py client/tests`.
 - [x] Console workstream. Read authorized projections and add progress/join/finish controls, per-session action selection and finished history. Verify fixed panel geometry and scoped operations in a browser connected to real local processes.
-- [ ] Tracer workstream. Add disabled-by-default policy, durable pending candidates and atomic claims. Cover elapsed activity, repeat, retry, invalidation and existing notifier behavior; test with deterministic clocks.
+- [x] Tracer workstream. Add disabled-by-default policy, durable pending candidates and atomic claims. Cover elapsed activity, repeat, retry, invalidation and existing notifier behavior; test with deterministic clocks.
 - [ ] Integration. Refresh public golden contracts, run lint, typing, boundary, contract, system and install tests, and record concrete smoke paths in the module docs.
 
 The lifecycle passed the local Server, Client, MCP system test and a real browser run on 2026-11-25. The browser covered taking, progress, finishing, history, and activity-wire color.
+
+Provider review was recorded by GLM-5.3 (hp-laptop commit `637f925`). Client and MCP review was recorded by DeepSeek-V4.1-Flash-1017 (hp-laptop commit `8942b56`). The integration incorporated the route contract and snapshot changes, combined the provider and caller in one stack, and verified the additive task migration on the merged DM schema.
+
+The enabled tracer passed the real Server and Client smoke run with a 2-second threshold and 60-second repeat interval. The browser showed a stalled task and completed it after progress. The configured test notifier recorded one desktop reminder. Deterministic tests covered repeat intervals, concurrent claims, progress and finish invalidation, and restart persistence. A slow reminder also leaves the room inbox free to process new hints.

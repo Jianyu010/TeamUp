@@ -392,6 +392,29 @@ def _migrate_dm_schema(connection: sqlite3.Connection) -> None:
     connection.execute(_PENDING_INBOX_INDEX)
 
 
+def _migrate_room_tasks(connection: sqlite3.Connection) -> None:
+    """Install the task feature schema without taking a shared migration number."""
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS room_task_schema (
+            singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+            version INTEGER NOT NULL CHECK (version > 0)
+        )
+        """
+    )
+    row = connection.execute(
+        "SELECT version FROM room_task_schema WHERE singleton = 1"
+    ).fetchone()
+    if row is None:
+        for statement in _TASK_SCHEMA:
+            connection.execute(statement)
+        connection.execute(
+            "INSERT INTO room_task_schema (singleton, version) VALUES (1, 1)"
+        )
+    elif row["version"] != 1:
+        raise ValueError("Unsupported room task schema version")
+
+
 def _seed_id_counters(connection: sqlite3.Connection) -> None:
     connection.execute(
         """
@@ -961,8 +984,7 @@ class Collaboration:
                 connection.execute("PRAGMA user_version = 4")
             elif version != 4:
                 raise ValueError("Unsupported TeamUp database schema version")
-            for statement in _TASK_SCHEMA:
-                connection.execute(statement)
+            _migrate_room_tasks(connection)
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self._db_path, isolation_level=None)

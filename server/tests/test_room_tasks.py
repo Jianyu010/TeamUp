@@ -297,7 +297,9 @@ def test_retries_are_member_scoped_and_survive_finish(tmp_path):
         )
 
         finished = post(client, "sender", f"{path}/finish").json()
-        retried_progress = post(client, "target", f"{path}/progress", json=progress_body)
+        retried_progress = post(
+            client, "target", f"{path}/progress", json=progress_body
+        )
         assert retried_progress.status_code == 200, retried_progress.text
         assert retried_progress.json() == finished
         assert create(client, "sender", room_path, key="shared").json() == finished
@@ -349,21 +351,33 @@ def test_tasks_survive_restart_on_an_existing_database(tmp_path):
 
     with closing(sqlite3.connect(db_path)) as connection:
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert (
+            connection.execute(
+                "SELECT version FROM room_task_schema WHERE singleton = 1"
+            ).fetchone()[0]
+            == 1
+        )
         tables = {
             row[0]
             for row in connection.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             )
         }
-        assert {"tasks", "task_addressees", "task_participants", "task_events"} <= tables
+        assert {
+            "tasks",
+            "task_addressees",
+            "task_participants",
+            "task_events",
+        } <= tables
 
     with live_server(db_path) as client:
         assert get(client, "target", path).json() == updated.json()
         assert get(client, "target", f"{path}/events").json() == events
-        assert create(client, "sender", room_path, key="durable").json() == updated.json()
         assert (
-            len(get(client, "target", f"{path}/events").json()["events"])
-            == len(events["events"])
+            create(client, "sender", room_path, key="durable").json() == updated.json()
+        )
+        assert len(get(client, "target", f"{path}/events").json()["events"]) == len(
+            events["events"]
         )
         second = create(client, "sender", room_path, key="task-2")
         assert second.status_code == 200, second.text

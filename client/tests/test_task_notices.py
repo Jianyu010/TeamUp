@@ -1,5 +1,7 @@
 import asyncio
+from types import SimpleNamespace
 
+from teamup_client._coordinator import Coordinator
 from teamup_client._task_notices import drain_task_reminders
 from teamup_client.ipc import ClientError
 
@@ -50,5 +52,61 @@ def test_notifier_uses_only_a_successful_claim_and_ignores_legacy_server():
 
         assert await drain_task_reminders(missing, "member", show) is False
         assert len(shown) == 1
+
+    asyncio.run(scenario())
+
+
+def test_slow_reminder_does_not_block_the_room_inbox_stream():
+    async def scenario():
+        displayed = asyncio.Event()
+        another_drain = asyncio.Event()
+        hold = asyncio.Event()
+        count = 0
+        reminder = {
+            "reminder_id": 1,
+            "room_id": ROOM,
+            "task_id": TASK,
+            "title": "Check fixtures",
+        }
+
+        async def request(method, path, token, **kwargs):
+            return {"reminders": [reminder]} if method == "GET" else reminder
+
+        async def show(*args):
+            displayed.set()
+            await hold.wait()
+
+        async def drain(*args):
+            nonlocal count
+            count += 1
+            if count == 2:
+                another_drain.set()
+
+        async def lines():
+            await displayed.wait()
+            yield "event: inbox_changed"
+            yield "data: {}"
+            yield ""
+            await hold.wait()
+
+        session = SimpleNamespace(
+            scope="test",
+            inbox_changed=asyncio.Event(),
+            notices_changed=asyncio.Event(),
+            harness_changed=asyncio.Event(),
+        )
+        binding = SimpleNamespace(member_token="member")
+        coordinator = Coordinator.__new__(Coordinator)
+        coordinator._upstream = SimpleNamespace(request=request)
+        coordinator._notifier = SimpleNamespace(show=show)
+        coordinator._drain = drain
+        reader = asyncio.create_task(
+            coordinator._drain_with_hints(binding, session, lines())
+        )
+        try:
+            await asyncio.wait_for(another_drain.wait(), 1)
+        finally:
+            reader.cancel()
+            await asyncio.gather(reader, return_exceptions=True)
 
     asyncio.run(scenario())

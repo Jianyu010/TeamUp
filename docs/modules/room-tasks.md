@@ -1,6 +1,6 @@
 # Room tasks v1
 
-Contract for [#33](https://github.com/Jianyu010/TeamUp/issues/33) and [#30](https://github.com/Jianyu010/TeamUp/issues/30). Collaboration owns the tasks, participation and durable events. Gateway provides HTTP. Client and MCP carry the same operations for an approved session. The local console aggregates authorized reads for its owner and uses an explicitly selected session for mutations. Jianyu010, the verified repository administrator and assignee for both issues, approved proceeding with the task workflow on 2026-11-25. Provider coordination checked the Gateway authorization and Collaboration transaction boundaries. The hp-laptop Client/MCP review confirmed direct member-scoped pass-through and identified the browser write and legacy-response requirements incorporated below.
+Contract for [#33](https://github.com/Jianyu010/TeamUp/issues/33) and [#30](https://github.com/Jianyu010/TeamUp/issues/30). Collaboration owns the tasks, participation and durable events. Gateway provides HTTP. Client and MCP carry the same operations for an approved session. The local console aggregates authorized reads for its owner and uses an explicitly selected session for mutations. Jianyu010, the verified repository administrator and assignee for both issues, approved proceeding with the task workflow on 2026-11-25. Provider coordination checked the Gateway authorization and Collaboration transaction boundaries. The hp-laptop provider and Client/MCP reviews confirmed member-scoped task transactions and pass-through. The integration includes their route inventory, mixed-provider contract, schema coexistence and browser write findings.
 
 ## Member operations
 
@@ -18,9 +18,11 @@ All paths below use the established member Bearer token. `{room_id}` and `{task_
 
 Task fields are `task_id`, `task_number`, `room_id`, `creator_member_id`, `title`, `description`, `addressed_member_ids`, `participant_member_ids`, `status` (`open` or `finished`), `version`, `created_at`, `updated_at`, `started_at`, `last_progress_at`, `finished_at`, and `stalled_since`. Optional description and unset timestamps are null. IDs in the two sets are sorted. `task_number`, `version` and event IDs are positive integers. Timestamps are Server-recorded RFC 3339 UTC. The initial version is 1 and each committed mutation increments it once.
 
+Task numbers are room-scoped. Finished tasks and events remain durable, so their numbers and cursor positions remain stable. Room tasks use a separately versioned additive schema inside Collaboration's database. The shared migration version continues to track the room, chat and DM tables.
+
 TaskEvent fields are `event_id`, `task_id`, `actor_member_id`, `kind` (`created`, `joined`, `progress`, `finished`), `created_at`, and `note` (null except on progress). Task and event pages use ascending durable numbers with exclusive `after` (default 0) and `limit` (default 50, max 100). Filters are evaluated with current permissions on each page. `next_after` is the last returned number when another eligible row exists.
 
-Titles follow the existing 200-character name limit. Description and progress note follow the existing 8,000-character text limit. Retry keys follow the 128-character message key limit. Omitting description is equivalent to null. Omitting addressed IDs is equivalent to an empty set. Cursors apply to the same room, active status filter and authorization scope that produced them. The addressed set is limited to 100 unique current room members. JSON rejects undeclared fields. Blank text is invalid.
+Titles follow the existing 200-character name limit. Description and progress note follow the existing 8,000-character text limit. Retry keys follow the 128-character message key limit. Omitting description is equivalent to null. Omitting addressed IDs is equivalent to an empty set. Cursors apply to the same room, active status filter and authorization scope that produced them. The addressed set is limited to 100 unique current room members and may include the creator. JSON rejects undeclared fields. Blank text is invalid.
 
 ## Permission and transaction rules
 
