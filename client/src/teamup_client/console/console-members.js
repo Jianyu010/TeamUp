@@ -1,7 +1,7 @@
 const get = (id) => document.getElementById(id);
 const labels = {online: "Online", offline: "Offline", unknown: "Unknown"};
 const heartbeatLifetime = 45_000;
-let expiryTimer;
+const expiryTimers = new WeakMap();
 
 function element(tag, text, css) {
   const item = document.createElement(tag);
@@ -35,19 +35,25 @@ function presenceBadge(observation, requestedAt) {
   return badge;
 }
 
-function scheduleExpiry() {
-  clearTimeout(expiryTimer);
+function scheduleExpiry(list, onExpiry) {
+  clearTimeout(expiryTimers.get(list));
+  expiryTimers.delete(list);
   const now = performance.now();
   let next = Infinity;
-  for (const badge of document.querySelectorAll(".presence[data-deadline]")) {
+  let expired = false;
+  for (const badge of list.querySelectorAll(".presence[data-deadline]")) {
     const deadline = Number(badge.dataset.deadline);
     if (deadline <= now) {
       delete badge.dataset.deadline;
       badge.removeAttribute("title");
       setPresence(badge, "unknown");
+      expired = true;
     } else next = Math.min(next, deadline);
   }
-  if (Number.isFinite(next)) expiryTimer = setTimeout(scheduleExpiry, Math.ceil(next - now));
+  if (Number.isFinite(next)) {
+    expiryTimers.set(list, setTimeout(() => scheduleExpiry(list, onExpiry), Math.ceil(next - now)));
+  }
+  if (expired) onExpiry?.();
 }
 
 function memberNames(members) {
@@ -68,14 +74,15 @@ function memberNames(members) {
 }
 
 export function renderTeam(result, requestedAt) {
+  const list = get("team-list");
   const members = result.members || [];
   const names = memberNames(members);
-  get("team-list").replaceChildren(...members.map((member, index) => {
+  list.replaceChildren(...members.map((member, index) => {
     const row = element("li");
     row.append(names[index], presenceBadge(member.presence, requestedAt));
     return row;
   }));
-  scheduleExpiry();
+  scheduleExpiry(list);
 }
 
 export function roomMembers({read, subject, chat, policyChanged}) {
@@ -86,6 +93,8 @@ export function roomMembers({read, subject, chat, policyChanged}) {
   let selected = null;
   let pinned = false;
   let dismissTimer;
+  let rows = [];
+  const recentCommunication = new Map();
 
   function close() {
     clearTimeout(dismissTimer);
@@ -115,8 +124,7 @@ export function roomMembers({read, subject, chat, policyChanged}) {
     const member = page?.members?.find((item) => item.id === selected.dataset.member);
     if (!member) return close();
     const transcript = chat();
-    const recent = transcript?.messages?.findLast((item) =>
-      item.sender_member_id === member.id || item.recipient_member_ids?.includes(member.id));
+    const recent = recentCommunication.get(member.id)?.message;
     const receipt = member.acknowledged === page.current
       ? "Acknowledged version " + page.current : "Awaiting acknowledgment of version " + page.current;
     const content = [element("h3", selected.querySelector(".member-name").textContent), element("p", receipt), element("h4", "Recent communication")];
@@ -165,11 +173,41 @@ export function roomMembers({read, subject, chat, policyChanged}) {
     }
   }
 
+  function reorder() {
+    recentCommunication.clear();
+    const transcript = chat();
+    if (transcript?.state === "ready") {
+      for (const [index, message] of transcript.messages.entries()) {
+        const activity = {message, index};
+        recentCommunication.set(message.sender_member_id, activity);
+        for (const id of message.recipient_member_ids ?? []) recentCommunication.set(id, activity);
+      }
+    }
+
+    const ordered = rows.map(({button, badge}) => ({
+      button,
+      online: Number(badge.dataset.presence === "online"),
+      activity: recentCommunication.get(button.dataset.member)?.index ?? -1,
+    }));
+    ordered.sort((a, b) => b.online - a.online || b.activity - a.activity);
+    const focused = document.activeElement;
+    for (const [index, {button}] of ordered.entries()) {
+      if (rail.children[index] !== button) rail.insertBefore(button, rail.children[index] || null);
+    }
+    if (focused && document.activeElement !== focused && rail.contains(focused)) {
+      focused.focus({preventScroll: true});
+    }
+    details();
+  }
+
   function reset() {
     close();
     page = null;
     request = null;
+    rows = [];
+    recentCommunication.clear();
     rail.replaceChildren();
+    scheduleExpiry(rail);
     get("roster-title").textContent = "Members";
     get("roster-status").textContent = "";
     policyChanged();
@@ -184,19 +222,20 @@ export function roomMembers({read, subject, chat, policyChanged}) {
     const existing = new Map(Array.from(rail.children, (button) => [button.dataset.member, button]));
     const members = result.members || [];
     const names = memberNames(members);
-    for (const [index, member] of members.entries()) {
+    rows = members.map((member, index) => {
       const button = existing.get(member.id) || element("button");
       existing.delete(member.id);
       button.type = "button";
       button.dataset.member = member.id;
       button.setAttribute("aria-controls", panel.id);
       button.setAttribute("aria-expanded", String(selected === button));
-      button.replaceChildren(names[index], presenceBadge(member.presence, started));
-      if (rail.children[index] !== button) rail.insertBefore(button, rail.children[index] || null);
-    }
+      const badge = presenceBadge(member.presence, started);
+      button.replaceChildren(names[index], badge);
+      return {button, badge};
+    });
     for (const button of existing.values()) button.remove();
-    details();
-    scheduleExpiry();
+    reorder();
+    scheduleExpiry(rail, reorder);
     policyChanged();
   }
 
@@ -250,5 +289,5 @@ export function roomMembers({read, subject, chat, policyChanged}) {
   });
   rail.addEventListener("scroll", position, {passive: true});
   window.addEventListener("resize", position);
-  return {refresh, reset, details, historyPolicy: () => page?.history_policy};
+  return {refresh, reset, chatChanged: reorder, historyPolicy: () => page?.history_policy};
 }

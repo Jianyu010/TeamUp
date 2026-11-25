@@ -36,6 +36,8 @@ A message's existing `mentioned` field gives the display name for its first Serv
 
 Room Members and Team both project Presence through their own read session. Each member entry has a `presence` object with `state`, `observed_at`, and `age_ms`. A response can include `presence_as_of` for the Server snapshot timestamp. The Client displays observation age and expires Online using the Server's monotonic `age_ms` plus the elapsed time since sending the request. A missing observation, out-of-scope presence, or unavailable provider is shown as Unknown. Both views use green for Online, orange for Unknown, and red for Offline. They qualify duplicate role labels with the member identifier. Room membership, transcript access, and task authorization follow their respective owner APIs.
 
+The room Members rail lists Online members first. Within the Online group and among the remaining members, the latest sent or addressed message in the loaded, authorized room transcript determines order, newest first. The rail uses the Server's message order, keeps roster order for ties, and places members without visible communication last in their group. It reorders when the transcript changes, presence refreshes, or an Online badge expires.
+
 ## Build versions
 
 The main window shows **Client** and **Server** at the bottom left. Client identifies the running `teamup-client` process. Server identifies the build reported by the Server configured for that Client. The window refreshes both values when it opens and every five seconds after each read completes, including with no registered sessions.
