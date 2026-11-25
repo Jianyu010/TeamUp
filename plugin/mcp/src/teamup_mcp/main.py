@@ -172,19 +172,11 @@ TOOLS = [
 ]
 
 
-def claude_code_session(environ=os.environ) -> dict | None:
-    """Claude Code gives the MCP servers it launches its own session's inbox."""
+def claude_code_session(environ=os.environ) -> dict[str, str] | None:
     session_id = environ.get("CLAUDE_CODE_SESSION_ID")
-    address = environ.get("CLAUDE_CODE_MESSAGING_SOCKET")
-    token = environ.get("CLAUDE_CODE_MESSAGING_TOKEN")
-    if session_id and address and token:
-        return {
-            "id": session_id,
-            "kind": "claude-code",
-            "address": address,
-            "token": token,
-        }
-    return None
+    if not session_id:
+        return None
+    return {"id": session_id, "kind": "claude-code"}
 
 
 def codex_session(meta: Any) -> dict | None:
@@ -196,14 +188,19 @@ def codex_session(meta: Any) -> dict | None:
     return None
 
 
-async def hold_attachment(socket_path: str, binding_key: str, live: dict) -> None:
+async def hold_attachment(
+    socket_path: str,
+    binding_key: str,
+    session: dict[str, str],
+    address: str,
+    token: str,
+) -> None:
     """Keep this session reachable by the Client; reattach after Client restarts."""
-    session = {"id": live["id"], "kind": live["kind"]}
     delay = 0.5
     while True:
         try:
             async with attach(
-                socket_path, binding_key, session, live["address"], live["token"]
+                socket_path, binding_key, session, address, token
             ) as closed:
                 delay = 0.5
                 await closed.wait()
@@ -230,7 +227,13 @@ async def unread_hint(
     return f"TeamUp: {count} unread {noun}. Call teamup_notifications to read them."
 
 
-def create_mcp(socket_path: str, binding_key: str, live: dict | None = None) -> Server:
+def create_mcp(
+    socket_path: str,
+    binding_key: str,
+    claude: dict[str, str] | None = None,
+    *,
+    require_claude_session: bool = False,
+) -> Server:
     server = Server(
         "TeamUp",
         instructions=(
@@ -239,7 +242,8 @@ def create_mcp(socket_path: str, binding_key: str, live: dict | None = None) -> 
             "approved private handoff. "
             "Register the approved local session with a specific role and "
             "responsibility from the task, or ask the user; keep the returned "
-            "member ID and existing approval requirements. Short examples: "
+            "member ID and existing approval requirements. Role descriptions can repeat. "
+            "Confirm the intended member ID if role search finds multiple matches. Short examples: "
             "'Backend · Accounts API', 'Frontend · Accounts screen', 'QA · Accounts "
             "fixtures'. Avoid bare titles like 'Developer' and do not invent a "
             "teammate's role. Before creating a room, write rules and protocol for "
@@ -280,11 +284,13 @@ def create_mcp(socket_path: str, binding_key: str, live: dict | None = None) -> 
         try:
             if name not in methods:
                 raise ClientError("invalid_request", "Unknown TeamUp tool")
-            session = (
-                {"id": live["id"], "kind": live["kind"]}
-                if live
-                else codex_session(server.request_context.meta)
-            )
+            if require_claude_session and claude is None:
+                raise ClientError(
+                    "invalid_request",
+                    "Claude Code did not provide a session ID. Reconnect TeamUp from a "
+                    "local Claude Code version that provides CLAUDE_CODE_SESSION_ID.",
+                )
+            session = claude or codex_session(server.request_context.meta)
             result = await call(
                 socket_path, binding_key, methods[name], arguments, session=session
             )
@@ -306,11 +312,20 @@ def create_mcp(socket_path: str, binding_key: str, live: dict | None = None) -> 
 
 
 async def serve(socket_path: str, binding_key: str) -> None:
-    live = claude_code_session()
-    server = create_mcp(socket_path, binding_key, live)
+    claude = claude_code_session()
+    address = os.getenv("CLAUDE_CODE_MESSAGING_SOCKET")
+    token = os.getenv("CLAUDE_CODE_MESSAGING_TOKEN")
+    server = create_mcp(
+        socket_path,
+        binding_key,
+        claude,
+        require_claude_session=bool(os.getenv("CLAUDECODE") or address or token),
+    )
     holder = (
-        asyncio.create_task(hold_attachment(socket_path, binding_key, live))
-        if live
+        asyncio.create_task(
+            hold_attachment(socket_path, binding_key, claude, address, token)
+        )
+        if claude and address and token
         else None
     )
     try:

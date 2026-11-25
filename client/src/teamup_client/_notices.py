@@ -244,7 +244,14 @@ class NoticeStore:
             "WHERE harness_instance_id = ? AND session_key = ?",
             (harness_instance_id, session_key),
         ).fetchone()
-        return row and {"member_token": row[0], "state": row[1]}
+        if row is None:
+            return None
+        return {
+            "harness_instance_id": harness_instance_id,
+            "session_key": session_key,
+            "member_token": row[0],
+            "state": row[1],
+        }
 
     def add_session(self, harness_instance_id, session_key, member_token, state):
         with self._db:

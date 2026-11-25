@@ -378,6 +378,28 @@ def test_init_binding_and_reject_untrusted_config():
     asyncio.run(scenario())
 
 
+def test_init_install_generates_one_install_secret():
+    async def scenario():
+        keys = set()
+        for _ in range(2):
+            process = await cli("init-install", "claude-code-local")
+            stdout, stderr = await process.communicate()
+            assert process.returncode == 0, stderr.decode()
+            install = json.loads(stdout)
+            assert set(install) == {"harness_instance_id", "binding_key"}
+            assert install["harness_instance_id"] == "claude-code-local"
+            assert re.fullmatch("[A-Za-z0-9_-]{43}", install["binding_key"])
+            keys.add(install["binding_key"])
+        assert len(keys) == 2
+
+        for invalid in (" ", "x" * 129):
+            process = await cli("init-install", invalid)
+            stdout, stderr = await process.communicate()
+            assert process.returncode != 0 and stdout == b"" and stderr
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("legacy", [False, True])
 def test_login_atomically_saves_a_private_account_token(legacy, monkeypatch, capsys):
     from teamup_client.main import main

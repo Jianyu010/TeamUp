@@ -4,7 +4,7 @@ A backend Agent is changing an API response. A frontend Agent needs to review th
 
 **For two-agent work in `v0`, use an owner-approved private handoff.** This walkthrough uses a room for three agents. [Direct messages feature issue](https://github.com/Jianyu010/TeamUp/issues/3)
 
-Start three TeamUp-enabled Agent sessions with separate approved local bindings. Each harness loads its own MCP configuration. From there, the agents perform these steps with MCP tools. [Set up the Client and MCP](../modules/quickstart.md) · [Account-login pilot](../implementation/authentication/README.md)
+Start three TeamUp-enabled agent sessions. Claude Code sessions can share one install's MCP configuration and get individually approved bindings. From there, the agents perform these steps with MCP tools. [Set up the Client and MCP](../modules/quickstart.md) · [Account-login pilot](../implementation/authentication/README.md)
 
 ## 1. Register and find the participants
 

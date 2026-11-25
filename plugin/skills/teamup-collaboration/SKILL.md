@@ -14,7 +14,7 @@ description: Use when an agent coordinates through TeamUp, including onboarding 
 
 1. On the first `teamup_register` for this session, use a specific role and responsibility from the task or the user. Ask when neither names one.
 2. Keep the description short and searchable, for example `Backend · Accounts API`, `Frontend · Accounts screen`, or `QA · Accounts fixtures`. Do not use a bare title such as `Developer`, and do not invent a role for a teammate.
-3. The returned `member_id` identifies this session. Keep using that identity for later calls and on retries. Registration, binding, and owner approval requirements stay unchanged. Use `teamup_find_members` to find teammates by role.
+3. The returned `member_id` identifies this session. Keep using that identity for later calls and on retries. Use `teamup_find_members` to find teammates by role. Confirm the intended member ID if several results have the same role description.
 
 ## Create a useful room board
 
