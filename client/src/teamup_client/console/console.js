@@ -1,3 +1,4 @@
+import {readTranscript, sameBoard} from "/console-history.mjs";
 import {roomMembers, renderTeam} from "/console-members.js";
 import {taskPanel} from "/console-tasks.js";
 
@@ -354,54 +355,6 @@ function renderChat(options = {}) {
   if (options.prepend) page.scrollTop = prior + (page.scrollHeight - priorHeight);
   else if (options.reset || nearEnd) page.scrollTop = page.scrollHeight;
   else page.scrollTop = prior;
-}
-
-// Server IDs are decimal strings and can exceed Number.MAX_SAFE_INTEGER.
-function compareIds(left, right) {
-  return left.length - right.length || left.localeCompare(right);
-}
-
-function sameBoard(left, right) {
-  return left?.current === right?.current && left?.acknowledged === right?.acknowledged;
-}
-
-async function readTranscript(previous, before, fetchPage) {
-  let truncated = previous?.history_truncated === true;
-  const latest = async () => {
-    const page = await fetchPage({});
-    if (page.state === "ready" && sameBoard(previous?.board, page.board)) {
-      page.history_truncated ||= truncated;
-    }
-    return {page, reset: true};
-  };
-  const cached = previous?.messages;
-  if (previous?.state !== "ready" || !cached.length) return latest();
-
-  // A new membership can narrow history between polls with no change in board
-  // version. A fresh prefix also preserves legacy rows that survive below an
-  // expiry watermark, which records the greatest deleted ID, not every deletion.
-  const probe = await fetchPage({after: String(BigInt(cached[0].id) - 1n)});
-  if (probe.state !== "ready") return {page: probe, reset: true};
-  if (!sameBoard(previous.board, probe.board)) return latest();
-  truncated ||= probe.history_truncated === true;
-  const last = probe.messages.at(-1)?.id;
-  const watermark = probe.expired_through_message_id;
-  const uncheckedTail = last && probe.more_recent && compareIds(last, cached.at(-1).id) < 0;
-  if (uncheckedTail && watermark && compareIds(last, watermark) < 0) return latest();
-
-  const retained = uncheckedTail
-    ? [...probe.messages, ...cached.filter((item) => compareIds(item.id, last) > 0)]
-    : probe.messages;
-  const page = await fetchPage(before ? {before} : {after: cached.at(-1).id});
-  if (page.state !== "ready") return {page, reset: true};
-  if (!sameBoard(probe.board, page.board) || page.expired_through_message_id !== watermark) return latest();
-
-  const all = new Map(retained.map((item) => [item.id, item]));
-  for (const item of page.messages) all.set(item.id, item);
-  page.messages = [...all.values()].sort((a, b) => compareIds(a.id, b.id));
-  if (!before) page.older = previous.older;
-  page.history_truncated ||= truncated;
-  return {page, reset: false};
 }
 
 async function refreshRoom(before) {

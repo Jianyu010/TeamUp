@@ -9,6 +9,7 @@ const assets = new Map([
   ["/", ["index.html", "text/html; charset=utf-8"]],
   ["/console.css", ["console.css", "text/css; charset=utf-8"]],
   ["/console.js", ["console.js", "text/javascript; charset=utf-8"]],
+  ["/console-history.mjs", ["console-history.mjs", "text/javascript; charset=utf-8"]],
   ["/console-members.js", ["console-members.js", "text/javascript; charset=utf-8"]],
   ["/console-tasks.js", ["console-tasks.js", "text/javascript; charset=utf-8"]],
   ["/jet-pair.png", ["jet-pair.png", "image/png"]],

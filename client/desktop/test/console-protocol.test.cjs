@@ -19,9 +19,11 @@ test("serves the bundled console without a running Client", async () => {
   assert.equal(response.status, 200);
   assert.match(await response.text(), /<title>TeamUp/);
   assert.match(response.headers.get("Content-Security-Policy"), /connect-src 'self'/);
-  const members = await handle(new Request(origin + "/console-members.js"));
-  assert.equal(members.status, 200);
-  assert.equal(members.headers.get("Content-Type"), "text/javascript; charset=utf-8");
+  for (const asset of ["/console-members.js", "/console-history.mjs"]) {
+    const script = await handle(new Request(origin + asset));
+    assert.equal(script.status, 200);
+    assert.equal(script.headers.get("Content-Type"), "text/javascript; charset=utf-8");
+  }
   assert.equal((await handle(consoleRequest("/launch.py"))).status, 404);
   assert.equal((await handle(new Request("teamup://elsewhere/"))).status, 404);
 });

@@ -547,11 +547,12 @@ def test_loopback_listener_requires_its_credential_and_serves_bundled_assets():
                 assert "TeamUp" in home.text
                 assert token not in home.text
                 assert (await client.get(origin + "console.js")).status_code == 200
-                members = await client.get(origin + "console-members.js")
-                assert members.status_code == 200
-                assert (
-                    members.headers["content-type"] == "text/javascript; charset=utf-8"
-                )
+                for asset in ("console-members.js", "console-history.mjs"):
+                    script = await client.get(origin + asset)
+                    assert script.status_code == 200
+                    assert (
+                        script.headers["content-type"] == "text/javascript; charset=utf-8"
+                    )
                 logo = await client.get(origin + "jet-pair.png")
                 assert logo.headers["content-type"] == "image/png"
                 assert logo.content.startswith(b"\x89PNG\r\n\x1a\n")
