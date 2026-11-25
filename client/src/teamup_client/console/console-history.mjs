@@ -70,7 +70,7 @@ export async function readTranscript(previous, before, fetchPage) {
   return {page, reset: false};
 }
 
-export function messageRow(node, message, expanded = false) {
+export function messageRow(node, message, {expanded = false, dismissHover = false, dismissFocus = false} = {}) {
   const date = message.created_at ? new Date(message.created_at) : null;
   const knownTime = date && !Number.isNaN(date.getTime());
   const time = node("time", knownTime
@@ -96,6 +96,16 @@ export function messageRow(node, message, expanded = false) {
     summary.setAttribute("aria-controls", list.id);
     more.append(summary);
     const disclosure = node("div", undefined, "mention-disclosure");
+    if (dismissHover) disclosure.dataset.dismissHover = "";
+    if (dismissFocus) disclosure.dataset.dismissFocus = "";
+    // Closing the native disclosure also ends the current passive previews.
+    summary.addEventListener("click", () => {
+      if (!more.open) return;
+      if (disclosure.matches(":hover")) disclosure.dataset.dismissHover = "";
+      if (disclosure.matches(":focus-within")) disclosure.dataset.dismissFocus = "";
+    });
+    disclosure.addEventListener("pointerleave", () => delete disclosure.dataset.dismissHover);
+    summary.addEventListener("blur", () => delete disclosure.dataset.dismissFocus);
     disclosure.append(more, list);
     routing.append(disclosure);
   }

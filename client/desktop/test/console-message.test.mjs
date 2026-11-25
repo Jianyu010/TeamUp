@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {messageRow} from "../../src/teamup_client/console/console-history.mjs";
 
-function render(message, expanded = false) {
+function render(message, disclosureState) {
   function node(tag, textContent, className) {
     return {
       tag,
@@ -12,6 +12,7 @@ function render(message, expanded = false) {
       dataset: {},
       append(...items) { this.children.push(...items); },
       setAttribute(name, value) { this[name] = value; },
+      addEventListener() {},
     };
   }
   return messageRow(node, {
@@ -19,7 +20,7 @@ function render(message, expanded = false) {
     sender: "Release Coordinator",
     created_at: "2026-11-26T04:50:00Z",
     ...message,
-  }, expanded);
+  }, disclosureState);
 }
 
 test("room message separates ordered routing, title, and original body", () => {
@@ -42,7 +43,7 @@ test("recipient overflow exposes the complete list in order", () => {
   const row = render({
     mentioned_recipients: ["Reviewer One", "Reviewer Two", "Reviewer Three"],
     text: "Body",
-  }, true);
+  }, {expanded: true});
   const [routing] = row.children[1].children;
   const [label, disclosure] = routing.children;
   const [details, recipients] = disclosure.children;
@@ -76,4 +77,14 @@ test("a leading hash reference without the heading separator stays in the body",
   assert.equal(routing.children[0].textContent, "Release Coordinator → Single Reviewer");
   assert.equal(title.textContent, "#9007199254740993");
   assert.equal(body.textContent, text);
+});
+
+test("a closed recipient disclosure restores recent hover and focus dismissals", () => {
+  const row = render({
+    mentioned_recipients: ["Reviewer One", "Reviewer Two", "Reviewer Three"],
+    text: "Body",
+  }, {dismissHover: true, dismissFocus: true});
+  const disclosure = row.children[1].children[0].children[1];
+  assert.equal(disclosure.children[0].open, false);
+  assert.deepEqual(disclosure.dataset, {dismissHover: "", dismissFocus: ""});
 });

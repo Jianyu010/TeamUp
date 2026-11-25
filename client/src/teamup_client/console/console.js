@@ -438,8 +438,15 @@ function renderChat(options = {}) {
   members.chatChanged();
   const list = get("messages");
   const focused = document.activeElement?.closest(".mention-overflow")?.dataset.id;
-  const expanded = new Set(Array.from(list.querySelectorAll("details[open]"), (item) => item.dataset.id));
-  const rows = (chat?.messages || []).map((message) => messageRow(node, message, expanded.has(message.id)));
+  const disclosureStates = new Map(Array.from(list.querySelectorAll(".mention-disclosure"), (wrapper) => {
+    const details = wrapper.firstElementChild;
+    return [details.dataset.id, {
+      expanded: details.open,
+      dismissHover: wrapper.matches("[data-dismiss-hover]:hover"),
+      dismissFocus: wrapper.matches("[data-dismiss-focus]:focus-within"),
+    }];
+  }));
+  const rows = (chat?.messages || []).map((message) => messageRow(node, message, disclosureStates.get(message.id)));
   list.replaceChildren(...rows);
   if (focused) {
     const details = Array.from(list.querySelectorAll(".mention-overflow")).find((item) => item.dataset.id === focused);
