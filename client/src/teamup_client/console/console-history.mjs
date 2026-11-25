@@ -70,7 +70,6 @@ export async function readTranscript(previous, before, fetchPage) {
   return {page, reset: false};
 }
 
-
 export function messageRow(node, message, expanded = false) {
   const date = message.created_at ? new Date(message.created_at) : null;
   const knownTime = date && !Number.isNaN(date.getTime());
@@ -90,12 +89,15 @@ export function messageRow(node, message, expanded = false) {
     more.dataset.id = message.id;
     more.open = expanded;
     const summary = node("summary", "…");
-    const list = node("span", recipients.join(", "), "mention-recipients");
+    const allRecipients = recipients.join(", ");
+    const list = node("span", allRecipients, "mention-recipients");
     list.id = "message-recipients-" + message.id;
-    summary.setAttribute("aria-label", "All recipients");
-    summary.setAttribute("aria-describedby", list.id);
-    more.append(summary, list);
-    routing.append(more);
+    summary.setAttribute("aria-label", "All recipients — " + allRecipients);
+    summary.setAttribute("aria-controls", list.id);
+    more.append(summary);
+    const disclosure = node("div", undefined, "mention-disclosure");
+    disclosure.append(more, list);
+    routing.append(disclosure);
   }
 
   const heading = /^#[\t ]+([^\r\n]+)\r?\n[\t ]*\r?\n/.exec(message.text);

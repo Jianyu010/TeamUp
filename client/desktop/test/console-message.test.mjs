@@ -44,15 +44,18 @@ test("recipient overflow exposes the complete list in order", () => {
     text: "Body",
   }, true);
   const [routing] = row.children[1].children;
-  const [label, details] = routing.children;
+  const [label, disclosure] = routing.children;
+  const [details, recipients] = disclosure.children;
   assert.equal(label.textContent, "Release Coordinator → Reviewer One, Reviewer Two");
   assert.equal(details.tag, "details");
   assert.equal(details.open, true);
   assert.equal(details.dataset.id, "9007199254740993");
-  const [summary, recipients] = details.children;
+  const [summary] = details.children;
+  assert.equal(details.children.length, 1);
   assert.equal(summary.tag, "summary");
   assert.equal(summary.textContent, "…");
-  assert.equal(summary["aria-describedby"], recipients.id);
+  assert.equal(summary["aria-controls"], recipients.id);
+  assert.equal(summary["aria-label"], "All recipients — Reviewer One, Reviewer Two, Reviewer Three");
   assert.equal(recipients.textContent, "Reviewer One, Reviewer Two, Reviewer Three");
 });
 
