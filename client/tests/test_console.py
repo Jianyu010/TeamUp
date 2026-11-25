@@ -1,6 +1,7 @@
 import asyncio
 
 import httpx
+from teamup_client import _console_data
 from teamup_client._console import serve_console
 from teamup_client._console_data import ConsoleReader, ConsoleSession
 from teamup_client.ipc import ClientError
@@ -212,5 +213,26 @@ def test_task_actions_require_same_origin_and_keep_session_scope():
                     }
                 ]
                 assert "-secret" not in page.text
+
+    asyncio.run(scenario())
+
+
+def test_slow_task_observation_keeps_the_workspace_available(monkeypatch):
+    monkeypatch.setattr(_console_data, "TASK_OBSERVATION_SECONDS", 0.02)
+
+    async def scenario():
+        upstream = Upstream()
+
+        async def request(method, path, token, *, query=None):
+            if path.endswith("/tasks"):
+                await asyncio.Event().wait()
+            return await upstream(method, path, token, query=query)
+
+        result = await asyncio.wait_for(ConsoleReader(sessions, request).workspace(), 1)
+        assert [room["id"] for room in result["rooms"]] == [ROOM]
+        assert all(
+            membership["active_task"] is None
+            for membership in result["rooms"][0]["memberships"]
+        )
 
     asyncio.run(scenario())

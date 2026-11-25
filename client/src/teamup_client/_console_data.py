@@ -9,6 +9,7 @@ from .ipc import ClientError
 
 PAGE = 30
 VISIBLE_WIRE_LIMIT = 20
+TASK_OBSERVATION_SECONDS = 2
 MAX_BEFORE = 1 << 63
 
 
@@ -155,25 +156,27 @@ class ConsoleReader:
         self, session: ConsoleSession, member_id: str, room_id: str
     ) -> bool | None:
         after = 0
-        while True:
-            try:
-                page = await self._read(
-                    session,
-                    f"/rooms/{room_id}/tasks",
-                    {"status": "open", "after": after, "limit": 100},
-                )
-            except ClientError:
-                return None
-            if any(
-                member_id in task["participant_member_ids"] for task in page["tasks"]
-            ):
-                return True
-            cursor = page["next_after"]
-            if cursor is None:
-                return False
-            if cursor <= after:
-                return None
-            after = cursor
+        try:
+            async with asyncio.timeout(TASK_OBSERVATION_SECONDS):
+                while True:
+                    page = await self._read(
+                        session,
+                        f"/rooms/{room_id}/tasks",
+                        {"status": "open", "after": after, "limit": 100},
+                    )
+                    if any(
+                        member_id in task["participant_member_ids"]
+                        for task in page["tasks"]
+                    ):
+                        return True
+                    cursor = page["next_after"]
+                    if cursor is None:
+                        return False
+                    if cursor <= after:
+                        return None
+                    after = cursor
+        except (ClientError, TimeoutError):
+            return None
 
     async def team(self, identity: str) -> dict:
         session = self._current(identity)
