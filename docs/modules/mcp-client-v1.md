@@ -8,6 +8,8 @@
 
 ## 启动与绑定
 
+多会话 Claude Code 的标准设置是为一个本机安装生成一份接入秘密。运行 `teamup-client init-install <harness_instance_id>`，得到含 `binding_key` 和 `harness_instance_id` 的配置片段。将片段加入 `installs`，为该安装下的 Claude Code 会话配置同一份 MCP 启动参数。Client 按 Claude Code 会话 ID 分配成员，默认逐个请求主人批准。
+
 `teamup-client init-binding` 在 stdout 生成一个绑定配置片段，其中含两个互相独立的 43 字符 base64url 随机秘密 `binding_key`、`member_token`，以及可编辑的 `harness_instance_id`、`session_key`。开发者把稳定标识与生成的两个秘密保存进私有配置，后续重启复用。
 
 `teamup-client serve --config PATH` 启动常驻进程。配置必须为用户拥有、组和其他账号无访问权的 JSON 文件，包含：
@@ -21,13 +23,13 @@
 - 可选 `notify_command`，桌面提醒命令的 argv 字符串数组。Client 在末尾追加标题、副标题和正文三个参数后直接执行，不经 shell。省略时 macOS 用 `osascript`，Linux 在有 `notify-send` 时使用它。空数组关闭桌面提醒。
 - 可选 `codex_command`，Codex CLI 的 argv 字符串数组，供 Codex Driver 使用，见下文“唤醒”。省略时，macOS 上若存在 ChatGPT 桌面版随附的 `/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex` 则用它，否则没有 Codex Driver。Client 不在 `PATH` 中查找 `codex`，因为其他安装渠道的版本可能缺少 `queue --resume`。空数组关闭 Codex Driver。
 
-`teamup-mcp` 从环境变量 `TEAMUP_SOCKET`、`TEAMUP_BINDING_KEY` 取得本机 socket 和当前会话的绑定秘密。由拥有者为每个 harness 会话配置各自的启动方式。只获准的本机用户能连接 socket。绑定秘密按对该本机用户的授权凭证保管，私有仓库或团队共享配置也不要提交。
+`teamup-mcp` 从环境变量 `TEAMUP_SOCKET`、`TEAMUP_BINDING_KEY` 取得本机 socket 和接入秘密。主人可为同一个 Claude Code 安装的所有会话配置安装秘密，或者为明确指定的一条会话配置专用的静态绑定秘密。只获准的本机用户能连接 socket。绑定秘密按对该本机用户的授权凭证保管，私有仓库或团队共享配置也不要提交。
 
 ## MCP 协作指引
 
 MCP 初始化说明与随附的协作 skill 会引导 Agent 按参与范围选入口。两名 Agent 的协作用私聊，三名及以上 Agent 需要共享任务上下文时用房间。人数指预计参与者，建群时创建者先加入。私聊经 `teamup_open_dm`/`teamup_send_dm`/`teamup_read_dm` 完成，可重复交接：同一成员对总是同一会话，重试沿用同一 `client_message_id`。不要用房间替代私聊，也不要把私聊正文复制进日志或其他会话。与旧版本混布、当前工具目录缺少私聊工具时，提示请求者提供已授权的私下交接方式。房间消息可被其他有权访问的成员读取，`@` 只指定通知对象。缺少房间上下文时，先调用 `teamup_list_rooms` 恢复本人已创建或加入的房间，再向用户索取房间 ID；返回概要中确认版本缺失或落后时，先读取并确认当前公告。
 
-首次调用 `teamup_register` 时，使用任务或用户给出的具体角色和职责，缺少时先询问。角色描述用简短、可搜索的名称，例如 `Backend · Accounts API`、`Frontend · Accounts screen`、`QA · Accounts fixtures`；不要只用 `Developer` 这类空泛职业名，也不要替队友编造身份。返回的 `member_id` 是本会话身份，登记和后续调用复用它；已有绑定、会话批准和登记权限不变。
+首次调用 `teamup_register` 时，使用任务或用户给出的具体角色和职责，缺少时先询问。角色描述用简短、可搜索的名称，例如 `Backend · Accounts API`、`Frontend · Accounts screen`、`QA · Accounts fixtures`；不要只用 `Developer` 这类空泛职业名，也不要替队友编造身份。返回的 `member_id` 是本会话身份，登记和后续调用复用它。不同会话可以使用同一角色描述。定向 @ 和私聊使用目标的 `member_id`。
 
 创建房间前先组成对协作有用的 **Rules** 和 **Protocol**：写明房间用途、预计参与角色、进度同步、交接方式和完成条件。用户明确给出的要求要保留原文。`teamup_create_room` 仍只接受已发布字段 `name`、`rules`、`protocol`、`history_policy`，指引不得扩展该 schema。
 
@@ -92,7 +94,10 @@ MCP 插件在 `teamup_notifications` 以外的工具成功后调用 `mention_sta
 
 设计依据见 [Harness 投递设计](harness-delivery.md)。
 
-- **身份。** `binding_key` 是 `bindings` 中的会话秘密时，调用身份就是该绑定，`session` 只用于接入地址。`binding_key` 是 `installs` 中的安装秘密时，必须带 `session`，调用身份为 `(该安装的 harness_instance_id, session.id)`。`binding_key` 两者都不是时返回 `unauthorized`。
+- **身份。** MCP 从 `CLAUDE_CODE_SESSION_ID` 读取 Claude Code 会话 ID，并在每次调用时传给 Client。Claude Code 启动的 MCP 进程（`CLAUDECODE` 或消息端点环境可识别）缺少会话 ID 时，MCP 返回带接入指引的 `invalid_request`。消息 socket 和 token 仅在接入唤醒地址时需要。
+- **安装绑定。** `installs` 秘密须带 `session`，否则 Client 返回 `invalid_request`。Client 使用 `(该安装的 harness_instance_id, session.id)` 寻址。不同会话各有自己的成员凭证、加入的房间和收件箱。
+- **静态绑定。** `bindings` 秘密代表一条指定会话。Claude Code 提供的 `session.id` 须与配置的 `session_key` 一致。Client 在处理工具请求或接受 `attach` 前拒绝不匹配的调用，返回带安装绑定指引的 `unauthorized`。未提供 Claude Code 会话引用的既有静态调用沿用原解析规则。未知的绑定秘密返回 `unauthorized`。
+- **升级。** Client 与 MCP 一起升级。用共享静态 Claude 绑定的安装改用新的安装秘密，并为安装指定新的 `harness_instance_id`。旧成员及其历史继续归原身份。各会话在新安装下登记并加入所需房间。同一会话重连沿用原 `member_id`。
 - **批准。** 安装下未见过的会话首次调用 `attach` 以外的方法时，Client 为它生成成员 token 并记为待批准，返回 `session_pending`，同时发一条桌面提醒给主人。`auto_approve` 为真时直接批准。批准后的会话与静态绑定一样登记和使用，同一 `(harness_instance_id, session.id)` 始终对应同一成员。
 - **接入地址。** `attach` 仅限 `session.kind` 为 `claude-code`：`address` 为该会话的 Claude Code 消息 socket 绝对路径，`token` 为它的 `CLAUDE_CODE_MESSAGING_TOKEN`。Client 要求 socket 归当前系统用户所有，返回结果后保持连接，连接关闭即撤销该地址。同一会话后来的 `attach` 取代先前的。token 只存于内存，不写盘，不发往 Server。`session.kind` 为 `codex` 的调用让 Client 记下 `session.id` 作为 thread 地址。Codex 没有长连接，该地址保留到同一会话后来的调用取代它或 Client 重启，可否投递由 Codex Driver 在提交时确认。
 

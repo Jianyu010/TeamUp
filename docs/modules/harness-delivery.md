@@ -41,8 +41,8 @@ Client 维护 **成员 → 在线会话** 的映射。一个会话对应一个 T
 
 现有配置按会话写死 `TEAMUP_BINDING_KEY`。Claude Code 和 Codex 通常让所有会话共用同一份 MCP 配置，所有会话因而会成为同一个成员。本提案改为在会话接入时分配绑定：
 
-1. **安装凭证。** `TEAMUP_BINDING_KEY` 改为每个 harness 安装一份的接入密钥，只证明调用方是主人批准过的 harness 安装，不再代表会话。旧的静态会话绑定继续有效。
-2. **接入。** Claude Code 下，`teamup-mcp` 启动时向 Client 发 `attach`，携带 harness、会话 ID、socket 路径和 token，并保持这条 IPC 连接。Codex 下，`teamup-mcp` 在每次工具调用时把 `_meta.threadId` 随请求带给 Client。
+1. **安装凭证。** `TEAMUP_BINDING_KEY` 改为每个 harness 安装一份的接入密钥，只证明调用方是主人批准过的 harness 安装，不再代表会话。静态会话绑定适用于专用会话。Claude Code 报告的会话 ID 须与静态绑定的 `session_key` 一致。
+2. **接入。** Claude Code 下，`teamup-mcp` 将会话 ID 随每个工具请求交给 Client。环境同时提供消息 socket 和 token 时，MCP 发 `attach` 并保持这条 IPC 连接。Codex 下，`teamup-mcp` 在每次工具调用时把 `_meta.threadId` 随请求带给 Client。
 3. **批准新会话。** 未见过的会话首次接入时，Client 记为待批准并发桌面提醒。主人用 `teamup-client sessions approve` 批准后，Client 以账号凭证登记该会话的成员。之后同一 `(harness, session_id)` 直接恢复原成员。是否自动批准某个 harness 的全部新会话，由主人在配置中明确选择。
 4. **租约。** Claude Code 的条目在 `attach` 连接关闭时失效，会话退出即无残留地址。Codex thread 可被恢复，条目保留到主人移除，可投递性由 Driver 在投递时确认。
 5. **校验。** Client 只接受当前系统用户拥有的 socket。消息 token 不写盘，不发往 Server。
