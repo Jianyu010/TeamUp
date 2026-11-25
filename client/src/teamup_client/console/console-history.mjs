@@ -69,3 +69,54 @@ export async function readTranscript(previous, before, fetchPage) {
   page.history_truncated ||= truncated;
   return {page, reset: false};
 }
+
+export function messageRow(node, message, {expanded = false, dismissHover = false, dismissFocus = false} = {}) {
+  const date = message.created_at ? new Date(message.created_at) : null;
+  const knownTime = date && !Number.isNaN(date.getTime());
+  const time = node("time", knownTime
+    ? date.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}) : "—");
+  if (knownTime) {
+    time.dateTime = message.created_at;
+    time.title = date.toLocaleString();
+  }
+
+  const recipients = message.mentioned_recipients ?? (message.mentioned ? [message.mentioned] : []);
+  const labels = recipients.slice(0, 2).join(", ");
+  const routing = node("div", undefined, "message-routing");
+  routing.append(node("span", labels ? message.sender + " → " + labels : message.sender));
+  if (recipients.length > 2) {
+    const more = node("details", undefined, "mention-overflow");
+    more.dataset.id = message.id;
+    more.open = expanded;
+    const summary = node("summary", "…");
+    const allRecipients = recipients.join(", ");
+    const list = node("span", allRecipients, "mention-recipients");
+    list.id = "message-recipients-" + message.id;
+    summary.setAttribute("aria-label", "All recipients — " + allRecipients);
+    summary.setAttribute("aria-controls", list.id);
+    more.append(summary);
+    const disclosure = node("div", undefined, "mention-disclosure");
+    if (dismissHover) disclosure.dataset.dismissHover = "";
+    if (dismissFocus) disclosure.dataset.dismissFocus = "";
+    // Closing the native disclosure also ends the current passive previews.
+    summary.addEventListener("click", () => {
+      if (!more.open) return;
+      if (disclosure.matches(":hover")) disclosure.dataset.dismissHover = "";
+      if (disclosure.matches(":focus-within")) disclosure.dataset.dismissFocus = "";
+    });
+    disclosure.addEventListener("pointerleave", () => delete disclosure.dataset.dismissHover);
+    summary.addEventListener("blur", () => delete disclosure.dataset.dismissFocus);
+    disclosure.append(more, list);
+    routing.append(disclosure);
+  }
+
+  const heading = /^#[\t ]+([^\r\n]+)\r?\n[\t ]*\r?\n/.exec(message.text);
+  const hasTitle = heading && heading[1].trim() && heading[0].length < message.text.length;
+  const title = hasTitle ? heading[1].trim() : "#" + message.id;
+  const body = hasTitle ? message.text.slice(heading[0].length) : message.text;
+  const content = node("div", undefined, "message-content");
+  content.append(routing, node("strong", title, "message-title"), node("p", body));
+  const row = node("article", undefined, "message");
+  row.append(time, content);
+  return row;
+}
