@@ -102,6 +102,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json(503, {"state": "unavailable"})
         except (
             ClientError,
+            OSError,
             KeyError,
             TypeError,
             ValueError,
@@ -123,18 +124,27 @@ class Handler(BaseHTTPRequestHandler):
             if (
                 not {"session", "room"}
                 <= params.keys()
-                <= {"session", "room", "before"}
+                <= {"session", "room", "before", "after"}
             ):
                 raise ValueError
             identifier = params["room"][0]
             if not is_uuid(identifier):
                 raise ValueError
             before = None
+            after = None
+            if "after" in params:
+                after = int(params["after"][0])
+                if not 0 <= after < MAX_BEFORE:
+                    raise ValueError
             if "before" in params:
+                if after is not None:
+                    raise ValueError
                 before = int(params["before"][0])
                 if not 1 <= before <= MAX_BEFORE:
                     raise ValueError
-            return self._reader.room(params["session"][0], identifier, before)
+            return self._reader.room(
+                params["session"][0], identifier, before, after=after
+            )
         return None
 
 
@@ -154,5 +164,5 @@ async def serve_console(reader: ConsoleReader):
         yield f"http://127.0.0.1:{server.server_port}/#{token}"
     finally:
         await asyncio.to_thread(server.shutdown)
-        server.server_close()
+        await asyncio.to_thread(server.server_close)
         await asyncio.to_thread(thread.join)
