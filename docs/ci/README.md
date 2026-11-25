@@ -51,7 +51,7 @@ TeamUp 的 main 分支只接受合入门禁的自动合入。仓库 owner（`Jia
   - PR 关联了至少一个 issue（改标题或正文后门禁重新判定，删掉引用会让门禁回到 pending）；
   - 第 1 层路由没有拦截。
 - 合入者在 hp-laptop 的 `merge-01` 运行器上执行，令牌是仓库密钥 `TEAMUP_MERGE_TOKEN`。它每次合入一个 PR，用 squash 方式合入。
-- `ready` 只能由 admin 或 maintain 角色添加。见下文的 `require_ready` 开关：关闭时不再有必须加 `ready` 的情况。PR 在加标签后又推送新提交时，标签会被自动移除。
+- `ready` 只能由 admin 或 maintain 角色添加。见下文的 `require_ready` 开关：关闭时，受保护改动、超大 PR 和冻结都不再需要 `ready`；不受信作者的 PR，以及讨论被标为已解决却没有修复的 P0/P1，仍然只能由维护者加 `ready` 放行。PR 在加标签后又推送新提交时，标签会被自动移除。
 - `pr/hold` 让 PR 停在门前，直到移除该标签。
 
 ### owner 审查开关（`require_ready`）
