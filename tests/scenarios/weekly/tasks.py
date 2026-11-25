@@ -22,7 +22,7 @@ class Task:
 
 def create_room(name: str, rules: str, protocol: str, ready: str = "") -> Task:
     steps = [
-        "Call teamup_register with your role description.",
+        "Call teamup_register with your assigned name and description.",
         (
             f'Call teamup_create_room with name "{name}", rules "{rules}" and '
             f'protocol "{protocol}".'
@@ -44,7 +44,7 @@ def create_room(name: str, rules: str, protocol: str, ready: str = "") -> Task:
     )
 
     async def script(ctx):
-        await ctx.call("register", role_description=ctx.spec.role)
+        await ctx.call("register", **ctx.spec.profile)
         room = await ctx.call("create_room", name=name, rules=rules, protocol=protocol)
         board = await ctx.call("get_board", room_id=room["room_id"])
         await ctx.call("ack_board", room_id=room["room_id"], version=board["version"])
@@ -62,7 +62,7 @@ def create_room(name: str, rules: str, protocol: str, ready: str = "") -> Task:
 def join_room(room_id: str, ready: str) -> Task:
     prompt = (
         f"Task: join the team room {room_id}.\n"
-        "1. Call teamup_register with your role description.\n"
+        "1. Call teamup_register with your assigned name and description.\n"
         f'2. Call teamup_join_room with room_id "{room_id}".\n'
         "3. Call teamup_get_board, read the rules and protocol, then call "
         "teamup_ack_board with the version it returns.\n"
@@ -72,7 +72,7 @@ def join_room(room_id: str, ready: str) -> Task:
     )
 
     async def script(ctx):
-        await ctx.call("register", role_description=ctx.spec.role)
+        await ctx.call("register", **ctx.spec.profile)
         await ctx.call("join_room", room_id=room_id)
         board = await ctx.call("get_board", room_id=room_id)
         await ctx.call("ack_board", room_id=room_id, version=board["version"])
@@ -89,12 +89,12 @@ def join_room(room_id: str, ready: str) -> Task:
 def ask(room_id: str, targets: list[tuple[str, str]]) -> Task:
     """Post one question per (role, question), each @mentioning that role."""
     steps = [
-        "Call teamup_register with your role description (repeating it is harmless).",
+        "Call teamup_register with your assigned name and description (repeating it is harmless).",
     ]
     for role, question in targets:
         steps.append(
             f'Call teamup_find_members with q "{role}" and take the member_id of '
-            f'the member whose role contains "{role}". Then call teamup_send_message '
+            f'the member whose name contains "{role}". Then call teamup_send_message '
             f'with room_id "{room_id}", text "{question}" and mention_member_id set '
             "to that member_id."
         )
@@ -106,10 +106,10 @@ def ask(room_id: str, targets: list[tuple[str, str]]) -> Task:
     )
 
     async def script(ctx):
-        await ctx.call("register", role_description=ctx.spec.role)
+        await ctx.call("register", **ctx.spec.profile)
         for role, question in targets:
             found = await ctx.call("find_members", q=role)
-            [member] = [m for m in found["members"] if role in m["role_description"]]
+            [member] = [m for m in found["members"] if role in m["name"]]
             await ctx.call(
                 "send_message",
                 room_id=room_id,
@@ -155,7 +155,7 @@ def wake(spec: Spec, count: int, roster: dict[str, str]) -> Task:
         room_id = notice["room_id"]
         history = (await ctx.call("read_messages", room_id=room_id))["messages"]
         trigger = next(m for m in history if m["message_id"] == notice["message_id"])
-        mine = await ctx.call("register", role_description=ctx.spec.role)
+        mine = await ctx.call("register", **ctx.spec.profile)
         if any(
             m["sender_member_id"] == mine["member_id"]
             and m["message_id"] > trigger["message_id"]
@@ -172,7 +172,7 @@ def wake(spec: Spec, count: int, roster: dict[str, str]) -> Task:
         elif spec.mention:
             role = roster[spec.mention]
             found = await ctx.call("find_members", q=role)
-            [member] = [m for m in found["members"] if role in m["role_description"]]
+            [member] = [m for m in found["members"] if role in m["name"]]
             arguments["mention_member_id"] = member["member_id"]
         await ctx.call(
             "send_message",

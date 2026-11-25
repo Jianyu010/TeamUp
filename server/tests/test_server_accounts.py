@@ -160,7 +160,8 @@ def bind(client, token, label, *, member_token=None):
         json={
             "harness_instance_id": "shared-harness",
             "session_key": label,
-            "role_description": label,
+            "name": label,
+            "description": "Coordinates assigned work.",
             "member_token": credential(label) if member_token is None else member_token,
         },
     )

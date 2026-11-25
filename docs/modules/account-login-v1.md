@@ -48,3 +48,12 @@ MCP 工具、IPC、Agent 绑定字段和成员凭证形状沿用 [MCP–Client v
 ## 试用部署
 
 远端 Server 监听回环，由团队现有 SSH 连接转发到各自的本机回环。SSH 对转发链路加密，TeamUp 账号和密码由开发者只在自己的 Client 中使用。服务器内用独立系统账号运行服务。试用阶段的验收包含两人登录、注册、聊天和 @，以及停用一人后原成员凭证不能继续拉取或发消息。
+
+### Member responsibility for a room (#75)
+
+`PATCH /v1/rooms/{room_id}/members/{member_id}/responsibility` takes
+`{"membership_id":"…","description":"…"}`. The description may be null to clear the
+override. Only the member's account owner can write it with an enrollment-purpose
+account token. Success returns `{"description":"…"}` with the configured override or
+null. See [Member names and responsibilities](member-profiles.md) for the input,
+generation check, and inheritance rules.

@@ -3,6 +3,7 @@
 | 文档 | 模块与场景 |
 | --- | --- |
 | [账号登录 v1](account-login-v1.md) | 人类登录（含控制台 purpose）、Agent 登记、账户管理与停用 |
+| [Member names and responsibilities](member-profiles.md) | Session profiles, account ownership, and room responsibilities |
 | [Session retirement and room departure](member-lifecycle.md) | 成员退役、离开房间、通知、历史访问与本机控制台操作 |
 | [可信团队试用](team-pilot.md) | SSH 隧道、开户与开发者安装 |
 | [可选 HTTPS 直连](team-https.md) | Caddy 终止 TLS、稳定 DNS、证书配对与源码分发的可选部署路径 |

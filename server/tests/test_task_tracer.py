@@ -60,7 +60,8 @@ def enroll(instance, label, owner):
         KEYS[owner],
         harness_instance_id="shared-harness",
         session_key=label,
-        role_description=label,
+        name=label,
+        description="Coordinates assigned work.",
         member_token=token(label),
     )
 

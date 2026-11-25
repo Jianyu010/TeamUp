@@ -368,7 +368,8 @@ class Api:
             json={
                 "harness_instance_id": harness,
                 "session_key": session,
-                "role_description": role,
+                "name": role,
+                "description": f"Handles the {role} work in this scenario.",
                 "member_token": token,
             },
         )

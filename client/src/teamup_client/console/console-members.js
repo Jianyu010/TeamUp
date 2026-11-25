@@ -56,23 +56,24 @@ function scheduleExpiry(list, onExpiry) {
   if (expired) onExpiry?.();
 }
 
-function memberNames(members) {
+export function memberNames(members, nameTag = "span") {
+  const names = members.map(({id, name, role}) => ({id, name: name ?? role}));
   const counts = new Map();
-  for (const {role} of members) counts.set(role, (counts.get(role) || 0) + 1);
-  return members.map(({id, role}) => {
-    const name = element("span", "", "member-name");
-    let label = role;
-    name.append(element("span", role));
-    if (counts.get(role) > 1) {
+  for (const {name} of names) counts.set(name, (counts.get(name) || 0) + 1);
+  return names.map(({id, name}) => {
+    const view = element("span", "", "member-name");
+    let label = name;
+    view.append(element(nameTag, name));
+    if (counts.get(name) > 1) {
       const prefix = id.slice(0, 8);
-      const shared = members.some((other) => other.id !== id && other.role === role && other.id.startsWith(prefix));
+      const shared = names.some((other) => other.id !== id && other.name === name && other.id.startsWith(prefix));
       const suffix = "(" + (shared ? id : prefix) + ")";
       const qualifier = element("small", suffix);
       label += " " + suffix;
       qualifier.title = id;
-      name.append(document.createTextNode(" "), qualifier);
+      view.append(qualifier);
     }
-    return {name, label};
+    return {view, label};
   });
 }
 
@@ -81,11 +82,53 @@ export function renderTeam(result, requestedAt) {
   const members = result.members || [];
   const names = memberNames(members);
   list.replaceChildren(...members.map((member, index) => {
-    const row = element("li");
-    row.append(names[index].name, presenceBadge(member.presence, requestedAt));
+    const row = element("tr");
+    const identity = element("th");
+    identity.scope = "row";
+    names[index].view.title = names[index].label;
+    identity.append(names[index].view, presenceBadge(member.presence, requestedAt));
+    row.append(identity, element("td", member.owner_username ?? "—", "team-user"),
+      element("td", member.description ?? "—"));
     return row;
   }));
   scheduleExpiry(list);
+}
+
+export function renderSessionChoices(chooser, sessions, selected, empty) {
+  const rich = CSS.supports("appearance", "base-select");
+  const options = sessions.map((session) => {
+    const duplicate = sessions.some(({id, label}) => id !== session.id && label === session.label);
+    const label = duplicate ? session.label + " · " + (session.member_id ?? session.id).slice(0, 8) : session.label;
+    const option = new Option(label, session.id, false, session.id === selected);
+    const owner = session.owner_username ? "by " + session.owner_username : null;
+    if (owner) option.dataset.owner = owner;
+    if (rich) {
+      const name = element("span", label, "session-option-name");
+      name.title = label;
+      option.replaceChildren(name);
+      if (owner) {
+        option.setAttribute("aria-label", label);
+        option.setAttribute("aria-description", owner);
+        option.append(element("small", owner, "member-owner"));
+      }
+    } else option.title = owner ?? label;
+    return option;
+  });
+  if (!options.length && empty) options.push(new Option(empty));
+  if (rich) {
+    const button = element("button");
+    button.type = "button";
+    button.append(element("selectedcontent"));
+    chooser.replaceChildren(button, ...options);
+  } else chooser.replaceChildren(...options);
+
+  const owner = chooser.nextElementSibling;
+  const showOwner = () => {
+    owner.textContent = chooser.selectedOptions[0]?.dataset.owner ?? "";
+    owner.hidden = rich || !owner.textContent;
+  };
+  chooser.onchange = showOwner;
+  showOwner();
 }
 
 function actionIcon(kind) {
@@ -148,7 +191,10 @@ export function roomMembers({read, subject, chat, policyChanged, namesChanged, a
     const recent = recentCommunication.get(member.id)?.message;
     const receipt = member.acknowledged === page.current
       ? "Acknowledged version " + page.current : "Awaiting acknowledgment of version " + page.current;
-    const content = [element("h3", selected.querySelector(".member-name").textContent), element("p", receipt), element("h4", "Recent communication")];
+    const content = [element("h3", selected.dataset.label)];
+    if (member.owner_username) content.push(element("small", "by " + member.owner_username, "member-owner"));
+    if (member.description) content.push(element("p", member.description, "member-responsibility"));
+    content.push(element("p", receipt), element("h4", "Recent communication"));
     if (recent) {
       const stamp = Date.parse(recent.created_at);
       content.push(element("p", recent.sender + " · " +
@@ -263,7 +309,8 @@ export function roomMembers({read, subject, chat, policyChanged, namesChanged, a
       existing.delete(member.id);
       entry.button.setAttribute("aria-expanded", String(selected === entry.button));
       entry.badge = presenceBadge(member.presence, started);
-      entry.button.replaceChildren(names[index].name, entry.badge);
+      entry.button.dataset.label = names[index].label;
+      entry.button.replaceChildren(names[index].view, entry.badge);
       const action = actionFor?.(member);
       if (entry.control?.dataset.kind !== action?.kind) {
         entry.control?.remove();

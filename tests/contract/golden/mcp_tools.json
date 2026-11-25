@@ -1,5 +1,5 @@
 {
-  "instructions": "Use a DM for two agents. Use a shared room for three or more agents who need the same context. If DM tools are unavailable, ask for an approved private handoff. Register the approved local session with a specific role and responsibility from the task, or ask the user; keep the returned member ID and existing approval requirements. Role descriptions can repeat. Confirm the intended member ID if role search finds multiple matches. Short examples: 'Backend · Accounts API', 'Frontend · Accounts screen', 'QA · Accounts fixtures'. Avoid bare titles like 'Developer' and do not invent a teammate's role. Before creating a room, write rules and protocol for its purpose, expected roles, progress, handoff, and completion, and preserve requirements the user gave explicitly. After joining or creating a room, read and acknowledge its current board. Reuse teamup_list_rooms for joined-room discovery. Use teamup_leave_room to end membership in one room and teamup_retire_identity to permanently retire the current TeamUp identity. Give a short room responsibility introduction only when needed, prefer board role choices, do not repeat it on rejoin, and do not invent a persistent room role. Turn a natural request to assign work into an explicit room task: read and acknowledge the current board, then call teamup_create_task with a fresh client_task_id and reuse it on retry. Use teamup_join_task to take eligible open work, report progress with teamup_report_progress using a fresh client_progress_id reused on retry, and finish with teamup_finish_task. Read the current room board and task history with teamup_list_tasks, teamup_get_task and teamup_task_history; keep ordinary chat and mentions unchanged. Open a pair DM with the teammate's member ID; teamup_open_dm returns the same conversation on every repeat. To request someone's attention, pass their member ID as mention_member_id. Use mention_member_ids for an ordered list of room recipients. Use a fresh client_message_id for each new message and keep it on retry. Keep DM text between the two participants and out of logs and rooms. Follow local sharing permissions.",
+  "instructions": "Use a DM for two agents. Use a shared room for three or more agents who need the same context. If DM tools are unavailable, ask for an approved private handoff. Register the approved session with a functional name of up to three words and one line describing its responsibility. For example, use Release Lead with 'Coordinates releases and hands off deployment.' Ask the user for the responsibility if needed. Keep the returned member ID and reuse that identity across rooms. Read member responsibilities in the team directory or room roster before choosing the recipient. Before creating a room, write rules and protocol for its purpose, expected roles, progress, handoff, and completion, and preserve requirements the user gave explicitly. After joining or creating a room, read and acknowledge its current board. Reuse teamup_list_rooms for joined-room discovery. Use teamup_leave_room to end membership in one room and teamup_retire_identity to permanently retire the current TeamUp identity. Introduce your responsibilities once after joining if the room needs it. Turn a natural request to assign work into an explicit room task: read and acknowledge the current board, then call teamup_create_task with a fresh client_task_id and reuse it on retry. Use teamup_join_task to take eligible open work, report progress with teamup_report_progress using a fresh client_progress_id reused on retry, and finish with teamup_finish_task. Read the current room board and task history with teamup_list_tasks, teamup_get_task and teamup_task_history; keep ordinary chat and mentions unchanged. Open a pair DM with the teammate's member ID; teamup_open_dm returns the same conversation on every repeat. To request someone's attention, pass their member ID as mention_member_id. Use mention_member_ids for an ordered list of room recipients. Use a fresh client_message_id for each new message and keep it on retry. Keep DM text between the two participants and out of logs and rooms. Follow local sharing permissions.",
   "tools": {
     "teamup_ack_board": {
       "description": "Acknowledge a board version you have just read.",
@@ -102,7 +102,7 @@
       }
     },
     "teamup_find_members": {
-      "description": "Find teammates by a substring of their role description.",
+      "description": "Find teammates by name or responsibility. Use the member ID to address them.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -227,7 +227,7 @@
       }
     },
     "teamup_list_room_members": {
-      "description": "List current room members with the membership IDs for their current joins.",
+      "description": "List current room members, their effective responsibilities, and membership IDs.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -381,18 +381,26 @@
       }
     },
     "teamup_register": {
-      "description": "Register this owner-approved session or recover its existing member ID.",
+      "description": "Register this owner-approved session or recover its existing member ID. Reuse one identity across rooms.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
-          "role_description": {
+          "description": {
+            "description": "One line describing your scope and what you handle or hand off.",
+            "maxLength": 160,
+            "minLength": 1,
+            "type": "string"
+          },
+          "name": {
+            "description": "Functional name of at most three words, e.g. Release Lead.",
             "maxLength": 200,
             "minLength": 1,
             "type": "string"
           }
         },
         "required": [
-          "role_description"
+          "name",
+          "description"
         ],
         "type": "object"
       }

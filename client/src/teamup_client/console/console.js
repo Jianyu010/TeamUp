@@ -1,6 +1,6 @@
 import {readTranscript, sameBoard} from "/console-history.mjs";
 import {roomBoard} from "/console-board.js";
-import {roomMembers, renderTeam} from "/console-members.js";
+import {memberNames, roomMembers, renderSessionChoices, renderTeam} from "/console-members.js";
 import {taskPanel} from "/console-tasks.js";
 import {sessionControls} from "/console-sessions.js";
 
@@ -207,7 +207,7 @@ function card(label, description) {
   const button = node("button", undefined, "node");
   button.type = "button";
   const text = node("span");
-  text.append(node("strong", label), node("small", description));
+  text.append(typeof label === "string" ? node("strong", label) : label, node("small", description));
   button.append(text);
   return button;
 }
@@ -227,10 +227,22 @@ function renderWorkspace() {
   get("sessions-title").textContent = "My sessions (" + sessions.length + ")";
   get("rooms-title").textContent = "Rooms (" + rooms.length + ")";
   lifecycle.workspace(sessionFor(state.focused), state.workspace.retired_sessions ?? []);
-  const sessionButtons = sessions.map((session) => {
+  const names = memberNames(sessions.map(({id, member_id, label}) => ({
+    id: member_id ?? id, name: label,
+  })), "strong");
+  const sessionButtons = sessions.map((session, index) => {
     const label = session.state === "ready" ? session.harness
       : session.harness + " · " + (session.state === "not_registered" ? "Unregistered" : "Unavailable");
-    const button = card(session.label, label);
+    const name = names[index];
+    name.view.title = name.label;
+    const button = card(name.view, label);
+    button.classList.toggle("session-ready", session.state === "ready");
+    if (session.owner_username) {
+      const owner = "by " + session.owner_username;
+      const detail = button.firstElementChild.lastElementChild;
+      if (session.state === "ready") detail.textContent = owner + " · " + label;
+      else button.firstElementChild.insertBefore(node("small", owner, "member-owner"), detail);
+    }
     button.dataset.session = session.id;
     button.setAttribute("aria-pressed", String(state.focused === session.id));
     button.classList.toggle("dimmed", Boolean(state.focused && state.focused !== session.id));
@@ -361,14 +373,7 @@ function renderRoomHeader() {
   const chooser = get("task-actor");
   const actors = readyMemberships(room).filter(acknowledged).map(({session}) => sessionFor(session));
   chooser.disabled = actors.length === 0;
-  chooser.replaceChildren(...actors.map((session) => {
-    const duplicate = actors.some((other) => other.id !== session.id && other.label === session.label);
-    const option = node("option", duplicate ? session.label + " · " + session.id : session.label);
-    option.value = session.id;
-    option.selected = state.actor === session.id;
-    return option;
-  }));
-  if (!actors.length) chooser.append(node("option", "No acknowledged session"));
+  renderSessionChoices(chooser, actors, state.actor, "No acknowledged session");
   const membership = room.memberships.find((item) => item.session === state.reader);
   get("room-heading").textContent = room.name;
   get("room-heading").hidden = Boolean(membership);

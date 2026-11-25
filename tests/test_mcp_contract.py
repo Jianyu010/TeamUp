@@ -17,8 +17,16 @@ def test_stdio_passes_approved_binding_and_surfaces_ipc_error():
         requests = [
             (
                 "register",
-                {"role_description": "Frontend"},
-                {"member_id": "a", "role_description": "Frontend"},
+                {
+                    "name": "Frontend",
+                    "description": "Maintains the application interface.",
+                },
+                {
+                    "member_id": "a",
+                    "role_description": "Frontend",
+                    "name": "Frontend",
+                    "description": "Maintains the application interface.",
+                },
             ),
             (
                 "send_message",

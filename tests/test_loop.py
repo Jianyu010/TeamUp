@@ -187,8 +187,21 @@ async def run_exchange(root, port):
     ):
         wait_for(lambda: tcp_is_ready(port), server)
         async with a.agent() as agent_a:
-            alice = await tool(agent_a, "register", role_description="Backend")
-            assert await tool(agent_a, "register", role_description="Backend") == alice
+            alice = await tool(
+                agent_a,
+                "register",
+                name="Backend",
+                description="Owns backend API behavior and service handoffs.",
+            )
+            assert (
+                await tool(
+                    agent_a,
+                    "register",
+                    name="Backend",
+                    description="Owns backend API behavior and service handoffs.",
+                )
+                == alice
+            )
             room = await tool(
                 agent_a,
                 "create_room",
@@ -224,7 +237,12 @@ async def run_exchange(root, port):
 
             with b.daemon() as bob_daemon:
                 async with b.agent() as agent_b:
-                    bob = await tool(agent_b, "register", role_description="Frontend")
+                    bob = await tool(
+                        agent_b,
+                        "register",
+                        name="Frontend",
+                        description="Owns interface behavior and coordinates API integration.",
+                    )
                     assert alice["member_id"] != bob["member_id"]
                     assert (await tool(agent_a, "find_members", q="FRONT"))[
                         "members"
@@ -387,10 +405,20 @@ async def run_dm_exchange(root, port):
     ):
         wait_for(lambda: tcp_is_ready(port), server)
         async with a.agent() as agent_a:
-            alice = await tool(agent_a, "register", role_description="Backend")
+            alice = await tool(
+                agent_a,
+                "register",
+                name="Backend",
+                description="Owns backend API behavior and service handoffs.",
+            )
             with b.daemon() as bob_daemon:
                 async with b.agent() as agent_b:
-                    bob = await tool(agent_b, "register", role_description="Frontend")
+                    bob = await tool(
+                        agent_b,
+                        "register",
+                        name="Frontend",
+                        description="Owns interface behavior and coordinates API integration.",
+                    )
                     assert (await tool(agent_a, "find_members", q="FRONT"))[
                         "members"
                     ] == [bob]

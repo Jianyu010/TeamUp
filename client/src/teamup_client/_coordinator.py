@@ -20,6 +20,7 @@ from .ipc import ClientError
 
 ROLE = partial(is_string, limit=200)
 BOARD_TEXT = partial(is_string, limit=8_000)
+
 MESSAGE_KEY = partial(is_string, limit=128)
 SEARCH = partial(is_string, require_content=False)
 QUERY = partial(is_string, limit=200)
@@ -36,6 +37,13 @@ HISTORY_POLICIES = ("retained", "since_joining")
 TASK_STATUSES = ("open", "finished")
 PRESENCE_INTERVAL = 15
 
+
+def _profile_text(value, limit):
+    return is_string(value, limit) and value == value.strip() and value.isprintable()
+
+
+def _member_name(value):
+    return _profile_text(value, 200) and len(value.split()) <= 3
 
 def _membership_id(value):
     return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{32}", value) is not None
@@ -75,7 +83,15 @@ class Operation:
 
 
 OPERATIONS = {
-    "register": Operation("POST", "/members", {"role_description": ROLE}),
+    "register": Operation(
+        "POST",
+        "/members",
+        optional={
+            "name": _member_name,
+            "description": partial(_profile_text, limit=160),
+            "role_description": ROLE,
+        },
+    ),
     "retire_identity": Operation("POST", "/members/me/retire"),
     "find_members": Operation("GET", "/members", optional={"q": SEARCH}),
     "list_rooms": Operation("GET", "/rooms"),
@@ -384,6 +400,14 @@ class Coordinator:
         if operation is None or not _valid(operation, params):
             self._identity(key, session_ref)
             raise ClientError("invalid_request", "Invalid method or parameters")
+        if method == "register" and params.keys() not in (
+            {"name", "description"}, {"role_description"}
+        ):
+            self._identity(key, session_ref)
+            raise ClientError(
+                "invalid_request",
+                "Provide a name of up to three words and a one-line description.",
+            )
         identity, install = self._identity(key, session_ref)
         if retired := self._retired.get(identity):
             if method == "retire_identity":

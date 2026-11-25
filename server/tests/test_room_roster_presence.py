@@ -173,7 +173,8 @@ def test_presence_expiry_and_renewal_use_monotonic_time(tmp_path, monkeypatch):
         KEYS["alice"],
         harness_instance_id="harness",
         session_key="session",
-        role_description="Peer",
+        name="Peer",
+        description="Coordinates assigned work.",
         member_token=token,
     )["member_id"]
     observed = presence.Presence(collaboration)
@@ -220,7 +221,8 @@ def test_slow_authorization_cannot_reorder_concurrent_heartbeat_receipts(
         KEYS["alice"],
         harness_instance_id="harness",
         session_key="session",
-        role_description="Peer",
+        name="Peer",
+        description="Coordinates assigned work.",
         member_token=token,
     )
     observed = presence.Presence(collaboration)

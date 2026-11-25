@@ -135,7 +135,14 @@ class TeamupGateway:
                     body["member_token"],
                     {
                         "member_id": MEMBERS[binding_index],
-                        "role_description": body["role_description"],
+                        "role_description": body["name"],
+                        "name": body["name"],
+                        "description": body["description"],
+                        **(
+                            {"owner_username": "alice"}
+                            if token == ACCOUNT_TOKEN
+                            else {}
+                        ),
                     },
                 )
                 await self.json_response(writer, member)
@@ -557,13 +564,18 @@ def test_account_registration_reuses_the_member_after_login_expires():
                 settings["account_token"] = ACCOUNT_TOKEN
                 config.write_text(json.dumps(settings), encoding="utf-8")
                 key_a, key_b = (binding["binding_key"] for binding in BINDINGS)
-                params = {"role_description": "developer"}
+                params = {
+                    "name": "developer",
+                    "description": "Implements the API integration.",
+                }
 
                 async with daemon(config, socket):
                     member = await call(socket, key_a, "register", params)
                     assert member == {
                         "member_id": MEMBERS[0],
                         "role_description": "developer",
+                        "owner_username": "alice",
+                        **params,
                     }
                 assert [
                     entry[3]
@@ -574,7 +586,12 @@ def test_account_registration_reuses_the_member_after_login_expires():
                 upstream.account_valid = False
                 upstream.calls.clear()
                 async with daemon(config, socket):
-                    assert await call(socket, key_a, "register", params) == member
+                    assert (
+                        await call(
+                            socket, key_a, "register", {"role_description": "developer"}
+                        )
+                        == member
+                    )
                     assert await call(socket, key_a, "find_members", {}) == {
                         "members": [member]
                     }
@@ -644,6 +661,21 @@ def test_ipc_enforces_binding_and_maps_contract_operations():
                             key_a,
                             "invalid_request",
                         ),
+                        (
+                            "register",
+                            {
+                                "name": "Four Word Member Name",
+                                "description": "Implements the API integration.",
+                            },
+                            key_a,
+                            "invalid_request",
+                        ),
+                        (
+                            "register",
+                            {"name": "Missing Description"},
+                            key_a,
+                            "invalid_request",
+                        ),
                         ("nonsense", {}, key_a, "invalid_request"),
                     ]:
                         with pytest.raises(ClientError) as error:
@@ -678,12 +710,15 @@ def test_ipc_enforces_binding_and_maps_contract_operations():
                     response = await raw_request(socket, b"x" * (128 * 1024) + b"\n")
                     assert response["error"]["code"] == "invalid_request"
 
+                    profile = {
+                        "name": "API Dev Lead",
+                        "description": "Implements the API integration.",
+                    }
                     for key, member_id in zip((key_a, key_b), MEMBERS, strict=True):
-                        assert await call(
-                            socket, key, "register", {"role_description": "dev"}
-                        ) == {
+                        assert await call(socket, key, "register", profile) == {
                             "member_id": member_id,
-                            "role_description": "dev",
+                            "role_description": "API Dev Lead",
+                            **profile,
                         }
                     assert await call(socket, key_a, "find_members", {"q": "dev"}) == {
                         "members": list(upstream.registered.values())
@@ -1288,7 +1323,10 @@ def test_presence_heartbeats_are_isolated_and_require_approved_registered_bindin
                         return await coordinator.execute(
                             install["binding_key"],
                             "register",
-                            {"role_description": "New member"},
+                            {
+                                "name": "New member",
+                                "description": "Checks connection status.",
+                            },
                             session_ref,
                         )
 

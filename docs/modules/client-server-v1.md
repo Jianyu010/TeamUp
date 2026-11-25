@@ -28,7 +28,7 @@ Client 使用已配置的 Server 地址和 TLS 设置读取版本。此操作只
 
 | 名称 | JSON 字段 |
 | --- | --- |
-| Member | `member_id` UUID 字符串，`role_description` 字符串 |
+| Member | `member_id` UUID 字符串，`role_description` 字符串；结构化档案另含 `name`、`description`，有 TeamUp 账号时含 `owner_username`。见 [成员档案](member-profiles.md)。 |
 | Room | `room_id` UUID 字符串，`name` 字符串；`POST /v1/rooms` 的成功结果另含 `history_policy`（`retained` 或 `since_joining`） |
 | Room 概要 | `room_id` UUID 字符串，`name` 字符串，`acked_board_version` 正整数或 null，`current_board_version` 正整数，`latest_message_id` 正整数或 null |
 | Board | `room_id`，`version` 正整数，`rules`，`protocol` |
@@ -44,9 +44,9 @@ Client 使用已配置的 Server 地址和 TLS 设置读取版本。此操作只
 
 | 方法和路径 | 请求 | 成功结果 |
 | --- | --- | --- |
-| `POST /v1/members` | Bearer 登记用途账号 token 或已配置的旧登记密钥。JSON 含 `harness_instance_id`、`session_key`、`role_description`、`member_token` | Member。未退役的重复绑定在 token 相同时返回该成员当前档案。不同 token 重复绑定，或 token 已绑定其他会话时冲突 |
+| `POST /v1/members` | Bearer 登记用途账号 token 或已配置的旧登记密钥。JSON 含 `harness_instance_id`、`session_key`、`name`、`description`、`member_token`；旧 `role_description` 仅用于恢复既有绑定 | Member。未退役的重复绑定在 token 相同时返回该成员当前档案。不同 token 重复绑定，或 token 已绑定其他会话时冲突 |
 | `GET /v1/members/me` | Bearer 成员 token | 当前 Member |
-| `GET /v1/members?q=...` | 可选角色子串，默认空串 | `{"members":[Member]}`，按 ID 稳定排序，最多 100 条，大小写不敏感 |
+| `GET /v1/members?q=...` | 可选名称或职责子串，默认空串 | `{"members":[Member]}`，按 ID 稳定排序，最多 100 条，大小写不敏感 |
 | `POST /v1/rooms` | `{"name":"...","rules":"...","protocol":"...","history_policy":"retained 或 since_joining"}` | Room。创建者同时加入。公告初始版本为 1，两段文字可省略，各有默认值。`history_policy` 可省略，默认 `since_joining`，成功结果携带已保存的策略 |
 | `GET /v1/rooms` | 无正文 | `{"rooms":[Room 概要]}`，按 `room_id` 稳定排序。仅含当前成员在 `room_members` 有行的房间，创建者经其既有成员关系包含在内。`acked_board_version` 为该成员已确认的版本，确认前为 null；`current_board_version` 为房间当前版本；`latest_message_id` 为该房间最新消息 ID，空房间为 null。概要属于成员范围数据，不要求当前公告已确认，也不提供按任意房间 ID 的查询、可加入状态或房间发现 |
 | `POST /v1/rooms/{room_id}/join` | 无正文 | Room。当前只提供团队公开房间。重复加入保留原加入位置 |
@@ -75,7 +75,7 @@ Client 使用已配置的 Server 地址和 TLS 设置读取版本。此操作只
 | 路由 | 响应 |
 | --- | --- |
 | `GET /v1/rooms/{room_id}` | `{room_id,name,history_policy,current_board_version,member_count}`。策略为保存的 `retained` 或 `since_joining`，版本为正整数，计数为当前成员关系数。 |
-| `GET /v1/rooms/{room_id}/members` | `{"members":[{"member_id":"…","role_description":"…","acked_board_version":null}]}`。返回所有当前成员，按 ID 排序，每人一行。已确认的版本为正整数，未确认时为 null。 |
+| `GET /v1/rooms/{room_id}/members` | `{"members":[{"member_id":"…","role_description":"…","acked_board_version":null}]}`。返回所有当前成员，按 ID 排序，每人一行，附可用的成员档案字段及当前房间职责。已确认的版本为正整数，未确认时为 null。 |
 
 本地会话、远端会话采用相同的房间成员规则。Client 将各成员的确认版本与房间当前版本比较。最近发言仅来自同一阅读会话在当前房间有权读取的消息，任务及队友仅来自该会话可读的房间任务。详情缺失时可以继续展示名单。Server 的正文、任务和在线状态分别执行各自的权限检查。
 

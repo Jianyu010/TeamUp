@@ -103,7 +103,8 @@ def test_sse_frames_match_golden(tmp_path, golden):
                 json={
                     "harness_instance_id": "contract",
                     "session_key": label,
-                    "role_description": label,
+                    "name": label,
+                    "description": f"Acts as the {label} in the SSE contract scenario.",
                     "member_token": credential(label),
                 },
             )

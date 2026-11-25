@@ -48,7 +48,7 @@ def test_only_the_owning_account_can_rename_or_retire(lifecycle):
     client, store, _, owner, member, _ = lifecycle
     member_id = member["member_id"]
     path = f"/v1/members/{member_id}"
-    role = {"role_description": "  QA · Accounts  "}
+    role = {"role_description": "QA · Accounts"}
     other = login_token(client, "bob", PASSWORD)
     console = token_from_login(
         client.post(
@@ -90,7 +90,7 @@ def test_only_the_owning_account_can_rename_or_retire(lifecycle):
         "invalid_request",
     )
 
-    expected = {**member, **role}
+    expected = {**member, **role, "name": role["role_description"]}
     for _ in range(2):
         response = client.patch(path, headers=auth(owner), json=role)
         assert response.status_code == 200, response.text
@@ -351,7 +351,7 @@ def test_migration_preserves_bindings_and_room_messages(tmp_path, version):
             "messages": [message]
         }
         with closing(sqlite3.connect(db_path)) as connection:
-            assert connection.execute("PRAGMA user_version").fetchone()[0] == 10
+            assert connection.execute("PRAGMA user_version").fetchone()[0] == 11
 
 
 def test_self_retirement_can_be_retried_without_restoring_access(lifecycle):
@@ -364,7 +364,11 @@ def test_self_retirement_can_be_retried_without_restoring_access(lifecycle):
         401,
         "unauthorized",
     )
-    expected = {**member, "retired": True}
+    expected = {
+        "member_id": member["member_id"],
+        "role_description": member["role_description"],
+        "retired": True,
+    }
     with ThreadPoolExecutor(max_workers=3) as pool:
         responses = list(
             pool.map(lambda _: post(client, "target", "/members/me/retire"), range(3))

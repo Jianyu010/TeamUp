@@ -12,9 +12,24 @@ async def acknowledge(agent, room):
 
 async def walk(alice, bob, carol):
     async with alice.agent() as a, bob.agent() as b, carol.agent() as c:
-        author = await tool(a, "register", role_description="Backend")
-        reviewer = await tool(b, "register", role_description="Reviewer")
-        await tool(c, "register", role_description="Observer")
+        author = await tool(
+            a,
+            "register",
+            name="Backend",
+            description="Owns backend API behavior and service handoffs.",
+        )
+        reviewer = await tool(
+            b,
+            "register",
+            name="Reviewer",
+            description="Reviews the implementation and reports findings.",
+        )
+        await tool(
+            c,
+            "register",
+            name="Observer",
+            description="Observes task state without taking ownership.",
+        )
         room = (await tool(a, "create_room", name="Room tasks"))["room_id"]
         await acknowledge(a, room)
         await tool(b, "join_room", room_id=room)
