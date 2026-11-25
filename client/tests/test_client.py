@@ -2122,6 +2122,8 @@ def test_server_retirement_surfaces_while_local_archive_write_is_retried(tmp_pat
                 if attempt == 0:
                     assert coordinator.console_retired_sessions() == []
                     assert coordinator.console_sessions() == ()
+                    # An owner rejection can remove the active binding while archiving is pending.
+                    coordinator._sessions.clear()
                     for method in ("notifications", "mention_status"):
                         with pytest.raises(ClientError) as revoked:
                             await coordinator.execute(BINDINGS[0]["binding_key"], method, {})

@@ -249,7 +249,7 @@ class Coordinator:
         self._watching = False
         self._sessions = {}
         self._retired = notices.retired_sessions(self._server_url)
-        self._pending_retirements: dict[tuple[str, str], dict] = {}
+        self._pending_retirements: dict[tuple[str, str], tuple[Session, dict]] = {}
         for binding in config.bindings:
             if (binding.harness_instance_id, binding.session_key) not in self._retired:
                 self._add_session(binding)
@@ -389,8 +389,11 @@ class Coordinator:
             if method == "retire_identity":
                 return self._retirement_receipt(retired)
             raise self._retired_error()
-        if identity in self._pending_retirements and method != "retire_identity":
-            await self._sync_retirement(self._sessions[identity])
+        if pending := self._pending_retirements.get(identity):
+            session, _ = pending
+            if method == "retire_identity":
+                return await self._retire(session)
+            await self._sync_retirement(session)
             raise self._retired_error()
         session = await self._resolve(identity, install, session_ref)
         binding = session.binding
@@ -509,7 +512,7 @@ class Coordinator:
         if identity not in self._retired:
             lease = self._leases.get(identity)
             harness = lease.kind if lease else identity[0]
-            self._pending_retirements[identity] = receipt
+            self._pending_retirements[identity] = session, receipt
             self._notices.retire_session(
                 self._server_url, identity, session.scope, harness, receipt
             )
@@ -528,11 +531,13 @@ class Coordinator:
         if session.identity in self._retired:
             return True
         try:
-            receipt = self._pending_retirements.get(session.identity)
-            if receipt is None:
+            pending = self._pending_retirements.get(session.identity)
+            if pending is None:
                 receipt = await self._upstream.request(
                     "GET", "/members/me/retirement", session.binding.member_token
                 )
+            else:
+                _, receipt = pending
             self._archive_session(session, receipt)
         except ClientError:
             return False
@@ -542,24 +547,29 @@ class Coordinator:
         return True
 
     async def _retire(self, session):
-        receipt = self._pending_retirements.get(session.identity)
-        if receipt is None:
+        pending = self._pending_retirements.get(session.identity)
+        if pending is None:
             receipt = await self._upstream.request(
                 "POST", "/members/me/retire", session.binding.member_token
             )
+        else:
+            _, receipt = pending
         try:
             return self._archive_session(session, receipt)
         except sqlite3.Error:
             raise unavailable() from None
 
     async def _session_action(self, identity, room_id, membership_id=None):
+        if pending := self._pending_retirements.get(identity):
+            if room_id is not None:
+                raise self._retired_error()
+            session, _ = pending
+            return await self._retire(session)
         session = self._sessions.get(identity)
         if session is None:
             raise ClientError("not_found", "Unknown or unapproved session")
         if room_id is None:
             return await self._retire(session)
-        if identity in self._pending_retirements:
-            raise self._retired_error()
         if membership_id is None:
             listing = await self._upstream.request(
                 "GET", "/rooms", session.binding.member_token,
@@ -612,7 +622,7 @@ class Coordinator:
             for identity, profile in self._retired.items():
                 if self._console_id(identity) == session_id:
                     return {"state": "ready", **self._retirement_receipt(profile)}
-        for identity in self._sessions:
+        for identity in self._sessions.keys() | self._pending_retirements.keys():
             if self._console_id(identity) == session_id:
                 result = await self._session_action(identity, room_id, membership_id)
                 return {"state": "ready", **result}
