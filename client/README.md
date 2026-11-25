@@ -7,4 +7,4 @@
 - [开发视图](../docs/architecture/development-view.md) 定义模块导入方向。
 - [Client 和 MCP 契约](../docs/modules/client-mcp.md) 定义本机接口、绑定和会话生命周期。
 
-Add `--console` to `teamup-client serve --config PATH` and open the loopback URL printed at startup. See the [console contract](../docs/modules/client-console.md) for supported reads.
+On macOS, [build and open TeamUp.app](desktop/README.md) for the desktop console. The browser entry is available with `teamup-client serve --config PATH --console`. See the [console contract](../docs/modules/client-console.md) for supported reads and task actions.

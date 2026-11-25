@@ -56,6 +56,14 @@ _MEMBER = "member_id, role_description"
 _MESSAGE = """
     m.message_id, m.room_id, m.sender_member_id, m.client_message_id, m.text, m.mention_member_id, m.created_at
 """
+# The first target remains in messages for compatibility with existing rows.
+# An indexed, bounded lookup projects the remaining targets in request order.
+_ADDITIONAL_MENTIONS = """
+    (SELECT json_group_array(member_id) FROM (
+        SELECT member_id FROM room_message_additional_mentions
+        WHERE message_id = m.message_id ORDER BY position
+    )) AS additional_mentions
+"""
 _DM_MESSAGE = """
     m.message_id, m.dm_id, m.sender_member_id, m.client_message_id, m.text, m.created_at
 """
@@ -784,7 +792,7 @@ def _room_member(
 ) -> sqlite3.Row:
     record = connection.execute(
         """
-        SELECT r.version, r.rules, r.protocol, r.history_policy,
+        SELECT r.name, r.version, r.rules, r.protocol, r.history_policy,
             r.expired_through_message_id, rm.read_board_version,
             rm.acked_board_version, rm.joined_after
         FROM room_members AS rm JOIN rooms AS r ON r.room_id = rm.room_id
@@ -864,6 +872,16 @@ def _expiry_metadata(
     }
 
 
+def _room_message(row: sqlite3.Row) -> dict:
+    message = {key: row[key] for key in _ROOM_EVENT_MESSAGE}
+    if row["additional_mentions"] != "[]":
+        message["mention_member_ids"] = [
+            row["mention_member_id"],
+            *json.loads(row["additional_mentions"]),
+        ]
+    return message
+
+
 def _room_transcript(
     connection: sqlite3.Connection,
     room_id: str,
@@ -887,7 +905,7 @@ def _room_transcript(
         bound_values.append(before)
     rows = connection.execute(
         f"""
-        SELECT {_MESSAGE} FROM messages AS m
+        SELECT {_MESSAGE}, {_ADDITIONAL_MENTIONS} FROM messages AS m
         WHERE room_id = ? AND {bounds}
         ORDER BY message_id {"DESC" if newest_first else ""}
         LIMIT ?
@@ -1282,9 +1300,20 @@ class Collaboration:
                 for statement in _READ_SCHEMA:
                     connection.execute(statement)
                 _backfill_room_activity(connection)
-            if version in (0, 1, 2, 3, 4, 5):
-                connection.execute("PRAGMA user_version = 6")
-            elif version != 6:
+            if version in (0, 1, 2, 3, 4, 5, 6):
+                connection.execute(
+                    """
+                    CREATE TABLE room_message_additional_mentions (
+                        message_id INTEGER NOT NULL REFERENCES messages(message_id) ON DELETE CASCADE,
+                        position INTEGER NOT NULL CHECK (position BETWEEN 1 AND 15),
+                        member_id TEXT NOT NULL REFERENCES members(member_id),
+                        PRIMARY KEY (message_id, position),
+                        UNIQUE (message_id, member_id)
+                    )
+                    """
+                )
+                connection.execute("PRAGMA user_version = 7")
+            elif version != 7:
                 raise ValueError("Unsupported TeamUp database schema version")
             _migrate_room_tasks(connection)
 
@@ -1641,6 +1670,26 @@ class Collaboration:
         with self._transaction() as connection:
             return dict(_member(connection, token))
 
+    def authorized_presence_members(self, token: str) -> list[str]:
+        with self._transaction() as connection:
+            member_id = _member(connection, token)["member_id"]
+            rows = connection.execute(
+                """
+                SELECT ? AS member_id
+                UNION
+                SELECT m.member_id
+                FROM room_members AS own
+                JOIN room_members AS peer ON peer.room_id = own.room_id
+                JOIN members AS m ON m.member_id = peer.member_id
+                WHERE own.member_id = ? AND NOT EXISTS (
+                    SELECT 1 FROM accounts WHERE owner_id = m.owner_id AND disabled = 1
+                )
+                ORDER BY member_id
+                """,
+                (member_id, member_id),
+            )
+            return [row["member_id"] for row in rows]
+
     def search_members(self, token: str, query: str) -> list[dict]:
         with self._transaction() as connection:
             _member(connection, token)
@@ -1950,6 +1999,35 @@ class Collaboration:
             )
             return [dict(record) for record in rows]
 
+    def room_detail(self, token: str, room_id: str) -> dict:
+        with self._transaction() as connection:
+            member_id = _member(connection, token)["member_id"]
+            room = _room_member(connection, room_id, member_id)
+            count = connection.execute(
+                "SELECT COUNT(*) FROM room_members WHERE room_id = ?", (room_id,)
+            ).fetchone()[0]
+            return {
+                "room_id": room_id,
+                "name": room["name"],
+                "history_policy": room["history_policy"],
+                "current_board_version": room["version"],
+                "member_count": count,
+            }
+
+    def room_members(self, token: str, room_id: str) -> list[dict]:
+        with self._transaction() as connection:
+            member_id = _member(connection, token)["member_id"]
+            _room_member(connection, room_id, member_id)
+            rows = connection.execute(
+                """
+                SELECT m.member_id, m.role_description, rm.acked_board_version
+                FROM room_members AS rm JOIN members AS m ON m.member_id = rm.member_id
+                WHERE rm.room_id = ? ORDER BY m.member_id
+                """,
+                (room_id,),
+            )
+            return [dict(row) for row in rows]
+
     def read_board(self, token: str, room_id: str) -> dict:
         with self._transaction(write=True) as connection:
             member_id = _member(connection, token)["member_id"]
@@ -1994,38 +2072,54 @@ class Collaboration:
         room_id: str,
         client_message_id: str,
         text: str,
-        mention_member_id: str | None,
+        mention_member_id: str | None = None,
+        mention_member_ids: list[str] | None = None,
     ) -> dict:
         with self._transaction(write=True) as connection:
             sender = _member(connection, token)["member_id"]
             _require_current_board(_room_member(connection, room_id, sender))
+            targets = [] if mention_member_id is None else [mention_member_id]
+            if mention_member_ids is not None:
+                if (
+                    mention_member_id is not None
+                    or not 1 <= len(mention_member_ids) <= 16
+                    or len(set(mention_member_ids)) != len(mention_member_ids)
+                ):
+                    raise CollaborationError("invalid_request")
+                targets = mention_member_ids
             existing = connection.execute(
                 f"""
-                SELECT {_MESSAGE} FROM messages AS m
+                SELECT {_MESSAGE}, {_ADDITIONAL_MENTIONS} FROM messages AS m
                 WHERE sender_member_id = ? AND client_message_id = ?
                     AND m.room_id IS NOT NULL
                 """,
                 (sender, client_message_id),
             ).fetchone()
             if existing is not None:
-                stored = (
-                    existing["room_id"],
-                    existing["text"],
-                    existing["mention_member_id"],
+                message = _room_message(existing)
+                primary = message["mention_member_id"]
+                stored_targets = message.get(
+                    "mention_member_ids", [primary] if primary else []
                 )
-                if stored != (room_id, text, mention_member_id):
+                if (message["room_id"], message["text"], stored_targets) != (
+                    room_id,
+                    text,
+                    targets,
+                ):
                     raise CollaborationError("conflict")
-                return dict(existing)
-            if mention_member_id is not None:
-                is_recipient = connection.execute(
+                return message
+            recipients = [
+                row["member_id"]
+                for row in connection.execute(
                     """
-                    SELECT 1 FROM room_members
-                    WHERE room_id = ? AND member_id = ? AND member_id != ?
+                    SELECT member_id FROM room_members
+                    WHERE room_id = ? AND member_id != ? ORDER BY member_id
                     """,
-                    (room_id, mention_member_id, sender),
-                ).fetchone()
-                if is_recipient is None:
-                    raise CollaborationError("invalid_mention")
+                    (room_id, sender),
+                )
+            ]
+            if not set(targets).issubset(recipients):
+                raise CollaborationError("invalid_mention")
             created_at = _rfc3339_utc_now()
             message_id = _next_id(connection, "message_id")
             connection.execute(
@@ -2041,23 +2135,23 @@ class Collaboration:
                     sender,
                     client_message_id,
                     text,
-                    mention_member_id,
+                    targets[0] if targets else None,
                     created_at,
+                ),
+            )
+            connection.executemany(
+                """
+                INSERT INTO room_message_additional_mentions (message_id, position, member_id)
+                VALUES (?, ?, ?)
+                """,
+                (
+                    (message_id, pos, member)
+                    for pos, member in enumerate(targets[1:], 1)
                 ),
             )
             _record_activity(
                 connection, room_id, "message", sender, created_at, message_id
             )
-            recipients = [
-                row["member_id"]
-                for row in connection.execute(
-                    """
-                    SELECT member_id FROM room_members
-                    WHERE room_id = ? AND member_id != ? ORDER BY member_id
-                    """,
-                    (room_id, sender),
-                )
-            ]
             for recipient in recipients:
                 connection.execute(
                     """
@@ -2068,12 +2162,12 @@ class Collaboration:
                         _next_id(connection, "event_id"),
                         recipient,
                         message_id,
-                        "mention" if recipient == mention_member_id else "message",
+                        "mention" if recipient in targets else "message",
                     ),
                 )
-            message = dict(
+            message = _room_message(
                 connection.execute(
-                    f"SELECT {_MESSAGE} FROM messages AS m WHERE m.message_id = ?",
+                    f"SELECT {_MESSAGE}, {_ADDITIONAL_MENTIONS} FROM messages AS m WHERE m.message_id = ?",
                     (message_id,),
                 ).fetchone()
             )
@@ -2284,7 +2378,7 @@ class Collaboration:
                 newest_first=before is not None,
             )
             return {
-                "messages": [dict(record) for record in rows],
+                "messages": [_room_message(record) for record in rows],
                 **_expiry_metadata(
                     membership["expired_through_message_id"], cursor, upper
                 ),
@@ -2831,7 +2925,7 @@ class Collaboration:
                 f"""
                 SELECT e.event_id, e.kind, m.message_id, m.room_id, m.dm_id,
                     m.sender_member_id, m.client_message_id, m.text,
-                    m.mention_member_id, m.created_at
+                    m.mention_member_id, m.created_at, {_ADDITIONAL_MENTIONS}
                 FROM inbox_events AS e
                 JOIN messages AS m ON m.message_id = e.message_id
                 WHERE e.member_id = ? AND e.event_id > ? AND e.acknowledged = 0
@@ -2855,16 +2949,16 @@ class Collaboration:
             )
             events = []
             for record in rows:
-                message_columns = (
-                    _DM_EVENT_MESSAGE if record["kind"] == "dm" else _ROOM_EVENT_MESSAGE
+                message = (
+                    {column: record[column] for column in _DM_EVENT_MESSAGE}
+                    if record["kind"] == "dm"
+                    else _room_message(record)
                 )
                 events.append(
                     {
                         "event_id": record["event_id"],
                         "kind": record["kind"],
-                        "message": {
-                            column: record[column] for column in message_columns
-                        },
+                        "message": message,
                     }
                 )
             return events

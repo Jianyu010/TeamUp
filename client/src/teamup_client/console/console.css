@@ -100,9 +100,33 @@ button:focus-visible, select:focus-visible, input:focus-visible {
 #compact-room { display: none; }
 .room-main, .roster { min-width: 0; min-height: 0; display: grid; }
 .room-main { grid-template-rows: auto auto minmax(0,1fr); }
-.roster { grid-template-rows: auto minmax(0,1fr); background: var(--panel); border-left: 1px solid var(--line); }
+.roster { grid-template-rows: auto auto minmax(0,1fr); background: var(--panel); border-left: 1px solid var(--line); }
 .roster h2 { padding: 8px 4px; text-align: center; }
-.roster span { display: block; padding: 6px 8px; overflow-wrap: anywhere; }
+#roster-status { padding-inline: 8px; }
+#roster button { width: 100%; display: grid; gap: 1px; padding: 5px 8px; text-align: left; }
+#roster button:is(:hover,[aria-expanded="true"]) { background: var(--raised); }
+.member-name { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 4px; min-width: 0; }
+.member-name > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.member-name small { color: var(--muted); font: 10px/1.3 ui-monospace, monospace; overflow-wrap: anywhere; }
+.presence { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-size: 11px; }
+.presence::before { content: ""; width: 7px; height: 7px; border-radius: 50%; border: 1px solid currentColor; }
+.presence[data-presence="online"]::before { background: var(--active); border-color: var(--active); }
+.presence[data-presence="offline"]::before { background: #e0726c; border-color: #e0726c; }
+.presence[data-presence="unknown"]::before { background: #e99d47; border-color: #e99d47; }
+#member-detail {
+  position: fixed; inset: auto; margin: 0; width: min(256px, calc(100vw - 20px)); max-height: min(420px, 80dvh);
+  overflow: auto; padding: 12px; border: 1px solid #52645f; border-radius: 7px; background: var(--panel);
+  color: inherit; box-shadow: 0 8px 24px #0007; overflow-wrap: anywhere;
+}
+#member-detail h3, #member-detail h4 { margin: 0; font-size: 13px; }
+#member-detail h4 { margin-top: 9px; }
+#member-detail p, #member-detail ul, #member-detail small { color: var(--muted); font-size: 12px; }
+#member-detail ul { padding-inline-start: 16px; margin: 0; }
+#member-detail small { display: block; }
+.mention-overflow { display: inline; padding-left: 5px; color: var(--muted); font-size: 12px; }
+.mention-overflow summary { display: inline; cursor: pointer; text-decoration: underline; }
+.mention-overflow span { display: block; overflow-wrap: anywhere; }
+.message strong { overflow-wrap: anywhere; }
 .billboard {
   display: grid; gap: 7px; padding: 9px 12px; border: 1px solid #425653;
   border-left: 2px solid #82b3a5; background: #212e2d; border-radius: 6px;
@@ -113,7 +137,7 @@ button:focus-visible, select:focus-visible, input:focus-visible {
 #board-status { color: var(--muted); font-size: 12px; }
 .room-id { display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: 6px; }
 .room-id label { color: var(--muted); font-size: 12px; }
-.room-id input, .chat-heading select {
+.room-id input, #task-actor {
   border: 1px solid var(--edge); border-radius: 5px; background: #192224; min-width: 0; padding: 4px;
 }
 .room-id input { width: 100%; font: 12px/1.25 ui-monospace, monospace; }
@@ -135,8 +159,10 @@ button:focus-visible, select:focus-visible, input:focus-visible {
 #copy-room:is(:hover,:focus-visible) + .copy-tip { opacity: 1; visibility: visible; transition-delay: 1.5s; }
 .copy-control[data-feedback] .copy-tip { opacity: 1; visibility: visible; transition: none; }
 .chat-heading { padding: 9px 0; border-bottom: 1px solid var(--line); }
-.chat-heading label { color: var(--muted); font-size: 12px; }
-#chat-status { padding: 5px; }
+.task-toolbar label { color: var(--muted); font-size: 12px; }
+#chat-status, #history-boundary { padding: 5px; }
+#history-boundary:empty { display: none; }
+#task-actor { max-width: 100%; }
 #chat-status:empty { display: none; }
 #older { color: var(--accent); }
 .message {
@@ -147,7 +173,8 @@ button:focus-visible, select:focus-visible, input:focus-visible {
 .message p { white-space: pre-wrap; overflow-wrap: anywhere; }
 .message strong { color: var(--accent); }
 .team-panel { left: 0; right: 0; padding: 16px; }
-.team-panel li { padding: 6px 0; }
+.team-panel ul { list-style: none; padding: 0; }
+.team-panel li { display: flex; gap: 10px; align-items: baseline; padding: 6px 0; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 @media (max-width: 650px) {
   .stage { --rail: 0%; }
@@ -155,8 +182,8 @@ button:focus-visible, select:focus-visible, input:focus-visible {
   .room-panel { left: 53%; width: 47%; }
   .stage[data-page="room"] .room-panel { left: 0; width: 100%; height: 43px; padding-block: 5px; }
   .stage[data-page="room"] .room-panel .scroll-frame { display: none; }
-  .stage[data-page="room"] .detail { top: 43px; grid-template-columns: minmax(0,1fr); }
-  .stage[data-page="room"] .roster { display: none; }
+  .stage[data-page="room"] .detail { top: 43px; grid-template-columns: minmax(0,1fr) minmax(75px, 23%); gap: 5px; }
+  #roster button { padding-inline: 4px; }
   #compact-room { display: inline; color: var(--accent); padding-left: 4px; }
 }
 @media (max-width: 390px) {

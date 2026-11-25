@@ -33,6 +33,7 @@ TASK = {**ROOM, "task_id": is_uuid}
 DM = {"dm_id": is_uuid}
 HISTORY_POLICIES = ("retained", "since_joining")
 TASK_STATUSES = ("open", "finished")
+PRESENCE_INTERVAL = 15
 
 
 def _history_policy(value):
@@ -51,10 +52,10 @@ def _optional_text(value):
     return value is None or BOARD_TEXT(value)
 
 
-def _addresses(value):
+def _addresses(value, *, minimum=0, maximum=100):
     return (
         isinstance(value, list)
-        and len(value) <= 100
+        and minimum <= len(value) <= maximum
         and all(is_uuid(item) for item in value)
         and len({item.lower() for item in value}) == len(value)
     )
@@ -91,7 +92,10 @@ OPERATIONS = {
         "POST",
         "/rooms/{room_id}/messages",
         {**ROOM, "client_message_id": MESSAGE_KEY, "text": BOARD_TEXT},
-        {"mention_member_id": _mention},
+        {
+            "mention_member_id": _mention,
+            "mention_member_ids": partial(_addresses, minimum=1, maximum=16),
+        },
     ),
     "read_messages": Operation("GET", "/rooms/{room_id}/messages", ROOM, HISTORY),
     "search_room": Operation(
@@ -172,6 +176,7 @@ class Session:
     scope: str
     inbox_changed: asyncio.Event = field(default_factory=asyncio.Event)
     registered: asyncio.Event = field(default_factory=asyncio.Event)
+    presence_ready: asyncio.Event = field(default_factory=asyncio.Event)
     notices_changed: asyncio.Event = field(default_factory=asyncio.Event)
     harness_changed: asyncio.Event = field(default_factory=asyncio.Event)
     workers: list = field(default_factory=list)
@@ -182,6 +187,8 @@ class Session:
 
 
 def _valid(operation, params):
+    if params.get("mention_member_id") is not None and "mention_member_ids" in params:
+        return False
     return (
         operation.required.keys() <= params.keys()
         and params.keys() <= operation.required.keys() | operation.optional.keys()
@@ -358,6 +365,7 @@ class Coordinator:
         if method == "register":
             result = await self._register(binding, operation, params)
             session.registered.set()
+            session.presence_ready.set()
             self._remember_members(session.scope, [result])
             return result
 
@@ -497,7 +505,12 @@ class Coordinator:
     def _start(self, session):
         session.workers = [
             asyncio.create_task(worker(session.binding, session))
-            for worker in (self._watch, self._announce, self._deliver)
+            for worker in (
+                self._watch,
+                self._announce,
+                self._deliver,
+                self._publish_presence,
+            )
         ]
 
     @staticmethod
@@ -528,6 +541,7 @@ class Coordinator:
         while True:
             try:
                 await self._upstream.request("GET", "/members/me", binding.member_token)
+                session.presence_ready.set()
                 async with self._upstream.events(binding.member_token) as lines:
                     await self._drain_with_hints(binding, session, lines)
                 delay = 0.25
@@ -540,6 +554,26 @@ class Coordinator:
             except TimeoutError:
                 delay = min(delay * 2, 5)
             session.registered.clear()
+
+    async def _publish_presence(self, binding, session):
+        ready = session.presence_ready
+        loop = asyncio.get_running_loop()
+        await ready.wait()
+        while True:
+            ready.clear()
+            renew_at = loop.time() + PRESENCE_INTERVAL
+            try:
+                await self._upstream.request(
+                    "POST", "/presence/heartbeat", binding.member_token
+                )
+            except ClientError as exc:
+                if exc.code in ("not_registered", "unauthorized"):
+                    # A new successful member check or registration must rearm it.
+                    await ready.wait()
+                    continue
+            except OSError:
+                pass
+            await asyncio.sleep(max(0, renew_at - loop.time()))
 
     async def _drain_with_hints(self, binding, session, lines):
         wake = session.inbox_changed

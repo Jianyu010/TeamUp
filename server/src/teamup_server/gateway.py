@@ -26,6 +26,7 @@ from starlette.exceptions import HTTPException
 from starlette.types import Send
 
 from .collaboration import Collaboration, CollaborationError, ObserveInbox
+from .presence import Presence
 
 _ERRORS = {
     "invalid_request": (422, "The request is invalid."),
@@ -137,6 +138,10 @@ class _Message(_Body):
     client_message_id: _ShortText
     text: _LongText
     mention_member_id: _Identifier | None = None
+    mention_member_ids: Annotated[
+        list[_Identifier],
+        Field(min_length=1, max_length=16, json_schema_extra={"uniqueItems": True}),
+    ] = Field(default_factory=list)
 
 
 class _TaskCreate(_Body):
@@ -245,6 +250,7 @@ class Gateway:
     def __init__(
         self,
         collaboration: Collaboration,
+        presence: Presence,
         *,
         task_tracer_period: float | None = None,
     ):
@@ -371,6 +377,15 @@ class Gateway:
         def search_members(token: _Bearer, q: str = "") -> dict:
             return {"members": collaboration.search_members(token, q)}
 
+        @app.post("/v1/presence/heartbeat", dependencies=[Depends(_reject_body)])
+        def heartbeat(token: _Bearer) -> dict:
+            return presence.heartbeat(token)
+
+        @app.get("/v1/presence", dependencies=[Depends(_reject_body)])
+        def read_presence(token: _Bearer, response: Response) -> dict:
+            _no_store(response)
+            return presence.snapshot(token)
+
         @app.post("/v1/rooms", dependencies=[Depends(_require_utf8)])
         def create_room(token: _Bearer, body: _Room) -> dict:
             return collaboration.create_room(
@@ -380,6 +395,16 @@ class Gateway:
         @app.get("/v1/rooms")
         def list_rooms(token: _Bearer) -> dict:
             return {"rooms": collaboration.list_rooms(token)}
+
+        @app.get("/v1/rooms/{room_id}", dependencies=[Depends(_reject_body)])
+        def room_detail(token: _Bearer, room_id: _Identifier, response: Response) -> dict:
+            _no_store(response)
+            return collaboration.room_detail(token, room_id)
+
+        @app.get("/v1/rooms/{room_id}/members", dependencies=[Depends(_reject_body)])
+        def room_members(token: _Bearer, room_id: _Identifier, response: Response) -> dict:
+            _no_store(response)
+            return {"members": collaboration.room_members(token, room_id)}
 
         @app.post("/v1/rooms/{room_id}/join", dependencies=[Depends(_reject_body)])
         def join_room(token: _Bearer, room_id: _Identifier) -> dict:
@@ -400,7 +425,9 @@ class Gateway:
 
         @app.post("/v1/rooms/{room_id}/messages", dependencies=[Depends(_require_utf8)])
         def send_message(token: _Bearer, room_id: _Identifier, body: _Message) -> dict:
-            return collaboration.send_message(token, room_id, **body.model_dump())
+            return collaboration.send_message(
+                token, room_id, **body.model_dump(exclude_unset=True)
+            )
 
         @app.get("/v1/rooms/{room_id}/messages")
         def history(
