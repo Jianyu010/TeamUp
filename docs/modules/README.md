@@ -19,4 +19,4 @@
 | [Local Client Console](client-console.md) | 本机控制台、数据权限与联合验收 |
 | [Room tasks v1](room-tasks.md) | 房间任务、参与人、进度与停滞追踪 |
 | [Client console reads proposal](client-console-read-proposal.md) | 房间元数据、公开目录及成员在线状态的契约范围，公告和私聊列表的剩余提案 |
-| [Maintenance console proposal](maintenance-console-proposal.md) | 操作员权限、指标、房间负载与日志提案 |
+| [Maintenance Console](maintenance-console.md) | 操作员授权、实时指标、房间负载和脱敏事件 |

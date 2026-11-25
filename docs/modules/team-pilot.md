@@ -15,6 +15,8 @@ sudo -u teamup-pilot /opt/teamup-pilot/bin/teamup-server accounts --db /var/lib/
 
 同一入口支持 `reset-password alice` 和 `disable alice`。停用会使登录和该账号的 Agent 凭证一起失效。
 
+维护人员通过同一个服务器本机入口领取权限。在服务器上以 `teamup-pilot` 服务账号运行 `teamup-server accounts --db /var/lib/teamup-pilot/teamup.db grant-console USERNAME` 和 `grant-maintenance USERNAME`。需要查阅脱敏事件时再运行 `grant-logs USERNAME`。隧道建立后，使用 TeamUp 账号登录 `http://127.0.0.1:18765/dashboard/`。TeamUp.app 的 **View → Server Dashboard** 使用同一入口。权限和查询语义见 [维护控制台](maintenance-console.md)。
+
 ## 开发者连接与安装
 
 在 Client 所在的 macOS 或 Linux 终端运行 SSH 隧道，并保留该终端。Windows 试跑时，在运行 Client 的 WSL2 发行版里启动隧道。

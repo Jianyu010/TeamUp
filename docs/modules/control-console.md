@@ -85,7 +85,7 @@ Transcript 翻页不使用 `after`：入口请求省略 `before` 取得最新页
 
 ## 静态托管（stage 2 交付）
 
-- Gateway 同源托管**恰好三个**路径：`GET /console/`（HTML）、`GET /console/console.css`、`GET /console/console.js`，与静态包 `server/src/teamup_server/console/` 内文件一一对应、字节一致。不做目录列举、不接受任何其他 `/console/…` 路径（一律 404 `not_found`），方法不符返回 405。`redirect_slashes` 保持关闭，`/console`（无斜杠）不是入口。
+- Gateway 同源托管三项房间控制台资源：`GET /console/`（HTML）、`GET /console/console.css`、`GET /console/console.js`，与静态包 `server/src/teamup_server/console/` 内文件一一对应、字节一致。同源托管维护界面的脚本 `GET /console/maintenance.js`。未声明的资源路径返回 404 `not_found`，方法不符返回 405。`redirect_slashes` 保持关闭，`/console`（无斜杠）不是入口。
 - 响应头：`Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`、`X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`、`Cache-Control: no-cache`（无修订机制前避免陈旧资源）；媒体类型分别为 `text/html; charset=utf-8`、`text/css; charset=utf-8`、`text/javascript; charset=utf-8`。
 - 静态路由不需鉴权，页面内容不含任何私有数据（token 只在 API 鉴权后经 `/v1/console/*` 返回）。控制台无写入 UI；静态托管只做装配，不含业务逻辑。
 
@@ -93,7 +93,7 @@ Transcript 翻页不使用 `after`：入口请求省略 `before` 取得最新页
 
 提供方为 Server Gateway（路由与静态托管由 Server 会话实现），消费方为 Console Web UI（本仓库 `server/src/teamup_server/console/` 静态包，已交付）。记录调用场景、双方约定与兼容性：
 
-1. **静态资源**：同源路径 `/console/`（HTML）、`/console/console.css`、`/console/console.js`，三个文件一一对应，不引入任何第三方脚本、样式、图片或字体；HTML 内资源仅以相对路径引用这两个同源文件。静态包内不含任何业务逻辑；Gateway 按上述精确路径装配托管。
+1. **静态资源**：同源路径 `/console/`（HTML）、`/console/console.css`、`/console/console.js`，房间控制台资源一一对应，不引入任何第三方脚本、样式、图片或字体；HTML 引用发布的同源脚本与样式。房间控制台和 [维护界面](maintenance-console.md) 共用登录和会话内存。静态包内不含任何业务逻辑；Gateway 按上述精确路径装配托管。
 2. **登录**：浏览器向同源 `POST /v1/auth/login` 提交 `{"username","password","purpose":"console"}`，收到 `{"access_token","expires_at"}`。
 3. **token 生命周期**：access token 只存于页面内存（JS 变量），不写 cookie、localStorage、sessionStorage、IndexedDB，不出现在 URL 或查询串；仅以 `Authorization: Bearer` 头调用控制台 GET 路由（及上述登录 POST）；登出、收到 401 或 token 到期即从内存清除并回到登录页。控制台 UI 不持有成员 token 与登记密钥，也不调用登记入口。
 4. **UI 请求纪律**：`transcript_allowed` 为假时不发起任何 transcript 请求，Chats 页签显示无权限；Timeline 以 `after` 翻页；Transcript 省略 `before` 取最新页，以 `before=<当前已展示最旧消息 ID>` 取更早页，`has_more` 为假时不再提供“更早”入口。时间字段（`at`、`created_at`）按 Unix 秒数值渲染，null 显示为未知。分页请求瞬时失败（429、网络错误等可重试失败）时保留已加载行，重试以失败请求的同一游标重发（不重置、不回退到最新页）；授权拒绝、切换房间、手动刷新与登出仍清空已加载的私有内容。

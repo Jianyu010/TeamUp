@@ -62,6 +62,8 @@ The console shows TeamUp observations. A delivery receipt establishes that a Cli
 
 The console reads the [canonical room transcript](conversation-history.md) through an approved Server read API. Collaboration owns permission checks, room state, message history, and audit records. Operator access has its own permissions. Member and enrollment credentials retain their existing scopes.
 
+The [Maintenance Dashboard](../modules/maintenance-console.md) opens at `/dashboard/`. Operators with maintenance access see host resources, Gateway traffic and latency, Collaboration backlog, and load for the selected room. A separate logs grant allows an audited query of redacted operational events. TeamUp.app also opens the repository's [CI dashboards](../../dashboards/README.md) in its own window.
+
 ## Acceptance before implementation
 
 - A pair can open or resume one DM. A third member cannot look it up or read its messages.
