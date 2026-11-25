@@ -9,6 +9,7 @@ const state = {
   actor: null,
   chat: null,
   requestNumber: 0,
+  roomRead: null,
   teamNumber: 0,
   connected: false,
 };
@@ -251,7 +252,9 @@ async function refreshRoom(before) {
   const request = ++state.requestNumber;
   const identity = state.actor;
   const room = state.room;
+  const observedLatest = activeRoom()?.latest_message_id;
   const previous = state.chat;
+  state.roomRead = {room, identity, request};
   const after = !before && previous?.state === "ready" ? previous.messages.at(-1)?.id ?? "0" : null;
   const valid = () => request === state.requestNumber && room === state.room &&
     identity === state.actor && state.page === "room";
@@ -266,6 +269,7 @@ async function refreshRoom(before) {
       if (after !== null) response.older = previous.older;
       if (before) response.more_recent = previous.more_recent;
     }
+    response.observedLatest = before ? previous?.observedLatest : observedLatest;
     state.chat = response;
     renderChat({prepend: Boolean(before), reset: !previous});
   } catch {
@@ -273,6 +277,8 @@ async function refreshRoom(before) {
       state.chat = {state:"unavailable", messages:[]};
       renderChat();
     }
+  } finally {
+    if (state.roomRead?.request === request) state.roomRead = null;
   }
 }
 
@@ -309,7 +315,6 @@ async function refresh() {
   try {
     const snapshot = await read("/api/workspace");
     const changed = JSON.stringify(snapshot) !== JSON.stringify(state.workspace);
-    const latest = activeRoom()?.latest_message_id;
     const oldBoard = activeRoom()?.memberships.find((item) => item.session === state.actor);
     state.workspace = snapshot;
     if (!sessionFor(state.focused)) state.focused = null;
@@ -332,7 +337,12 @@ async function refresh() {
         state.chat = null;
         renderChat();
       }
-      if (boardChanged || active.latest_message_id !== latest || state.chat?.more_recent || state.chat?.state === "unavailable") refreshRoom();
+      const readingCurrentRoom = state.roomRead?.room === state.room &&
+        state.roomRead?.identity === state.actor;
+      const behind = active.latest_message_id !== state.chat?.observedLatest || state.chat?.more_recent;
+      if (boardChanged || (!readingCurrentRoom && (behind || state.chat?.state === "unavailable"))) {
+        refreshRoom();
+      }
     }
     if (changed) {
       renderWorkspace();
