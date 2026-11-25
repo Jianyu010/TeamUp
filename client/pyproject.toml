@@ -22,6 +22,7 @@ cache-keys = [
     { file = "../scripts/package_version.py" },
     { file = "../scripts/ci/version.py" },
     { file = "../TEAMUP-VERSION" },
+    { file = "../.git/shallow" },
     { env = "TEAMUP_VERSION" },
     { git = { commit = true, tags = true } },
 ]

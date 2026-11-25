@@ -100,6 +100,7 @@ button:focus-visible, select:focus-visible, input:focus-visible {
   left: var(--rail); right: 0; opacity: 0; pointer-events: none; padding: 13px;
   transform: translateX(105%); transition: transform 440ms var(--ease), opacity 265ms var(--ease);
   display: grid; grid-template-columns: minmax(0,1fr) minmax(106px, 18%); gap: 10px;
+  grid-template-rows: minmax(380px, 1fr);
 }
 .stage[data-page="room"] .session-panel { transform: translateX(-110%); opacity: 0; pointer-events: none; }
 .stage[data-page="room"] .room-panel { left: 0; width: var(--rail); background: var(--panel); box-shadow: inset -1px 0 var(--edge); }
