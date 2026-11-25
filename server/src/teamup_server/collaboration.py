@@ -1,5 +1,6 @@
 """Transactional owner of TeamUp collaboration state."""
 
+import json
 import logging
 import os
 import re
@@ -50,6 +51,23 @@ _INBOX = """
     JOIN room_members AS rm ON rm.room_id = r.room_id AND rm.member_id = e.member_id
     WHERE e.member_id = ? AND e.event_id > ? AND e.acknowledged = 0
         AND rm.acked_board_version = r.version
+"""
+_TASK = """
+    t.task_id, t.task_number, t.room_id, t.creator_member_id, t.title,
+    t.description, t.status, t.version, t.created_at, t.updated_at,
+    t.started_at, t.last_progress_at, t.finished_at
+"""
+_VISIBLE_TASK = """
+    (
+        t.creator_member_id = ?
+        OR NOT EXISTS (
+            SELECT 1 FROM task_addressees AS a WHERE a.task_id = t.task_id
+        )
+        OR EXISTS (
+            SELECT 1 FROM task_addressees AS a
+            WHERE a.task_id = t.task_id AND a.member_id = ?
+        )
+    )
 """
 
 _SCHEMA = (
@@ -149,6 +167,66 @@ _HISTORY_SCHEMA = (
     CREATE TABLE id_counters (
         counter TEXT PRIMARY KEY CHECK (counter IN ('message_id', 'event_id')),
         last_id INTEGER NOT NULL CHECK (last_id >= 0)
+    )
+    """,
+)
+
+_TASK_SCHEMA = (
+    """
+    CREATE TABLE IF NOT EXISTS tasks (
+        task_id TEXT PRIMARY KEY,
+        task_number INTEGER NOT NULL CHECK (task_number > 0),
+        room_id TEXT NOT NULL REFERENCES rooms(room_id),
+        creator_member_id TEXT NOT NULL REFERENCES members(member_id),
+        client_task_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        description TEXT,
+        status TEXT NOT NULL CHECK (status IN ('open', 'finished')),
+        version INTEGER NOT NULL CHECK (version > 0),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        started_at TEXT,
+        last_progress_at TEXT,
+        finished_at TEXT,
+        UNIQUE (room_id, task_number),
+        UNIQUE (creator_member_id, client_task_id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS task_addressees (
+        task_id TEXT NOT NULL REFERENCES tasks(task_id),
+        member_id TEXT NOT NULL REFERENCES members(member_id),
+        PRIMARY KEY (task_id, member_id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS task_participants (
+        task_id TEXT NOT NULL REFERENCES tasks(task_id),
+        member_id TEXT NOT NULL REFERENCES members(member_id),
+        joined_at TEXT NOT NULL,
+        PRIMARY KEY (task_id, member_id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS task_events (
+        event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        task_id TEXT NOT NULL REFERENCES tasks(task_id),
+        actor_member_id TEXT NOT NULL REFERENCES members(member_id),
+        kind TEXT NOT NULL CHECK (kind IN ('created', 'joined', 'progress', 'finished')),
+        created_at TEXT NOT NULL,
+        note TEXT
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS task_room_order ON tasks (room_id, task_number)",
+    "CREATE INDEX IF NOT EXISTS task_event_order ON task_events (task_id, event_id)",
+    """
+    CREATE TABLE IF NOT EXISTS task_retries (
+        actor_member_id TEXT NOT NULL REFERENCES members(member_id),
+        retry_kind TEXT NOT NULL CHECK (retry_kind IN ('create', 'progress')),
+        client_key TEXT NOT NULL,
+        task_id TEXT NOT NULL REFERENCES tasks(task_id),
+        fingerprint TEXT NOT NULL,
+        PRIMARY KEY (actor_member_id, retry_kind, client_key)
     )
     """,
 )
@@ -368,6 +446,129 @@ def _snippet(body: str, needle: str, hit: int) -> str:
     return body[window : window + _SNIPPET]
 
 
+def _task_fingerprint(values: Iterable[object]) -> str:
+    canonical = json.dumps(
+        list(values), ensure_ascii=False, separators=(",", ":")
+    ).encode("utf-8")
+    return sha256(canonical).hexdigest()
+
+
+def _task_row(
+    connection: sqlite3.Connection, room_id: str, task_id: str
+) -> sqlite3.Row | None:
+    return connection.execute(
+        f"SELECT {_TASK} FROM tasks AS t WHERE t.room_id = ? AND t.task_id = ?",
+        (room_id, task_id),
+    ).fetchone()
+
+
+def _task_visible(
+    connection: sqlite3.Connection, task: sqlite3.Row, member_id: str
+) -> bool:
+    if task["creator_member_id"] == member_id:
+        return True
+    addressed = connection.execute(
+        "SELECT 1 FROM task_addressees WHERE task_id = ? LIMIT 1", (task["task_id"],)
+    ).fetchone()
+    if addressed is None:
+        return True
+    return (
+        connection.execute(
+            """
+            SELECT 1 FROM task_addressees
+            WHERE task_id = ? AND member_id = ?
+            """,
+            (task["task_id"], member_id),
+        ).fetchone()
+        is not None
+    )
+
+
+def _task_projection(
+    connection: sqlite3.Connection, task: sqlite3.Row
+) -> dict:
+    task_id = task["task_id"]
+    return {
+        "task_id": task_id,
+        "task_number": task["task_number"],
+        "room_id": task["room_id"],
+        "creator_member_id": task["creator_member_id"],
+        "title": task["title"],
+        "description": task["description"],
+        "addressed_member_ids": [
+            row[0]
+            for row in connection.execute(
+                "SELECT member_id FROM task_addressees WHERE task_id = ? ORDER BY member_id",
+                (task_id,),
+            )
+        ],
+        "participant_member_ids": [
+            row[0]
+            for row in connection.execute(
+                "SELECT member_id FROM task_participants WHERE task_id = ? ORDER BY member_id",
+                (task_id,),
+            )
+        ],
+        "status": task["status"],
+        "version": task["version"],
+        "created_at": task["created_at"],
+        "updated_at": task["updated_at"],
+        "started_at": task["started_at"],
+        "last_progress_at": task["last_progress_at"],
+        "finished_at": task["finished_at"],
+        "stalled_since": None,
+    }
+
+
+def _authorized_task(
+    connection: sqlite3.Connection, token: str, room_id: str, task_id: str
+) -> tuple[str, sqlite3.Row]:
+    member_id = _member(connection, token)["member_id"]
+    membership = _room_member(connection, room_id, member_id)
+    task = _task_row(connection, room_id, task_id)
+    if task is None or not _task_visible(connection, task, member_id):
+        raise CollaborationError("not_found")
+    _require_current_board(membership)
+    return member_id, task
+
+
+def _validated_addressees(
+    connection: sqlite3.Connection,
+    room_id: str,
+    addressed_member_ids: Iterable[str] | None,
+) -> list[str]:
+    addressees = list(addressed_member_ids or ())
+    if len(addressees) > 100 or len(set(addressees)) != len(addressees):
+        raise CollaborationError("invalid_request")
+    for member_id in addressees:
+        if (
+            connection.execute(
+                "SELECT 1 FROM room_members WHERE room_id = ? AND member_id = ?",
+                (room_id, member_id),
+            ).fetchone()
+            is None
+        ):
+            raise CollaborationError("invalid_request")
+    return sorted(addressees)
+
+
+def _add_task_event(
+    connection: sqlite3.Connection,
+    task_id: str,
+    actor_member_id: str,
+    kind: str,
+    created_at: str,
+    note: str | None = None,
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO task_events (task_id, actor_member_id, kind, created_at, note)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (task_id, actor_member_id, kind, created_at, note),
+    )
+
+
 class Collaboration:
     """Public operations and post-commit inbox subscriptions."""
 
@@ -402,6 +603,8 @@ class Collaboration:
                 connection.execute("PRAGMA user_version = 3")
             elif version != 3:
                 raise ValueError("Unsupported TeamUp database schema version")
+            for statement in _TASK_SCHEMA:
+                connection.execute(statement)
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self._db_path, isolation_level=None)
@@ -924,6 +1127,324 @@ class Collaboration:
                 }
                 for row in rows
             ]
+
+    def create_task(
+        self,
+        token: str,
+        room_id: str,
+        client_task_id: str,
+        title: str,
+        description: str | None,
+        addressed_member_ids: Iterable[str] | None,
+    ) -> dict:
+        with self._transaction(write=True) as connection:
+            member_id = _member(connection, token)["member_id"]
+            membership = _room_member(connection, room_id, member_id)
+            _require_current_board(membership)
+            raw_addressees = list(addressed_member_ids or ())
+            fingerprint = _task_fingerprint(
+                ("create", room_id, title, description, sorted(raw_addressees))
+            )
+            retry = connection.execute(
+                """
+                SELECT task_id, fingerprint FROM task_retries
+                WHERE actor_member_id = ? AND retry_kind = 'create'
+                    AND client_key = ?
+                """,
+                (member_id, client_task_id),
+            ).fetchone()
+            if retry is not None:
+                if retry["fingerprint"] != fingerprint:
+                    raise CollaborationError("conflict")
+                task = _task_row(connection, room_id, retry["task_id"])
+                if task is None:
+                    raise CollaborationError("not_found")
+                return _task_projection(connection, task)
+            addressees = _validated_addressees(
+                connection, room_id, raw_addressees
+            )
+            now = _rfc3339_utc_now()
+            task_id = str(uuid4())
+            task_number = connection.execute(
+                """
+                SELECT COALESCE(MAX(task_number), 0) + 1 FROM tasks
+                WHERE room_id = ?
+                """,
+                (room_id,),
+            ).fetchone()[0]
+            connection.execute(
+                """
+                INSERT INTO tasks (
+                    task_id, task_number, room_id, creator_member_id,
+                    client_task_id, title, description, status, version,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'open', 1, ?, ?)
+                """,
+                (
+                    task_id,
+                    task_number,
+                    room_id,
+                    member_id,
+                    client_task_id,
+                    title,
+                    description,
+                    now,
+                    now,
+                ),
+            )
+            for addressee in addressees:
+                connection.execute(
+                    "INSERT INTO task_addressees (task_id, member_id) VALUES (?, ?)",
+                    (task_id, addressee),
+                )
+            _add_task_event(connection, task_id, member_id, "created", now)
+            connection.execute(
+                """
+                INSERT INTO task_retries (
+                    actor_member_id, retry_kind, client_key, task_id, fingerprint
+                ) VALUES (?, 'create', ?, ?, ?)
+                """,
+                (member_id, client_task_id, task_id, fingerprint),
+            )
+            task = _task_row(connection, room_id, task_id)
+            if task is None:
+                raise CollaborationError("not_found")
+            return _task_projection(connection, task)
+
+    def list_tasks(
+        self,
+        token: str,
+        room_id: str,
+        status: str | None = None,
+        after: int = 0,
+        limit: int = 50,
+    ) -> dict:
+        if status not in (None, "open", "finished"):
+            raise CollaborationError("invalid_request")
+        with self._transaction() as connection:
+            member_id = _member(connection, token)["member_id"]
+            membership = _room_member(connection, room_id, member_id)
+            _require_current_board(membership)
+            if limit <= 0:
+                return {"tasks": [], "next_after": None}
+            cursor = min(max(after, 0), _SQLITE_MAX_ID)
+            status_filter = " AND t.status = ?" if status is not None else ""
+            values: list[object] = [room_id, cursor]
+            if status is not None:
+                values.append(status)
+            values.extend((member_id, member_id, limit + 1))
+            rows = connection.execute(
+                f"""
+                SELECT {_TASK} FROM tasks AS t
+                WHERE t.room_id = ? AND t.task_number > ?{status_filter}
+                    AND {_VISIBLE_TASK}
+                ORDER BY t.task_number
+                LIMIT ?
+                """,
+                values,
+            ).fetchall()
+            next_after = (
+                rows[limit - 1]["task_number"] if len(rows) > limit else None
+            )
+            return {
+                "tasks": [
+                    _task_projection(connection, task) for task in rows[:limit]
+                ],
+                "next_after": next_after,
+            }
+
+    def get_task(self, token: str, room_id: str, task_id: str) -> dict:
+        with self._transaction() as connection:
+            _, task = _authorized_task(connection, token, room_id, task_id)
+            return _task_projection(connection, task)
+
+    def join_task(self, token: str, room_id: str, task_id: str) -> dict:
+        with self._transaction(write=True) as connection:
+            member_id, task = _authorized_task(
+                connection, token, room_id, task_id
+            )
+            addressed = connection.execute(
+                "SELECT 1 FROM task_addressees WHERE task_id = ? LIMIT 1",
+                (task_id,),
+            ).fetchone()
+            if addressed is not None and (
+                connection.execute(
+                    """
+                    SELECT 1 FROM task_addressees
+                    WHERE task_id = ? AND member_id = ?
+                    """,
+                    (task_id, member_id),
+                ).fetchone()
+                is None
+            ):
+                raise CollaborationError("not_found")
+            if (
+                connection.execute(
+                    """
+                    SELECT 1 FROM task_participants
+                    WHERE task_id = ? AND member_id = ?
+                    """,
+                    (task_id, member_id),
+                ).fetchone()
+                is not None
+            ):
+                return _task_projection(connection, task)
+            if task["status"] != "open":
+                raise CollaborationError("conflict")
+            now = _rfc3339_utc_now()
+            connection.execute(
+                """
+                INSERT INTO task_participants (task_id, member_id, joined_at)
+                VALUES (?, ?, ?)
+                """,
+                (task_id, member_id, now),
+            )
+            connection.execute(
+                """
+                UPDATE tasks SET
+                    started_at = COALESCE(started_at, ?),
+                    version = version + 1,
+                    updated_at = ?
+                WHERE task_id = ?
+                """,
+                (now, now, task_id),
+            )
+            _add_task_event(connection, task_id, member_id, "joined", now)
+            joined = _task_row(connection, room_id, task_id)
+            if joined is None:
+                raise CollaborationError("not_found")
+            return _task_projection(connection, joined)
+
+    def report_progress(
+        self,
+        token: str,
+        room_id: str,
+        task_id: str,
+        client_progress_id: str,
+        note: str,
+    ) -> dict:
+        with self._transaction(write=True) as connection:
+            member_id, task = _authorized_task(
+                connection, token, room_id, task_id
+            )
+            if (
+                connection.execute(
+                    """
+                    SELECT 1 FROM task_participants
+                    WHERE task_id = ? AND member_id = ?
+                    """,
+                    (task_id, member_id),
+                ).fetchone()
+                is None
+            ):
+                raise CollaborationError("not_found")
+            fingerprint = _task_fingerprint(("progress", task_id, note))
+            retry = connection.execute(
+                """
+                SELECT task_id, fingerprint FROM task_retries
+                WHERE actor_member_id = ? AND retry_kind = 'progress'
+                    AND client_key = ?
+                """,
+                (member_id, client_progress_id),
+            ).fetchone()
+            if retry is not None:
+                if retry["fingerprint"] != fingerprint:
+                    raise CollaborationError("conflict")
+                return _task_projection(connection, task)
+            if task["status"] != "open":
+                raise CollaborationError("conflict")
+            now = _rfc3339_utc_now()
+            connection.execute(
+                """
+                UPDATE tasks SET
+                    last_progress_at = ?,
+                    version = version + 1,
+                    updated_at = ?
+                WHERE task_id = ?
+                """,
+                (now, now, task_id),
+            )
+            _add_task_event(
+                connection, task_id, member_id, "progress", now, note
+            )
+            connection.execute(
+                """
+                INSERT INTO task_retries (
+                    actor_member_id, retry_kind, client_key, task_id, fingerprint
+                ) VALUES (?, 'progress', ?, ?, ?)
+                """,
+                (member_id, client_progress_id, task_id, fingerprint),
+            )
+            updated = _task_row(connection, room_id, task_id)
+            if updated is None:
+                raise CollaborationError("not_found")
+            return _task_projection(connection, updated)
+
+    def finish_task(self, token: str, room_id: str, task_id: str) -> dict:
+        with self._transaction(write=True) as connection:
+            member_id, task = _authorized_task(
+                connection, token, room_id, task_id
+            )
+            participant = (
+                connection.execute(
+                    """
+                    SELECT 1 FROM task_participants
+                    WHERE task_id = ? AND member_id = ?
+                    """,
+                    (task_id, member_id),
+                ).fetchone()
+                is not None
+            )
+            if task["creator_member_id"] != member_id and not participant:
+                raise CollaborationError("not_found")
+            if task["status"] == "finished":
+                return _task_projection(connection, task)
+            now = _rfc3339_utc_now()
+            connection.execute(
+                """
+                UPDATE tasks SET
+                    status = 'finished',
+                    finished_at = ?,
+                    version = version + 1,
+                    updated_at = ?
+                WHERE task_id = ?
+                """,
+                (now, now, task_id),
+            )
+            _add_task_event(connection, task_id, member_id, "finished", now)
+            finished = _task_row(connection, room_id, task_id)
+            if finished is None:
+                raise CollaborationError("not_found")
+            return _task_projection(connection, finished)
+
+    def task_history(
+        self,
+        token: str,
+        room_id: str,
+        task_id: str,
+        after: int = 0,
+        limit: int = 50,
+    ) -> dict:
+        with self._transaction() as connection:
+            _authorized_task(connection, token, room_id, task_id)
+            if limit <= 0:
+                return {"events": [], "next_after": None}
+            cursor = min(max(after, 0), _SQLITE_MAX_ID)
+            rows = connection.execute(
+                """
+                SELECT event_id, task_id, actor_member_id, kind, created_at, note
+                FROM task_events
+                WHERE task_id = ? AND event_id > ?
+                ORDER BY event_id
+                LIMIT ?
+                """,
+                (task_id, cursor, limit + 1),
+            ).fetchall()
+            next_after = rows[limit - 1]["event_id"] if len(rows) > limit else None
+            return {
+                "events": [dict(row) for row in rows[:limit]],
+                "next_after": next_after,
+            }
 
     def inbox(self, token: str, after: int, limit: int) -> list[dict]:
         with self._transaction() as connection:
