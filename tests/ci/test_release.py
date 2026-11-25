@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -99,6 +100,33 @@ def test_build_version_counts_first_parent_merges_since_the_tag() -> None:
     assert version.build(gh, "d").version == "0.1.1.dev3"
     assert version.build(gh, "m1").version == "0.1.1.dev1"
     assert version.build(gh, "c").version == "0.1.0"
+
+
+def test_checkout_version_counts_only_the_pinned_first_parent_history(tmp_path):
+    def git(*args):
+        return subprocess.check_output(["git", *args], cwd=tmp_path, text=True).strip()
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.name", "Local build")
+    git("config", "user.email", "local@example.test")
+    git("commit", "-q", "--allow-empty", "-m", "Stable baseline")
+    git("tag", "-a", "v0.0.1", "-m", "First stable release")
+    git("switch", "-q", "-c", "topic")
+    git("commit", "-q", "--allow-empty", "-m", "First topic commit")
+    git("commit", "-q", "--allow-empty", "-m", "Second topic commit")
+    git("tag", "v9.0.0")
+    git("switch", "-q", "main")
+    git("merge", "-q", "--no-ff", "-m", "Merge topic", "topic")
+    development = git("rev-parse", "HEAD")
+    git("commit", "-q", "--allow-empty", "-m", "Next stable release")
+    git("tag", "v0.0.2")
+    git("commit", "-q", "--allow-empty", "-m", "Development resumes")
+
+    assert version.checkout_build(tmp_path, "v0.0.1").version == "0.0.1"
+    first = version.checkout_build(tmp_path, development)
+    assert (first.version, first.count, first.tag) == ("0.0.2.dev1", 1, "v0.0.1")
+    assert version.checkout_build(tmp_path, "v0.0.2").version == "0.0.2"
+    assert version.checkout_build(tmp_path).version == "0.0.3.dev1"
 
 
 def test_a_tag_off_the_history_is_refused() -> None:

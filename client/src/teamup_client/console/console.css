@@ -15,7 +15,7 @@
 }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
-body { padding: clamp(8px, 2vw, 22px); margin: 0; }
+body { --inset: clamp(8px, 2vw, 22px); padding: var(--inset); margin: 0; }
 h1, h2, p { margin: 0; }
 h2 { font-size: 14px; font-weight: 620; }
 button, select, input { font: inherit; color: inherit; }
@@ -33,6 +33,8 @@ button:focus-visible, select:focus-visible, input:focus-visible {
 .console {
   background: var(--shell); border: 1px solid var(--edge); border-radius: 13px;
   width: min(1400px, 100%); margin: auto; overflow: hidden;
+  height: calc(100dvh - 2 * var(--inset)); min-height: 330px;
+  display: grid; grid-template-rows: auto minmax(0, 1fr) auto;
   box-shadow: 0 21px 40px #080d1033;
 }
 .chrome {
@@ -46,9 +48,15 @@ button:focus-visible, select:focus-visible, input:focus-visible {
 #connection[data-live="true"] { color: var(--active); }
 .stage {
   --rail: 22%; position: relative; isolation: isolate;
-  height: clamp(450px, calc(100dvh - 100px), 740px); overflow: hidden;
+  overflow: hidden;
   background: radial-gradient(ellipse at 50% 35%,#2f423b40,transparent 69%);
 }
+.versions {
+  display: flex; flex-wrap: wrap; gap: 2px 16px; padding: 6px 16px;
+  border-top: 1px solid var(--edge); color: var(--muted); font-size: 12px;
+  font-variant-numeric: tabular-nums; overflow-wrap: anywhere;
+}
+.versions span span { color: #e9ece6; }
 #links { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 #links path { fill: none; stroke: #81938e; stroke-width: 1; opacity: .36; }
 #links path[data-focused="true"] { opacity: .58; }

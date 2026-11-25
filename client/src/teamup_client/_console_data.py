@@ -4,6 +4,7 @@ import asyncio
 from collections import Counter
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from importlib.metadata import PackageNotFoundError, version
 from typing import Protocol
 
 from ._protocol import is_integer, is_string
@@ -15,6 +16,7 @@ VISIBLE_WIRE_LIMIT = 20
 TASK_OBSERVATION_SECONDS = 2
 TASK_OBSERVATION_PAGES = 2
 PRESENCE_OBSERVATION_SECONDS = 2
+VERSION_OBSERVATION_SECONDS = 2
 MAX_BEFORE = 1 << 63  # The Server treats this as an unbounded latest-page read.
 
 
@@ -90,7 +92,7 @@ class Request(Protocol):
         self,
         method: str,
         path: str,
-        token: str,
+        token: str | None,
         *,
         query: dict | None = None,
         body: dict | None = None,
@@ -104,6 +106,30 @@ class ConsoleReader:
         self._sessions = sessions
         self._request = request
         self._reads = asyncio.Semaphore(8)
+        try:
+            installed_version = version("teamup-client")
+        except PackageNotFoundError:
+            installed_version = None
+        self._version = (
+            None if installed_version == "0.0.0+unknown" else installed_version
+        )
+
+    async def versions(self) -> dict:
+        server_version = None
+        try:
+            async with asyncio.timeout(VERSION_OBSERVATION_SECONDS):
+                result = await self._request("GET", "/version", None)
+        except (ClientError, TimeoutError):
+            state = "unavailable"
+        else:
+            reported = result.get("version")
+            server_version = reported if is_string(reported, 100) else None
+            state = "ready" if server_version is not None else "unknown"
+        return {
+            "client_version": self._version,
+            "server_version": server_version,
+            "server_state": state,
+        }
 
     def _current(self, identity: str) -> ConsoleSession | None:
         return next((item for item in self._sessions() if item.id == identity), None)

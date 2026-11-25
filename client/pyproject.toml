@@ -1,6 +1,6 @@
 [project]
 name = "teamup-client"
-version = "0.1.0"
+dynamic = ["version"]
 requires-python = ">=3.12"
 dependencies = ["httpx>=0.28,<1", "pydantic>=2.10,<3"]
 
@@ -10,3 +10,18 @@ teamup-client = "teamup_client.main:main"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "code"
+path = "../scripts/package_version.py"
+search-paths = [".."]
+
+[tool.uv]
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "../scripts/package_version.py" },
+    { file = "../scripts/ci/version.py" },
+    { file = "../TEAMUP-VERSION" },
+    { env = "TEAMUP_VERSION" },
+    { git = { commit = true, tags = true } },
+]

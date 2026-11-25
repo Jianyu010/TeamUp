@@ -50,8 +50,12 @@ caddy run --config /opt/teamup-pilot/Caddyfile --adapter caddyfile
 客户端源码必须与 SSH 路径同源。在仓库根对固定修订执行 `git archive`，记录 SHA256 摘要，经团队批准的独立私密渠道分发；本 HTTPS 站点只转发 `/v1`，不提供源码下载，不得作为分发通道。成员校验摘要一致后再解压安装，不接受来源不明的压缩包。
 
 ```sh
-git archive --format=tar.gz --prefix=teamup-account-pilot/ -o teamup-client-src.tar.gz <pinned-revision>
-sha256sum teamup-client-src.tar.gz
+revision='<pinned-revision>'
+stage=$(mktemp -d)
+python3 -m scripts.ci.version --local --sha "$revision" > "$stage/TEAMUP-VERSION" &&
+  git archive --format=tar.gz --prefix=teamup-account-pilot/ \
+    --add-file="$stage/TEAMUP-VERSION" -o teamup-client-src.tar.gz "$revision" &&
+  sha256sum teamup-client-src.tar.gz
 ```
 
 ## 成员连接

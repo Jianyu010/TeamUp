@@ -99,6 +99,8 @@ class Upstream:
             )
         except httpx.HTTPError:
             raise unavailable() from None
+        if response.status_code == 404 and method == "GET" and path == "/version":
+            return {}  # Older Servers have no build metadata endpoint.
         if response.status_code != 200:
             raise _status_error(response, member_auth=member_auth)
         try:

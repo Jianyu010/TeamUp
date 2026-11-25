@@ -199,6 +199,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def _operation(self, path, query):
         params = self._params(query)
+        if path == "/api/versions":
+            if params:
+                raise ValueError
+            return self._reader.versions()
         if path == "/api/workspace" and not params:
             return self._reader.workspace()
         if path == "/api/team" and set(params) == {"session"}:
