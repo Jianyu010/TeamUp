@@ -32,6 +32,25 @@ def test_stdio_passes_approved_binding_and_surfaces_ipc_error():
             ),
             ("get_board", {"room_id": "room"}, None),
             (
+                "open_dm",
+                {"member_id": "b"},
+                {"dm_id": "d", "peer_member_id": "b"},
+            ),
+            (
+                "send_dm",
+                {"dm_id": "d", "client_message_id": "x", "text": "Hello"},
+                {"message_id": 2, "dm_id": "d"},
+            ),
+            (
+                "read_dm",
+                {"dm_id": "d", "after": 0, "limit": 10},
+                {
+                    "messages": [],
+                    "expired_through_message_id": 0,
+                    "history_truncated": True,
+                },
+            ),
+            (
                 "search_room",
                 {"room_id": "room", "q": "Hello", "after": 0, "limit": 10},
                 {
@@ -51,7 +70,7 @@ def test_stdio_passes_approved_binding_and_surfaces_ipc_error():
             ("notifications", {}, {"notifications": []}),
         ]
         # Unread counts the Client reports after each successful non-notice tool.
-        unread = iter([0, 2, 0, 0])
+        unread = iter([0, 2, 0, 0, 0, 0, 0])
         seen = []
 
         async def serve(reader, writer):
@@ -96,6 +115,46 @@ def test_stdio_passes_approved_binding_and_surfaces_ipc_error():
             assert "private handoff" in instructions
             tools = {tool.name: tool for tool in (await session.list_tools()).tools}
             assert "three or more" in tools["teamup_create_room"].description
+            assert "retry" in tools["teamup_send_dm"].description
+            assert "same conversation" in tools["teamup_open_dm"].description
+            assert "last event_id as after" in (
+                tools["teamup_notifications"].description
+            )
+            assert tools["teamup_open_dm"].inputSchema == {
+                "type": "object",
+                "properties": {"member_id": {"type": "string", "format": "uuid"}},
+                "required": ["member_id"],
+                "additionalProperties": False,
+            }
+            assert tools["teamup_send_dm"].inputSchema == {
+                "type": "object",
+                "properties": {
+                    "dm_id": {"type": "string", "format": "uuid"},
+                    "client_message_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128,
+                    },
+                    "text": {"type": "string", "minLength": 1, "maxLength": 8_000},
+                },
+                "required": ["dm_id", "client_message_id", "text"],
+                "additionalProperties": False,
+            }
+            assert tools["teamup_read_dm"].inputSchema == {
+                "type": "object",
+                "properties": {
+                    "dm_id": {"type": "string", "format": "uuid"},
+                    "after": {"type": "integer", "minimum": 0, "default": 0},
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 100,
+                        "default": 50,
+                    },
+                },
+                "required": ["dm_id"],
+                "additionalProperties": False,
+            }
             assert tools["teamup_list_rooms"].inputSchema == {
                 "type": "object",
                 "properties": {},
@@ -113,6 +172,9 @@ def test_stdio_passes_approved_binding_and_surfaces_ipc_error():
                 "teamup_send_message",
                 "teamup_read_messages",
                 "teamup_search_room",
+                "teamup_open_dm",
+                "teamup_send_dm",
+                "teamup_read_dm",
                 "teamup_notifications",
             }
             search_schema = tools["teamup_search_room"].inputSchema
@@ -146,6 +208,9 @@ def test_stdio_passes_approved_binding_and_surfaces_ipc_error():
                 [],
                 [],
                 [],
+                [],
+                [],
+                [],
             ]
 
         def ipc(method, params):
@@ -163,12 +228,31 @@ def test_stdio_passes_approved_binding_and_surfaces_ipc_error():
             ipc("send_message", requests[1][1]),
             status,
             ipc("get_board", requests[2][1]),
-            ipc("search_room", requests[3][1]),
+            ipc("open_dm", requests[3][1]),
             status,
-            ipc("list_rooms", requests[4][1]),
+            ipc("send_dm", requests[4][1]),
+            status,
+            ipc("read_dm", requests[5][1]),
+            status,
+            ipc("search_room", requests[6][1]),
+            status,
+            ipc("list_rooms", requests[7][1]),
             status,
             ipc("notifications", {}),
         ]
 
     with tempfile.TemporaryDirectory(prefix="tu-mcp-", dir="/tmp") as directory:
         asyncio.run(run(Path(directory) / "teamup.sock"))
+
+
+def test_collaboration_skill_covers_dm_handoff_and_privacy():
+    skill = (ROOT / "plugin/skills/teamup-collaboration/SKILL.md").read_text()
+    lowered = skill.lower()
+    assert "teamup_open_dm" in lowered
+    assert "teamup_send_dm" in lowered
+    assert "teamup_read_dm" in lowered
+    assert "same conversation" in lowered
+    assert "older client release" in lowered
+    assert "do not use a room as a substitute" in lowered
+    assert "logs" in lowered
+    assert "wake automatically" in lowered

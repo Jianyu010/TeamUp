@@ -10,6 +10,8 @@ from mcp.types import CallToolResult, TextContent, Tool
 from teamup_client.ipc import ClientError, attach, call
 
 ROOM = {"room_id": {"type": "string", "format": "uuid"}}
+DM = {"dm_id": {"type": "string", "format": "uuid"}}
+MESSAGE_KEY = {"type": "string", "minLength": 1, "maxLength": 128}
 TEXT = {"type": "string", "minLength": 1, "maxLength": 8_000}
 NAME = {"type": "string", "minLength": 1, "maxLength": 200}
 QUERY = {"type": "string", "minLength": 1, "maxLength": 200}
@@ -88,8 +90,31 @@ TOOLS = [
         PAGE,
     ),
     tool(
+        "open_dm",
+        "Open the private DM with another member. "
+        "Every open returns the same conversation for the pair.",
+        {"member_id": {"type": "string", "format": "uuid"}},
+    ),
+    tool(
+        "send_dm",
+        "Send a private DM message to the peer. There is no mention field; "
+        "keep the same client_message_id when retrying a message.",
+        DM | {"client_message_id": MESSAGE_KEY, "text": TEXT},
+    ),
+    tool(
+        "read_dm",
+        "Read DM messages after a message ID. "
+        "The response may report that older DM history expired.",
+        DM,
+        PAGE,
+    ),
+    tool(
         "notifications",
-        "List received mentions after an event ID. Open room history for their text.",
+        "List received mentions and DM notices after an event ID. "
+        "Open room or DM history for their text. Rows stay after delivery, "
+        "so a full first page can hold only older rows: when a page returns "
+        "limit rows, pass its last event_id as after until a shorter page "
+        "returns.",
         optional=PAGE,
     ),
 ]
@@ -174,8 +199,11 @@ def create_mcp(socket_path: str, binding_key: str, live: dict | None = None) -> 
             "choices, do not repeat it on rejoin, and do not invent a persistent "
             "room role. Until the task contract is published, treat natural task "
             "requests as discussion and never invent task tools. "
+            "Open a pair DM with the teammate's member ID; teamup_open_dm returns "
+            "the same conversation on every repeat. "
             "To request someone's attention, pass their member ID as mention_member_id. "
             "Use a fresh client_message_id for each new message and keep it on retry. "
+            "Keep DM text between the two participants and out of logs and rooms. "
             "Follow local sharing permissions."
         ),
     )

@@ -32,7 +32,7 @@ MCP/IPC 在既有 `teamup_create_room` / `create_room` 增加可选 `history_pol
 - 清理在一个事务内删去到期消息和引用它的投递，推进会话自己的 `expired_through_message_id` 到已删除的最大消息 ID。空历史仍保留这项边界。最早尚存的消息不能证明发生过删除。
 - 对已发生删除的会话，授权历史和搜索响应追加 `expired_through_message_id` 与 `history_truncated`。后者表示请求游标与授权的加入位置合并后，仍落后于这次请求覆盖范围内的到期记录。旧客户端可以继续读取现有 `messages`/ `matches` 数组。
 - 收件箱重连仍补收可授权的未确认事件。已经到期的事件不再投递。消息存在时，同键同内容的授权重试返回原消息。清理后再次使用同键可创建消息，用新的 ID。
-- [私聊规格](../specs/collaboration-surfaces.md#direct-messages) 定义参与权限和操作。私聊复用时间戳、ID、边界和清理语义。[控制台规格](../specs/collaboration-surfaces.md#control-console) 定义房间正文授权和无正文审计。控制台通过 Collaboration 的规范房间查询读取同一批消息。
+- [私聊契约](direct-messages.md) 定义参与权限和操作。私聊复用时间戳、ID、边界和清理语义。[控制台规格](../specs/collaboration-surfaces.md#control-console) 定义房间正文授权和无正文审计。控制台通过 Collaboration 的规范房间查询读取同一批消息。
 
 ## 验收
 

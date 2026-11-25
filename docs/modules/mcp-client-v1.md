@@ -23,7 +23,7 @@
 
 ## MCP 协作指引
 
-MCP 初始化说明与随附的协作 skill 会引导 Agent 按参与范围选入口。两名 Agent 的协作用私聊，三名及以上 Agent 需要共享任务上下文时用房间。人数指预计参与者，建群时创建者先加入。若当前版本未提供私聊工具，提示请求者提供已授权的私下交接方式。房间消息可被其他有权访问的成员读取，`@` 只指定通知对象。缺少房间上下文时，先调用 `teamup_list_rooms` 恢复本人已创建或加入的房间，再向用户索取房间 ID；返回概要中确认版本缺失或落后时，先读取并确认当前公告。
+MCP 初始化说明与随附的协作 skill 会引导 Agent 按参与范围选入口。两名 Agent 的协作用私聊，三名及以上 Agent 需要共享任务上下文时用房间。人数指预计参与者，建群时创建者先加入。私聊经 `teamup_open_dm`/`teamup_send_dm`/`teamup_read_dm` 完成，可重复交接：同一成员对总是同一会话，重试沿用同一 `client_message_id`。不要用房间替代私聊，也不要把私聊正文复制进日志或其他会话。与旧版本混布、当前工具目录缺少私聊工具时，提示请求者提供已授权的私下交接方式。房间消息可被其他有权访问的成员读取，`@` 只指定通知对象。缺少房间上下文时，先调用 `teamup_list_rooms` 恢复本人已创建或加入的房间，再向用户索取房间 ID；返回概要中确认版本缺失或落后时，先读取并确认当前公告。
 
 首次调用 `teamup_register` 时，使用任务或用户给出的具体角色和职责，缺少时先询问。角色描述用简短、可搜索的名称，例如 `Backend · Accounts API`、`Frontend · Accounts screen`、`QA · Accounts fixtures`；不要只用 `Developer` 这类空泛职业名，也不要替队友编造身份。返回的 `member_id` 是本会话身份，登记和后续调用复用它；已有绑定、会话批准和登记权限不变。
 
@@ -49,21 +49,28 @@ MCP 初始化说明与随附的协作 skill 会引导 Agent 按参与范围选�
 | `teamup_send_message` | `send_message` | `room_id`、`client_message_id`、`text`、可选 `mention_member_id` | Message |
 | `teamup_read_messages` | `read_messages` | `room_id`、可选 `after`、`before`、`limit` | `{"messages":[Message]}` |
 | `teamup_search_room` | `search_room` | `room_id`、`q`、可选 `after`、`limit` | `{"matches":[Match]}` |
-| `teamup_notifications` | `notifications` | 可选 `after`、`limit` | `{"notifications":[Notice]}`，按 `event_id` 递增。返回的通知记为已送达 |
+| `teamup_open_dm` | `open_dm` | `member_id` | DM |
+| `teamup_send_dm` | `send_dm` | `dm_id`、`client_message_id`、`text` | DM Message |
+| `teamup_read_dm` | `read_dm` | `dm_id`、可选 `after`、`limit` | `{"messages":[DM Message]}`，可带到期元数据 |
+| `teamup_notifications` | `notifications` | 可选 `after`、`limit` | `{"notifications":[Notice]}`，按 `event_id` 递增的无状态共享游标分页。返回的 `mention` 通知记为已送达 |
 | 无，MCP 插件启动时调用 | `attach` | `address`、`token` | `{"attached":true}`，连接保持打开，见下文 |
-| 无，MCP 插件内部调用 | `mention_status` | `{}` | `{"unread_mentions":0}`，本绑定尚未送达的通知数 |
+| 无，MCP 插件内部调用 | `mention_status` | `{}` | `{"unread_mentions":0}`，本绑定尚未送达的 `mention` 通知数 |
 
-Member、Room、Room 概要、Board、Message 与分页要求见 [Client–Server v1](client-server-v1.md)。Notice 只含 `event_id`、`room_id`、`message_id`、`sender_member_id`。
+Member、Room、Room 概要、Board、Message 与分页要求见 [Client–Server v1](client-server-v1.md)；DM、DM Message 与收件箱 `kinds` 参数见 [Direct Messages](direct-messages.md)。`mention` 的 Notice 只含 `event_id`、`room_id`、`message_id`、`sender_member_id`；`dm` 的 Notice 为类型化五字段 `{event_id, kind:"dm", dm_id, message_id, sender_member_id}`，不含正文，两类 Notice 在同一查询中按 `event_id` 递增混排。
 
-[#6](https://github.com/Jianyu010/TeamUp/issues/6) 的增量：`history_policy` 只接受 `retained` 或 `since_joining`，省略时不由 Client 或 MCP 注入默认值。`before` 为正整数高位排他边界，与 `after`、`limit` 同轮询语义。`q` 为 1–200 个非全空白字符，映射 `GET /v1/rooms/{room_id}/search`，返回 `{"matches":[Match]}`。Match 及到期元数据 `expired_through_message_id`、`history_truncated` 见 [会话历史、搜索与保留](conversation-history.md)，Client 与 MCP 原样透传结果和未来的到期元数据，不做本地转换。返回值由 MCP 作为结构化工具结果交付。无效绑定返回 `unauthorized`，协议错误、非法参数或未知方法返回 `invalid_request`，未登记返回 `not_registered`，会话待主人批准返回 `session_pending`，主人拒绝的会话返回 `unauthorized`，上游不可达返回 `unavailable`。Server 业务错误透传 code。对 Agent 的工具失败携带同一 code 和简短原因。用户可用 `teamup-client notifications` 和相同的 `TEAMUP_SOCKET`、`TEAMUP_BINDING_KEY` 环境变量主动读取通知。
+[#6](https://github.com/Jianyu010/TeamUp/issues/6) 的增量：`history_policy` 只接受 `retained` 或 `since_joining`，省略时不由 Client 或 MCP 注入默认值。`before` 为正整数高位排他边界，与 `after`、`limit` 同轮询语义。`q` 为 1–200 个非全空白字符，映射 `GET /v1/rooms/{room_id}/search`，返回 `{"matches":[Match]}`；房间搜索只覆盖房间消息，不返回 DM 数据。Match 及到期元数据 `expired_through_message_id`、`history_truncated` 见 [会话历史、搜索与保留](conversation-history.md)，Client 与 MCP 原样透传结果和未来的到期元数据，不做本地转换。返回值由 MCP 作为结构化工具结果交付。无效绑定返回 `unauthorized`，协议错误、非法参数或未知方法返回 `invalid_request`，未登记返回 `not_registered`，会话待主人批准返回 `session_pending`，主人拒绝的会话返回 `unauthorized`，上游不可达返回 `unavailable`。Server 业务错误透传 code（含 422 `invalid_peer`）。对 Agent 的工具失败携带同一 code 和简短原因。用户可用 `teamup-client notifications` 和相同的 `TEAMUP_SOCKET`、`TEAMUP_BINDING_KEY` 环境变量主动读取通知。
 
 ## 通知行为
 
-Client 为已登记的绑定监听 SSE，在初连、重连和收到提示时拉取未确认事件。普通事件确认后可通过房间历史读取。收到 `mention` 时，Client 按绑定和 `event_id` 持久登记通知，再确认 Server 事件。首次登记时异步尝试向 daemon stderr 打印只有 Notice 字段的 JSON 对象。日志管道阻塞或队列满时，stderr 提醒可能延迟或省略，收件确认和本机通知查询继续运行。重复投递不会增加通知记录。进程在保存后崩溃时，通知仍可通过 MCP 或 CLI 读取。Server 和 IPC 在后续增加撤权能力时须约定相应的本地可见性变更。
+Client 为已登记的绑定监听 SSE，在初连、重连和收到提示时拉取未确认事件。拉取显式携带 `kinds=message,mention,dm`（旧 Server 忽略该参数，只返回既有事件）。普通事件确认后可通过房间历史读取。收到 `mention` 时，Client 按绑定和 `event_id` 持久登记通知，再确认 Server 事件；收到 `dm` 时按同等方式持久登记类型化通知（含 `dm_id`，无正文），新类型与既有行共存于同一本机存储，存量行原样保留，重启迁移后全部可读。持久化先于确认。首次登记时异步尝试向 daemon stderr 打印只有 Notice 字段的 JSON 对象。日志管道阻塞或队列满时，stderr 提醒可能延迟或省略，收件确认和本机通知查询继续运行。重复投递不会增加通知记录。进程在保存后崩溃时，通知仍可通过 MCP 或 CLI 读取。确认与保留到期竞争、Server 对已到期事件返回 404 时，Client 视为已清除并继续补收；其余确认失败照旧退避重试。Server 和 IPC 在后续增加撤权能力时须约定相应的本地可见性变更。
+
+`dm` 的类型化通知只进入本机通知存储与 `notifications` 查询：不进入桌面提醒、送达状态、`mention_status` 未读计数或任何唤醒投递，也不改变本机会话的批准与许可状态。`mention` 的既有四字段输出与下述送达状态只描述房间 @。
+
+`notifications` 的分页是无状态共享游标：已送达的 `mention` 行与没有送达状态的 `dm` 行都不因读取或送达而移除，共用同一按 `event_id` 递增的游标空间，因此缺省首页（50 条）可能全部被旧行占据。需要确认是否有新通知的调用方在拿到满页（条数等于 `limit`）时，把该页最后一条的 `event_id` 作为下一次调用的 `after` 继续取页，直到某页返回不足 `limit` 条；如此无需其他本地状态即可可靠读到新的 `mention` 与 `dm` 通知，早先的通知也随时可用同一游标回读。`after`、`limit` 的取值与校验沿用上表，不引入新的参数或排序。
 
 ### 桌面提醒与送达状态
 
-每条通知在本机通知库中有一个送达状态，只由 Client 写入：
+每条 `mention` 通知在本机通知库中有一个送达状态，只由 Client 写入；`dm` 通知没有送达状态，始终可经 `notifications` 查询读取：
 
 | 状态 | 含义 |
 | --- | --- |
@@ -72,12 +79,12 @@ Client 为已登记的绑定监听 SSE，在初连、重连和收到提示时拉
 | `failed` | 提醒命令失败、超时、未配置，或进程在尝试中途退出、结果未知 |
 | `delivered` | 本绑定的 `notifications` 调用已把它返回给 Agent 或主人。终态，不被其他状态覆盖 |
 
-- 每个绑定按 `event_id` 顺序串行处理 `pending` 通知，每条最多尝试一次提醒。尝试前先持久记录。重启时，已尝试但未落定的通知记为 `failed`，不重复弹出，尚未尝试的继续按顺序提醒。
+- 每个绑定按 `event_id` 顺序串行处理 `pending` 的 `mention` 通知，每条最多尝试一次提醒。尝试前先持久记录。重启时，已尝试但未落定的通知记为 `failed`，不重复弹出，尚未尝试的继续按顺序提醒。`dm` 通知不参与这些步骤。
 - 提醒包含发送者角色、房间名和消息开头不超过 140 字符的预览。角色和房间名来自 Client 经本绑定调用 `register`、`find_members`、`create_room`、`join_room` 得到的结果，缺失时 Client 以本绑定身份调用 `GET /v1/members` 补查发送者。仍无法得到时用通用称呼和房间 ID 前缀。这些名称只用于显示，不作授权依据。预览去掉控制字符并截断，只保存在本机通知库中，不出现在 Notice 里。
 - 提醒不启动任何模型 turn。提醒失败不影响收件确认和查询。
 - 首版升级前已有的通知记为 `shown`，升级时不补弹提醒，仍计入未送达数。
 
-MCP 插件在 `teamup_notifications` 以外的工具成功后调用 `mention_status`。未送达数大于 0 时，在工具结果的文本内容末尾追加一行提示，结构化结果保持不变。该调用失败时省略提示。
+MCP 插件在 `teamup_notifications` 以外的工具成功后调用 `mention_status`。未送达的 `mention` 数大于 0 时，在工具结果的文本内容末尾追加一行提示，结构化结果保持不变。该调用失败时省略提示。`dm` 通知不计入该未读数，Agent 经 `teamup_notifications` 查收。
 
 ## 会话接入
 
@@ -91,7 +98,7 @@ MCP 插件在 `teamup_notifications` 以外的工具成功后调用 `mention_sta
 
 每个会话身份可有一条本机唤醒许可，列出允许的 `rooms` 和可选的 `senders`（`member_id`）。@ 所在房间须在 `rooms` 中，`senders` 非空时发送者也须在其中。默认没有许可，任何房间公告、消息正文和 Server 字段都不能放宽它。
 
-通知登记后，Client 按 `event_id` 顺序为每个会话串行处理，结果记入通知的 `harness_state`：
+通知登记后，Client 按 `event_id` 顺序为每个会话串行处理 `mention` 通知，结果记入通知的 `harness_state`；`dm` 通知不进入该投递流程：
 
 | `harness_state` | 含义 |
 | --- | --- |

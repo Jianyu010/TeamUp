@@ -36,6 +36,7 @@ MEMBERS = [
     "00000000-0000-4000-8000-000000000002",
 ]
 ROOM = "00000000-0000-4000-8000-000000000003"
+DM = "00000000-0000-4000-8000-000000000004"
 SEARCH = {
     "matches": [
         {
@@ -73,8 +74,13 @@ class TeamupGateway:
         self.calls = []
         self.events = {}
         self.ack_failures = Counter()
+        self.expired_acks = set()
         self.streams = {}
         self.account_valid = True
+        self.dm_enabled = True
+        self.dm_history = []
+        self.dm_expiry = None
+        self.dm_open_error = None
 
     async def respond(self, reader, writer):
         try:
@@ -163,12 +169,51 @@ class TeamupGateway:
                 await self.json_response(writer, {"events": events})
             elif path.startswith("/v1/inbox/"):
                 event_id = int(path.split("/")[-2])
-                if self.ack_failures[event_id]:
+                if event_id in self.expired_acks:
+                    self.events[token].pop(event_id, None)
+                    await self.json_response(
+                        writer,
+                        {"error": {"code": "not_found", "message": "Event expired"}},
+                        404,
+                    )
+                elif self.ack_failures[event_id]:
                     self.ack_failures[event_id] -= 1
                     await self.json_response(writer, {}, 503)
                 else:
                     self.events[token].pop(event_id, None)
                     await self.json_response(writer, {"event_id": event_id})
+            elif not self.dm_enabled and path.startswith("/v1/dms"):
+                await self.json_response(
+                    writer,
+                    {"error": {"code": "not_found", "message": "No DM routes"}},
+                    404,
+                )
+            elif path == "/v1/dms" and method == "POST":
+                await self._open_dm(writer, token, body)
+            elif path == f"/v1/dms/{DM}/messages" and method == "POST":
+                message = {
+                    "message_id": len(self.dm_history) + 1,
+                    "dm_id": DM,
+                    "sender_member_id": self.registered[token]["member_id"],
+                    "client_message_id": body["client_message_id"],
+                    "text": body["text"],
+                    "created_at": "2026-11-24T12:00:00+00:00",
+                }
+                self.dm_history.append(message)
+                await self.json_response(writer, message)
+            elif path == f"/v1/dms/{DM}/messages" and method == "GET":
+                after = int(query.get("after", [0])[0])
+                limit = int(query.get("limit", [50])[0])
+                result = {
+                    "messages": [
+                        message
+                        for message in self.dm_history
+                        if message["message_id"] > after
+                    ][:limit]
+                }
+                if self.dm_expiry:
+                    result.update(self.dm_expiry)
+                await self.json_response(writer, result)
             elif path == f"/v1/rooms/{ROOM}/messages" and method == "POST":
                 await self.json_response(
                     writer,
@@ -188,6 +233,25 @@ class TeamupGateway:
             writer.close()
             with suppress(OSError):
                 await writer.wait_closed()
+
+    async def _open_dm(self, writer, token, body):
+        if self.dm_open_error is not None:
+            await self.json_response(
+                writer,
+                {"error": {"code": self.dm_open_error, "message": "peer rejected"}},
+                422 if self.dm_open_error == "invalid_peer" else 404,
+            )
+            return
+        member_id = body["member_id"]
+        known = {member["member_id"] for member in self.registered.values()}
+        if member_id == self.registered[token]["member_id"] or member_id not in known:
+            await self.json_response(
+                writer,
+                {"error": {"code": "invalid_peer", "message": "peer rejected"}},
+                422,
+            )
+            return
+        await self.json_response(writer, {"dm_id": DM, "peer_member_id": member_id})
 
     @staticmethod
     async def json_response(writer, payload, status=200):
@@ -1213,3 +1277,604 @@ def test_codex_command_must_be_an_argv_list(command):
         )
         with pytest.raises(ConfigError, match="codex_command"):
             read_config(config)
+
+
+def test_dm_notices_never_enter_the_mention_delivery_pipeline():
+    import sqlite3
+
+    from teamup_client._notices import NoticeStore
+
+    store = NoticeStore(sqlite3.connect(":memory:"))
+    dm_notice = {
+        "event_id": 1,
+        "kind": "dm",
+        "dm_id": DM,
+        "message_id": 2,
+        "sender_member_id": MEMBERS[1],
+    }
+    assert store.record("s", dm_notice)
+    # A DM notice has no desktop, delivery or wake state and never counts
+    # as an unread mention.
+    assert store.state("s", 1) is None
+    assert store.next_pending("s") is None
+    assert store.undecided("s") == []
+    assert store.unread("s") == 0
+    store.mark_delivered("s", [1])
+    store.abandon_submitting("s")
+    store.abandon_unsettled("s")
+    assert store.page("s", 0, 50) == [dm_notice]
+
+
+def test_dm_notices_stay_out_of_desktop_wake_and_mention_counts():
+    from teamup_client.ipc import call
+
+    async def scenario():
+        with tempfile.TemporaryDirectory(dir="/tmp") as name:
+            directory = Path(name)
+            shown = directory / "shown.jsonl"
+            async with gateway() as (upstream, server_url):
+                config, socket = write_config(
+                    directory, server_url, notify_command=recorder(shown)
+                )
+                token = BINDINGS[0]["member_token"]
+                key = BINDINGS[0]["binding_key"]
+                upstream.registered = {
+                    token: {"member_id": MEMBERS[0], "role_description": "Backend"},
+                    BINDINGS[1]["member_token"]: {
+                        "member_id": MEMBERS[1],
+                        "role_description": "Frontend",
+                    },
+                }
+                dm_notice = {
+                    "event_id": 5,
+                    "kind": "dm",
+                    "dm_id": DM,
+                    "message_id": 4,
+                    "sender_member_id": MEMBERS[1],
+                }
+                mention_notice = {
+                    "event_id": 6,
+                    "room_id": ROOM,
+                    "message_id": 5,
+                    "sender_member_id": MEMBERS[1],
+                }
+                upstream.events[token] = {
+                    5: {
+                        "event_id": 5,
+                        "kind": "dm",
+                        "message": {
+                            "message_id": 4,
+                            "dm_id": DM,
+                            "sender_member_id": MEMBERS[1],
+                            "client_message_id": "dm-1",
+                            "text": "private dm text",
+                            "created_at": "2026-11-24T12:00:00+00:00",
+                        },
+                    },
+                    6: mention_event(6, 5),
+                }
+                when = time.time()
+                async with daemon(config, socket) as child:
+                    printed = [
+                        json.loads(await asyncio.wait_for(child.stderr.readline(), 5))
+                        for _ in range(2)
+                    ]
+                    assert printed == [dm_notice, mention_notice]
+                    await until(lambda: not upstream.events[token])
+                    # Only the mention reaches the desktop; the DM never does.
+                    await until(lambda: recorded(shown))
+                    [(moment, title, subtitle, body)] = recorded(shown)
+                    assert moment - when < 5
+                    assert (title, subtitle, body) == (
+                        "Frontend mentioned you",
+                        f"Room {ROOM[:8]}",
+                        "Please review the schema",
+                    )
+                    await asyncio.sleep(0.5)
+                    assert len(recorded(shown)) == 1
+                    # The unread count covers the mention only, and reading
+                    # just the DM notice leaves the mention pending.
+                    assert await call(socket, key, "mention_status", {}) == {
+                        "unread_mentions": 1
+                    }
+                    first = await call(socket, key, "notifications", {"limit": 1})
+                    assert first["notifications"] == [dm_notice]
+                    assert await call(socket, key, "mention_status", {}) == {
+                        "unread_mentions": 1
+                    }
+                    both = await call(socket, key, "notifications", {})
+                    assert both["notifications"] == [dm_notice, mention_notice]
+                    assert await call(socket, key, "mention_status", {}) == {
+                        "unread_mentions": 0
+                    }
+                    # The typed DM notice stays visible after the mention was read.
+                    assert await call(socket, key, "notifications", {"after": 5}) == {
+                        "notifications": [mention_notice]
+                    }
+
+    asyncio.run(scenario())
+
+
+def test_full_first_page_of_dm_notices_still_surfaces_a_later_mention():
+    from teamup_client.ipc import call
+
+    async def scenario():
+        with tempfile.TemporaryDirectory(dir="/tmp") as name:
+            async with gateway() as (upstream, server_url):
+                config, socket = write_config(Path(name), server_url)
+                token = BINDINGS[0]["member_token"]
+                key = BINDINGS[0]["binding_key"]
+                upstream.registered = {
+                    token: {"member_id": MEMBERS[0], "role_description": "Backend"},
+                    BINDINGS[1]["member_token"]: {
+                        "member_id": MEMBERS[1],
+                        "role_description": "Frontend",
+                    },
+                }
+                # Fifty old DM notices fill the default first page, and the
+                # fresh mention waits just past it in the shared event cursor.
+                dm_events = {
+                    event_id: {
+                        "event_id": event_id,
+                        "kind": "dm",
+                        "message": {
+                            "message_id": event_id,
+                            "dm_id": DM,
+                            "sender_member_id": MEMBERS[1],
+                            "client_message_id": f"dm-{event_id}",
+                            "text": "private dm text",
+                            "created_at": "2026-11-24T12:00:00+00:00",
+                        },
+                    }
+                    for event_id in range(1, 51)
+                }
+                dm_notices = [
+                    {
+                        "event_id": event_id,
+                        "kind": "dm",
+                        "dm_id": DM,
+                        "message_id": event_id,
+                        "sender_member_id": MEMBERS[1],
+                    }
+                    for event_id in range(1, 51)
+                ]
+                mention_notice = {
+                    "event_id": 51,
+                    "room_id": ROOM,
+                    "message_id": 51,
+                    "sender_member_id": MEMBERS[1],
+                }
+                upstream.events[token] = {**dm_events, 51: mention_event(51, 51)}
+                async with daemon(config, socket) as child:
+                    printed = [
+                        json.loads(await asyncio.wait_for(child.stderr.readline(), 5))
+                        for _ in range(51)
+                    ]
+                    assert printed == dm_notices + [mention_notice]
+                    await until(lambda: not upstream.events[token])
+                    # The default page holds only the fifty old DM rows, so
+                    # the mention is still unread behind a full first page.
+                    first = await call(socket, key, "notifications", {})
+                    assert first == {"notifications": dm_notices}
+                    assert await call(socket, key, "mention_status", {}) == {
+                        "unread_mentions": 1
+                    }
+                    # Paging with the last event_id of that page surfaces it.
+                    second = await call(socket, key, "notifications", {"after": 50})
+                    assert second == {"notifications": [mention_notice]}
+                    assert await call(socket, key, "mention_status", {}) == {
+                        "unread_mentions": 0
+                    }
+                    # A short page ends the walk, and every row stays readable
+                    # through the same stateless cursor afterwards.
+                    assert await call(socket, key, "notifications", {"after": 51}) == {
+                        "notifications": []
+                    }
+                    again = await call(socket, key, "notifications", {"after": 50})
+                    assert again == {"notifications": [mention_notice]}
+                    earlier = await call(socket, key, "notifications", {"after": 48})
+                    assert earlier == {
+                        "notifications": dm_notices[48:] + [mention_notice]
+                    }
+                assert await child.stderr.read() == b""
+
+    asyncio.run(scenario())
+
+
+def test_dm_ipc_routing_credentials_and_error_passthrough():
+    from teamup_client.ipc import ClientError, call
+
+    async def scenario():
+        with tempfile.TemporaryDirectory(dir="/tmp") as name:
+            async with gateway() as (upstream, server_url):
+                config, socket = write_config(Path(name), server_url)
+                token_a, token_b = (binding["member_token"] for binding in BINDINGS)
+                key_a, key_b = (binding["binding_key"] for binding in BINDINGS)
+                upstream.registered = {
+                    token: {"member_id": member, "role_description": "dev"}
+                    for token, member in zip((token_a, token_b), MEMBERS, strict=True)
+                }
+                async with daemon(config, socket):
+                    with pytest.raises(ClientError) as error:
+                        await call(
+                            socket, ENROLLMENT, "open_dm", {"member_id": MEMBERS[1]}
+                        )
+                    assert error.value.code == "unauthorized"
+                    for method, params in [
+                        ("open_dm", {}),
+                        ("open_dm", {"member_id": "member"}),
+                        ("open_dm", {"member_id": MEMBERS[1], "room_id": ROOM}),
+                        (
+                            "send_dm",
+                            {
+                                "dm_id": DM,
+                                "client_message_id": "id",
+                                "text": "hi",
+                                "mention_member_id": MEMBERS[1],
+                            },
+                        ),
+                        (
+                            "send_dm",
+                            {"dm_id": "dm", "client_message_id": "id", "text": "hi"},
+                        ),
+                        (
+                            "send_dm",
+                            {"dm_id": DM, "client_message_id": "id", "text": "   "},
+                        ),
+                        (
+                            "send_dm",
+                            {"dm_id": DM, "client_message_id": "", "text": "hi"},
+                        ),
+                        (
+                            "send_dm",
+                            {"dm_id": DM, "client_message_id": "x" * 129, "text": "hi"},
+                        ),
+                        (
+                            "send_dm",
+                            {
+                                "dm_id": DM,
+                                "client_message_id": "id",
+                                "text": "x" * 8_001,
+                            },
+                        ),
+                        ("read_dm", {}),
+                        ("read_dm", {"dm_id": DM, "after": -1}),
+                        ("read_dm", {"dm_id": DM, "limit": 101}),
+                        ("close_dm", {"dm_id": DM}),
+                    ]:
+                        with pytest.raises(ClientError) as error:
+                            await call(socket, key_a, method, params)
+                        assert error.value.code == "invalid_request"
+
+                    dm = await call(socket, key_a, "open_dm", {"member_id": MEMBERS[1]})
+                    assert dm == {"dm_id": DM, "peer_member_id": MEMBERS[1]}
+                    sent = await call(
+                        socket,
+                        key_b,
+                        "send_dm",
+                        {"dm_id": DM, "client_message_id": "dm-1", "text": "hello"},
+                    )
+                    assert sent == {
+                        "message_id": 1,
+                        "dm_id": DM,
+                        "sender_member_id": MEMBERS[1],
+                        "client_message_id": "dm-1",
+                        "text": "hello",
+                        "created_at": "2026-11-24T12:00:00+00:00",
+                    }
+                    upstream.dm_expiry = {
+                        "expired_through_message_id": 0,
+                        "history_truncated": True,
+                    }
+                    history = await call(
+                        socket, key_a, "read_dm", {"dm_id": DM, "after": 0, "limit": 10}
+                    )
+                    assert history == {
+                        "messages": [sent],
+                        "expired_through_message_id": 0,
+                        "history_truncated": True,
+                    }
+                    assert (
+                        "POST",
+                        "/v1/dms",
+                        {},
+                        token_a,
+                        {"member_id": MEMBERS[1]},
+                    ) in upstream.calls
+                    assert (
+                        "POST",
+                        f"/v1/dms/{DM}/messages",
+                        {},
+                        token_b,
+                        {"client_message_id": "dm-1", "text": "hello"},
+                    ) in upstream.calls
+                    assert (
+                        "GET",
+                        f"/v1/dms/{DM}/messages",
+                        {"after": ["0"], "limit": ["10"]},
+                        token_a,
+                        None,
+                    ) in upstream.calls
+
+                    upstream.dm_open_error = "invalid_peer"
+                    with pytest.raises(ClientError) as error:
+                        await call(socket, key_a, "open_dm", {"member_id": MEMBERS[1]})
+                    assert error.value.code == "invalid_peer"
+                    assert MEMBERS[1] not in error.value.message
+
+    asyncio.run(scenario())
+
+
+def test_old_server_ignores_kinds_and_lacks_dm_routes():
+    from teamup_client.ipc import ClientError, call
+
+    async def scenario():
+        with tempfile.TemporaryDirectory(dir="/tmp") as name:
+            async with gateway() as (upstream, server_url):
+                config, socket = write_config(Path(name), server_url)
+                token_a = BINDINGS[0]["member_token"]
+                key_a = BINDINGS[0]["binding_key"]
+                upstream.registered = {
+                    token_a: {"member_id": MEMBERS[0], "role_description": "dev"}
+                }
+                upstream.dm_enabled = False
+                mention = {
+                    "event_id": 5,
+                    "kind": "mention",
+                    "message": {
+                        "message_id": 4,
+                        "room_id": ROOM,
+                        "sender_member_id": MEMBERS[1],
+                        "client_message_id": "room-1",
+                        "text": "room text",
+                        "mention_member_id": MEMBERS[0],
+                    },
+                }
+                upstream.events[token_a] = {5: mention}
+                async with daemon(config, socket):
+                    with pytest.raises(ClientError) as error:
+                        await call(socket, key_a, "open_dm", {"member_id": MEMBERS[1]})
+                    assert error.value.code == "not_found"
+                    await until(lambda: not upstream.events[token_a])
+                    assert (
+                        "GET",
+                        "/v1/inbox",
+                        {
+                            "after": ["0"],
+                            "limit": ["100"],
+                            "kinds": ["message,mention,dm"],
+                        },
+                        token_a,
+                        None,
+                    ) in upstream.calls
+                    assert await call(socket, key_a, "notifications", {}) == {
+                        "notifications": [
+                            {
+                                "event_id": 5,
+                                "room_id": ROOM,
+                                "message_id": 4,
+                                "sender_member_id": MEMBERS[1],
+                            }
+                        ]
+                    }
+
+    asyncio.run(scenario())
+
+
+def test_dm_notices_are_typed_deduped_acked_and_survive_restart():
+    from teamup_client.ipc import call
+
+    async def scenario():
+        with tempfile.TemporaryDirectory(dir="/tmp") as name:
+            async with gateway() as (upstream, server_url):
+                config, socket = write_config(Path(name), server_url)
+                token_a = BINDINGS[0]["member_token"]
+                key_a = BINDINGS[0]["binding_key"]
+                key_b = BINDINGS[1]["binding_key"]
+                upstream.registered = {
+                    token_a: {"member_id": MEMBERS[0], "role_description": "dev"}
+                }
+                dm_event = {
+                    "event_id": 8,
+                    "kind": "dm",
+                    "message": {
+                        "message_id": 7,
+                        "dm_id": DM,
+                        "sender_member_id": MEMBERS[1],
+                        "client_message_id": "dm-1",
+                        "text": "private dm text",
+                        "created_at": "2026-11-24T12:00:00+00:00",
+                    },
+                }
+                mention_event = {
+                    "event_id": 9,
+                    "kind": "mention",
+                    "message": {
+                        "message_id": 8,
+                        "room_id": ROOM,
+                        "sender_member_id": MEMBERS[1],
+                        "client_message_id": "room-1",
+                        "text": "room text",
+                        "mention_member_id": MEMBERS[0],
+                    },
+                }
+                pending_event = {
+                    "event_id": 10,
+                    "kind": "dm",
+                    "message": {**dm_event["message"], "message_id": 9},
+                }
+                dm_notice = {
+                    "event_id": 8,
+                    "kind": "dm",
+                    "dm_id": DM,
+                    "message_id": 7,
+                    "sender_member_id": MEMBERS[1],
+                }
+                mention_notice = {
+                    "event_id": 9,
+                    "room_id": ROOM,
+                    "message_id": 8,
+                    "sender_member_id": MEMBERS[1],
+                }
+                pending_notice = {**dm_notice, "event_id": 10, "message_id": 9}
+                # An expired event fails its ack with 404 but stays recorded.
+                upstream.events[token_a] = {
+                    8: dm_event,
+                    9: mention_event,
+                    10: pending_event,
+                }
+                upstream.expired_acks = {8}
+                upstream.ack_failures[10] = 50
+                async with daemon(config, socket) as first:
+                    for notice in (dm_notice, mention_notice, pending_notice):
+                        printed = await asyncio.wait_for(first.stderr.readline(), 5)
+                        assert json.loads(printed) == notice
+                    # The 404 ack kept draining: the later events were acknowledged.
+                    assert 8 not in upstream.events[token_a]
+                    assert 9 not in upstream.events[token_a]
+                    assert 10 in upstream.events[token_a]
+                    assert await call(socket, key_a, "notifications", {}) == {
+                        "notifications": [dm_notice, mention_notice, pending_notice]
+                    }
+                    assert await call(socket, key_b, "notifications", {}) == {
+                        "notifications": []
+                    }
+                    first.kill()
+                    await first.wait()
+                assert socket.exists()
+
+                upstream.ack_failures[10] = 0
+                async with daemon(config, socket) as second:
+                    await until(lambda: not upstream.events[token_a])
+                    # Redelivering the recorded events adds no notice and no output.
+                    upstream.events[token_a][8] = dm_event
+                    upstream.events[token_a][9] = mention_event
+                    stream = upstream.streams[token_a]
+                    stream.write(b"event: inbox_changed\ndata: {}\n\n")
+                    await stream.drain()
+                    await until(lambda: not upstream.events[token_a])
+                    later_event = {
+                        "event_id": 11,
+                        "kind": "dm",
+                        "message": {**dm_event["message"], "message_id": 10},
+                    }
+                    later_notice = {**dm_notice, "event_id": 11, "message_id": 10}
+                    upstream.events[token_a][11] = later_event
+                    stream.write(b"event: inbox_changed\ndata: {}\n\n")
+                    await stream.drain()
+                    printed = await asyncio.wait_for(second.stderr.readline(), 5)
+                    assert json.loads(printed) == later_notice
+                    await until(lambda: not upstream.events[token_a])
+                    expected = [dm_notice, mention_notice, pending_notice, later_notice]
+                    assert await call(socket, key_a, "notifications", {}) == {
+                        "notifications": expected
+                    }
+                    env = {
+                        **os.environ,
+                        "TEAMUP_SOCKET": str(socket),
+                        "TEAMUP_BINDING_KEY": key_a,
+                    }
+                    process = await cli("notifications", env=env)
+                    stdout, stderr = await process.communicate()
+                    assert process.returncode == 0 and stderr == b""
+                    assert json.loads(stdout) == {"notifications": expected}
+                assert await second.stderr.read() == b""
+
+    asyncio.run(scenario())
+
+
+def test_notice_store_migrates_v1_rows_and_keeps_typed_dm_notices():
+    import sqlite3
+
+    from teamup_client._config import Binding
+    from teamup_client._notices import binding_scope, open_store
+
+    with tempfile.TemporaryDirectory(dir="/tmp") as name:
+        socket = Path(name) / "teamup.sock"
+        binding = Binding(
+            binding_key="B" * 43,
+            member_token="C" * 43,
+            harness_instance_id="harness",
+            session_key="session-a",
+        )
+        scope = binding_scope("http://127.0.0.1:8000", binding)
+        path = socket.with_name(f"{socket.name}.notices.sqlite3")
+        legacy = sqlite3.connect(path)
+        with legacy:
+            legacy.execute(
+                """
+                CREATE TABLE notices (
+                    binding_scope TEXT NOT NULL,
+                    event_id INTEGER NOT NULL,
+                    room_id TEXT NOT NULL,
+                    message_id INTEGER NOT NULL,
+                    sender_member_id TEXT NOT NULL,
+                    PRIMARY KEY (binding_scope, event_id)
+                ) WITHOUT ROWID
+                """
+            )
+            legacy.execute(
+                "INSERT INTO notices VALUES (?, ?, ?, ?, ?)",
+                (scope, 3, ROOM, 2, MEMBERS[1]),
+            )
+            # A store written by the DM-only Client: typed rows without any
+            # delivery state, kept readable across the restart.
+            legacy.execute(
+                """
+                CREATE TABLE dm_notices (
+                    binding_scope TEXT NOT NULL,
+                    event_id INTEGER NOT NULL,
+                    dm_id TEXT NOT NULL,
+                    message_id INTEGER NOT NULL,
+                    sender_member_id TEXT NOT NULL,
+                    PRIMARY KEY (binding_scope, event_id)
+                ) WITHOUT ROWID
+                """
+            )
+            legacy.execute(
+                "INSERT INTO dm_notices VALUES (?, ?, ?, ?, ?)",
+                (scope, 5, DM, 4, MEMBERS[1]),
+            )
+        legacy.close()
+        path.chmod(0o600)
+
+        legacy_notice = {
+            "event_id": 3,
+            "room_id": ROOM,
+            "message_id": 2,
+            "sender_member_id": MEMBERS[1],
+        }
+        legacy_dm_notice = {
+            "event_id": 5,
+            "kind": "dm",
+            "dm_id": DM,
+            "message_id": 4,
+            "sender_member_id": MEMBERS[1],
+        }
+        dm_notice = {
+            "event_id": 8,
+            "kind": "dm",
+            "dm_id": DM,
+            "message_id": 7,
+            "sender_member_id": MEMBERS[1],
+        }
+        with open_store(socket) as store:
+            # The restart upgraded the mention rows but left both readable,
+            # in order, with the typed DM shape preserved.
+            assert store.page(scope, 0, 50) == [legacy_notice, legacy_dm_notice]
+            assert store.state(scope, 3) == {
+                "state": "shown",
+                "attempts": 0,
+                "harness_state": "skipped",
+            }
+            assert store.record(scope, dm_notice) is True
+            assert store.record(scope, dm_notice) is False
+            assert store.record(scope, legacy_notice) is False
+            assert store.record(scope, legacy_dm_notice) is False
+            assert store.page(scope, 0, 50) == [
+                legacy_notice,
+                legacy_dm_notice,
+                dm_notice,
+            ]
+            assert store.page(scope, 5, 50) == [dm_notice]
+            assert store.page(scope, 8, 50) == []
