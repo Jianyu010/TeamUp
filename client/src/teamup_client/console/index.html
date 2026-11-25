@@ -39,7 +39,10 @@
         <div class="room-main">
           <section class="billboard" aria-label="Room information">
             <div class="board-heading">
-              <h2 id="room-heading">Board</h2>
+              <h2 id="room-heading" hidden></h2>
+              <h2 id="board-title" hidden>
+                <button type="button" id="board-toggle" aria-controls="board-panel" aria-expanded="false" aria-describedby="board-status">Board</button>
+              </h2>
               <span id="board-status"></span>
             </div>
             <div class="room-id">
@@ -52,6 +55,26 @@
               <span id="copy-status" class="sr-only" role="status"></span>
             </div>
             <p class="muted" id="room-preview" hidden></p>
+            <section id="board-panel" aria-labelledby="board-title" tabindex="0" hidden>
+              <label id="board-session-label" hidden>Board session <select id="board-session"></select></label>
+              <p id="board-feedback" class="muted" role="status"></p>
+              <div id="board-view" hidden>
+                <h3>Rules</h3>
+                <p id="board-rules"></p>
+                <h3>Protocol</h3>
+                <p id="board-protocol"></p>
+                <button type="button" id="board-edit" hidden>Edit board</button>
+              </div>
+              <form id="board-form" hidden>
+                <p id="board-edit-version" class="muted"></p>
+                <label>Rules <textarea id="board-rules-input" rows="4" required></textarea></label>
+                <label>Protocol <textarea id="board-protocol-input" rows="4" required></textarea></label>
+                <div class="board-actions">
+                  <button type="button" id="board-cancel">Close editor</button>
+                  <button type="submit" id="board-publish">Publish board</button>
+                </div>
+              </form>
+            </section>
           </section>
           <div class="chat-heading" id="chat-heading">
             <nav class="room-tabs" aria-label="Room views">

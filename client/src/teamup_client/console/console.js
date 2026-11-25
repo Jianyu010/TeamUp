@@ -1,4 +1,5 @@
 import {readTranscript, sameBoard} from "/console-history.mjs";
+import {roomBoard} from "/console-board.js";
 import {roomMembers, renderTeam} from "/console-members.js";
 import {taskPanel} from "/console-tasks.js";
 
@@ -93,6 +94,8 @@ function selectRoomSubjects(room) {
   }
   if (!eligible.some((item) => item.session === state.actor)) state.actor = preferredSession(eligible);
 }
+
+const boardPanel = roomBoard({get, request: read});
 
 const tasks = taskPanel({
   request: read,
@@ -251,6 +254,7 @@ function show(page) {
     state.chat = null;
     state.reader = null;
     state.room = null;
+    boardPanel.setRoom(null, [], null);
     members.reset();
     renderChat();
   }
@@ -293,10 +297,14 @@ function renderRoomHeader() {
   }));
   if (!actors.length) chooser.append(node("option", "No acknowledged session"));
   const membership = room.memberships.find((item) => item.session === state.reader);
-  get("room-heading").textContent = membership ? "Board" : room.name;
-  get("board-status").textContent = membership
-    ? "Version " + membership.current + " · " + (membership.acknowledged === membership.current ? "Acknowledged" : "Acknowledgment needed")
-    : "";
+  get("room-heading").textContent = room.name;
+  get("room-heading").hidden = Boolean(membership);
+  const boardSessions = readyMemberships(room).map((entry) => ({
+    ...sessionFor(entry.session),
+    current: entry.current,
+    acknowledged: entry.acknowledged,
+  }));
+  boardPanel.setRoom(room.id, boardSessions, state.reader);
   const history = room.history_policy === "retained"
     ? "Retained messages can be read after joining and acknowledging the board."
     : "Room history starts when you join.";
@@ -510,7 +518,10 @@ async function refresh() {
       if (state.page === "room") renderRoomHeader();
     }
     if (state.page === "team") refreshTeam();
-    if (state.page === "room" && state.roomView === "tasks") tasks.refresh();
+    if (state.page === "room") {
+      boardPanel.refresh();
+      if (state.roomView === "tasks") tasks.refresh();
+    }
   } catch (error) {
     expire = error.message === "access";
     setConnection(expire ? "Open a fresh console link" : "Reconnecting…", false);
