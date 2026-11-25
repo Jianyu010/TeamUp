@@ -2,7 +2,9 @@
 
 TeamUp.app opens the local Client Console on launch. It can use an existing profile and reuse a Client started by the previous TeamUp launcher.
 
-Choose **View → Server Control Console** to open the configured Server's read-only operator interface in a second window. Sign in with a TeamUp account that has the `console_read` grant. The Server must serve `/console/` at the configured origin. For the pilot profile, keep its SSH tunnel running. An HTTPS origin must use a certificate trusted by macOS.
+Choose **View → Server Dashboard** to open the configured Server's maintenance console at `/dashboard/`. **View → Room Console** opens the read-only room interface at `/console/`, including on older Servers that only publish the Room Console. Sign in with a TeamUp account that has `console_read`. Health and room load require `maintenance_read`, and redacted events require `logs_read`. For the pilot profile, keep its SSH tunnel running. An HTTPS origin must use a certificate trusted by macOS.
+
+Choose **View → CI Dashboards** to open the public dashboards in a separate window. Browse the overview, CI, repository, performance and Agent pages without signing in. [Published CI Dashboards](https://jianyu010.github.io/TeamUp/)
 
 ## Build and open
 
@@ -31,4 +33,6 @@ npm --prefix client/desktop start
 
 Open TeamUp.app twice and confirm the existing window comes forward. In a profile with approved sessions, open a joined room and check its transcript and Tasks tab. Close and reopen the window to verify it can reconnect to the same running Client. The [console contract](../../docs/modules/client-console.md) describes the API and session authorization.
 
-Open the Server Control Console twice and confirm the existing operator window comes forward. Sign in, confirm the login card disappears, and open a room's Members and Timeline. Confirm that Chats follows the Server's room grant. Sign out and check that the room views disappear. Close the operator window and reopen it from the View menu to get a fresh sign-in.
+Open the Room Console twice and confirm the existing operator window comes forward. Sign in, confirm the login card disappears, and open a room's Members and Timeline. Confirm that Chats follows the Server's room grant. Open the Server Dashboard, sign in separately, and check health or redacted events with the corresponding grant. Close and reopen an operator window to verify it starts with a fresh sign-in.
+
+Open CI Dashboards and follow the links among the published pages. Confirm the app shows the overview when opening the window and brings the existing CI window forward on a second click.

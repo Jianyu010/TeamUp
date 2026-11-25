@@ -16,6 +16,7 @@ DOCS = (
     "docs/modules/room-tasks.md",
     "docs/modules/direct-messages.md",
     "docs/modules/control-console.md",
+    "docs/modules/maintenance-console.md",
 )
 METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
 # FastAPI's generic 422 body model is framework output, not a TeamUp contract.

@@ -15,7 +15,9 @@ from fastapi import FastAPI
 from . import account_cli
 from .collaboration import Collaboration
 from .gateway import Gateway
+from .host_observations import HostObservations
 from .maintenance import MAX_RETENTION_HOURS, Maintenance, retention
+from .operational_events import OperationalEvents
 from .presence import Presence
 
 _TRACER_MAX_PERIOD_SECONDS = 60
@@ -66,10 +68,14 @@ def _compose(
         if task_stall_after is not None and task_reminder_interval is not None
         else None
     )
-    gateway = Gateway(collaboration, Presence(collaboration), task_tracer_period=period)
-    return gateway, retention(
-        collaboration, room_retention_hours, dm_retention_hours
+    gateway = Gateway(
+        collaboration,
+        Presence(collaboration),
+        task_tracer_period=period,
+        host=HostObservations(Path(db_path).resolve().parent),
+        event_log=OperationalEvents(),
     )
+    return gateway, retention(collaboration, room_retention_hours, dm_retention_hours)
 
 
 class _Server(uvicorn.Server):

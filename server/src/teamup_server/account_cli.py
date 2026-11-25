@@ -8,6 +8,13 @@ from warnings import catch_warnings, simplefilter
 
 from .collaboration import Collaboration, CollaborationError
 
+_MAINTENANCE_GRANTS = {
+    "grant-maintenance": ("maintenance_read", True),
+    "revoke-maintenance": ("maintenance_read", False),
+    "grant-logs": ("logs_read", True),
+    "revoke-logs": ("logs_read", False),
+}
+
 
 def parser() -> argparse.ArgumentParser:
     accounts = argparse.ArgumentParser(
@@ -21,6 +28,7 @@ def parser() -> argparse.ArgumentParser:
         "disable",
         "grant-console",
         "revoke-console",
+        *_MAINTENANCE_GRANTS,
     ):
         commands.add_parser(name).add_argument("username")
     for name in ("grant-transcript", "revoke-transcript"):
@@ -62,6 +70,9 @@ def run(args: argparse.Namespace, collaboration: Collaboration) -> None:
             collaboration.grant_console_read(args.username)
         elif args.command == "revoke-console":
             collaboration.revoke_console_read(args.username)
+        elif args.command in _MAINTENANCE_GRANTS:
+            scope, granted = _MAINTENANCE_GRANTS[args.command]
+            collaboration.set_maintenance_grant(args.username, scope, granted)
         elif args.command == "grant-transcript":
             collaboration.grant_transcript_read(args.username, args.room_id)
         elif args.command == "revoke-transcript":
@@ -81,6 +92,11 @@ def _failure_message(command: str, code: str) -> str:
     if code == "conflict":
         return (
             "Account already exists." if command == "create" else "Account is disabled."
+        )
+    if command in _MAINTENANCE_GRANTS:
+        return (
+            "Use a username of 3–64 lowercase ASCII characters starting with a letter "
+            "(letters, digits, _ and -)."
         )
     if command in ("grant-transcript", "revoke-transcript"):
         return (

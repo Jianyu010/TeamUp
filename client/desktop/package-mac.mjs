@@ -17,8 +17,10 @@ try {
   const source = join(staging, "app");
   await mkdir(source);
   await Promise.all([
-    ...["main.cjs", "console-protocol.cjs", "server-console.cjs", "package.json"].map((name) =>
-      copyFile(join(desktop, name), join(source, name))),
+    ...[
+      "main.cjs", "console-protocol.cjs", "server-console.cjs", "ci-dashboards.cjs", "remote-window.cjs",
+      "package.json",
+    ].map((name) => copyFile(join(desktop, name), join(source, name))),
     cp(join(desktop, "../src/teamup_client/console"), join(source, "console"), {
       recursive: true,
     }),

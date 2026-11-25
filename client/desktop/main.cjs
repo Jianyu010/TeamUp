@@ -5,6 +5,7 @@ const { join, resolve } = require("node:path");
 const { promisify } = require("node:util");
 const { CONSOLE_URL, createConsoleHandler, parseConsoleEndpoint } = require("./console-protocol.cjs");
 const { createServerConsole } = require("./server-console.cjs");
+const { createCiDashboards } = require("./ci-dashboards.cjs");
 
 const exec = promisify(execFile);
 const runtime = resolve(process.env.TEAMUP_DESKTOP_RUNTIME ||
@@ -109,7 +110,7 @@ function showConsole() {
   }
 }
 
-function setMenu(showServerConsole) {
+function setMenu({ showRoomConsole, showServerDashboard, showCiDashboards }) {
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     ...(process.platform === "darwin" ? [{ role: "appMenu" }] : []),
     { role: "fileMenu" },
@@ -118,7 +119,9 @@ function setMenu(showServerConsole) {
       label: "View",
       submenu: [
         { label: "Client Console", click: showConsole },
-        { label: "Server Control Console", id: "server-control-console", click: showServerConsole },
+        { label: "Room Console", id: "server-control-console", click: showRoomConsole },
+        { label: "Server Dashboard", id: "server-dashboard", click: showServerDashboard },
+        { label: "CI Dashboards", id: "ci-dashboards", click: showCiDashboards },
         { type: "separator" },
         { role: "reload" },
         { role: "forceReload" },
@@ -146,12 +149,23 @@ if (!app.requestSingleInstanceLock()) {
     consoleSession.setPermissionCheckHandler(() => false);
     consoleSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
     consoleSession.protocol.handle("teamup", createConsoleHandler(assetDirectory, getEndpoint, resetEndpoint));
-    setMenu(createServerConsole({
-      BrowserWindow,
-      dialog,
-      readOrigin: readServerOrigin,
-      serverSession: session.fromPartition("teamup-server-console", { cache: false }),
-    }));
+    const serverWindowOptions = { BrowserWindow, dialog, readOrigin: readServerOrigin };
+    setMenu({
+      showRoomConsole: createServerConsole({
+        ...serverWindowOptions,
+        serverSession: session.fromPartition("teamup-server-console", { cache: false }),
+      }),
+      showServerDashboard: createServerConsole({
+        ...serverWindowOptions,
+        serverSession: session.fromPartition("teamup-server-dashboard", { cache: false }),
+        view: "dashboard",
+      }),
+      showCiDashboards: createCiDashboards({
+        BrowserWindow,
+        dialog,
+        ciSession: session.fromPartition("teamup-ci-dashboards", { cache: false }),
+      }),
+    });
     app.on("activate", showConsole);
     app.on("second-instance", showConsole);
     showConsole();

@@ -533,8 +533,14 @@ def test_console_static_assets_serve_exact_bundled_files(tmp_path):
     with live_server(tmp_path / "team.sqlite3") as (client, _):
         for path, name, media_type in (
             ("/console/", "index.html", "text/html; charset=utf-8"),
+            ("/dashboard/", "index.html", "text/html; charset=utf-8"),
             ("/console/console.css", "console.css", "text/css; charset=utf-8"),
             ("/console/console.js", "console.js", "text/javascript; charset=utf-8"),
+            (
+                "/console/maintenance.js",
+                "maintenance.js",
+                "text/javascript; charset=utf-8",
+            ),
         ):
             response = client.get(path)
             assert response.status_code == 200, response.text
@@ -548,8 +554,9 @@ def test_console_static_assets_serve_exact_bundled_files(tmp_path):
             assert "set-cookie" not in response.headers
             assert response.content == (CONSOLE_DIR / name).read_bytes()
         html = (CONSOLE_DIR / "index.html").read_text(encoding="utf-8")
-        assert 'href="console.css"' in html
-        assert 'src="console.js"' in html
+        assert 'href="/console/console.css"' in html
+        assert 'src="/console/console.js"' in html
+        assert 'src="/console/maintenance.js"' in html
 
         for path in (
             "/console",
@@ -573,7 +580,7 @@ def test_console_static_package_ships_in_built_wheel(tmp_path):
     (wheel,) = builder.build(directory=str(tmp_path), versions=["standard"])
     with zipfile.ZipFile(wheel) as archive:
         names = set(archive.namelist())
-    for name in ("index.html", "console.css", "console.js"):
+    for name in ("index.html", "console.css", "console.js", "maintenance.js"):
         assert f"teamup_server/console/{name}" in names
 
 
@@ -1065,11 +1072,9 @@ def test_console_v5_upgrade_runs_real_room_expiry_and_keeps_dm_and_audit(tmp_pat
             "activities"
         ]
         assert [
-            (a["activity_id"], a["kind"], a["at"], a["actor_member_id"])
-            for a in after
+            (a["activity_id"], a["kind"], a["at"], a["actor_member_id"]) for a in after
         ] == [
-            (a["activity_id"], a["kind"], a["at"], a["actor_member_id"])
-            for a in before
+            (a["activity_id"], a["kind"], a["at"], a["actor_member_id"]) for a in before
         ]
         assert [a["message_id"] for a in after] == [None] * len(before)
 

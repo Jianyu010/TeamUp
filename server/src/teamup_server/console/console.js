@@ -3,6 +3,7 @@
 const LOGIN_PATH = "/v1/auth/login";
 const CONSOLE_BASE = "/v1/console";
 const PAGE_LIMIT = 50;
+const ENTRY_VIEW = location.pathname === "/dashboard/" ? "maintenance" : "rooms";
 
 const KIND_LABELS = {
   message: "message",
@@ -29,6 +30,8 @@ const MONTHS = [
 const state = {
   epoch: 0,
   session: null,
+  expiryTimer: null,
+  view: null,
   rooms: [],
   roomsPane: { loading: false, denied: false, error: "" },
   room: null,
@@ -44,6 +47,10 @@ const els = {
   loginStatus: document.getElementById("loginStatus"),
   loginSubmit: document.getElementById("loginSubmit"),
   mainView: document.getElementById("mainView"),
+  maintenanceView: document.getElementById("maintenanceView"),
+  consoleViews: document.getElementById("consoleViews"),
+  roomsViewButton: document.getElementById("roomsViewButton"),
+  maintenanceViewButton: document.getElementById("maintenanceViewButton"),
   statusLine: document.getElementById("statusLine"),
   sessionActions: document.getElementById("sessionActions"),
   refreshButton: document.getElementById("refreshButton"),
@@ -68,6 +75,10 @@ const els = {
   chatsList: document.getElementById("chatsList"),
   chatsMore: document.getElementById("chatsMore"),
 };
+
+const maintenance = createMaintenanceView({
+  api, element, failureText, sessionExpired, basePath: CONSOLE_BASE,
+});
 
 function element(tag, className, text) {
   const node = document.createElement(tag);
@@ -99,20 +110,16 @@ function abortPending() {
 
 async function api(path, options) {
   const settings = options || {};
-  if (
-    state.session &&
-    state.session.expiresAt &&
-    Date.now() >= state.session.expiresAt * 1000
-  ) {
-    sessionExpired();
+  if (expireIfDue()) {
     return { status: 401, payload: null };
   }
-  const controller = new AbortController();
+  const session = state.session;
+  const controller = settings.controller || new AbortController();
   state.controllers.push(controller);
   try {
     const headers = {};
-    if (state.session) {
-      headers.Authorization = "Bearer " + state.session.token;
+    if (session) {
+      headers.Authorization = "Bearer " + session.token;
     }
     if (settings.body !== undefined) {
       headers["Content-Type"] = "application/json";
@@ -136,6 +143,9 @@ async function api(path, options) {
       payload = await response.json();
     } catch {
       payload = null;
+    }
+    if (!controller.signal.aborted && session === state.session && expireIfDue()) {
+      return { status: 401, payload: null };
     }
     return { status: response.status, payload };
   } finally {
@@ -197,6 +207,20 @@ function shortId(id) {
   return typeof id === "string" ? id.slice(0, 8) : String(id);
 }
 
+function expireIfDue() {
+  const deadline = state.session?.expiresAt;
+  if (!deadline || Date.now() < deadline * 1000) return false;
+  sessionExpired();
+  return true;
+}
+
+function scheduleSessionExpiry() {
+  const deadline = state.session?.expiresAt;
+  if (!deadline || expireIfDue()) return;
+  const delay = Math.min(Math.max(1, deadline * 1000 - Date.now()), 2147483647);
+  state.expiryTimer = setTimeout(scheduleSessionExpiry, delay);
+}
+
 function sessionExpired() {
   if (state.session === null) {
     return;
@@ -231,12 +255,18 @@ function clearRoomPanes() {
 }
 
 function showLogin(message) {
+  clearTimeout(state.expiryTimer);
+  state.expiryTimer = null;
   state.session = null;
+  state.view = null;
   state.room = null;
   state.rooms = [];
   state.roomsPane = { loading: false, denied: false, error: "" };
   clearRoomPanes();
+  maintenance.close();
   els.mainView.hidden = true;
+  els.maintenanceView.hidden = true;
+  els.consoleViews.hidden = true;
   els.loginView.hidden = false;
   els.sessionActions.hidden = true;
   els.loginSubmit.disabled = false;
@@ -248,7 +278,7 @@ function showLogin(message) {
 
 function showConsole() {
   els.loginView.hidden = true;
-  els.mainView.hidden = false;
+  els.consoleViews.hidden = false;
   els.sessionActions.hidden = false;
   els.roomEmpty.hidden = false;
   els.roomDetail.hidden = true;
@@ -260,6 +290,32 @@ function showConsole() {
       state.session.username +
       (ends ? " · session ends " + ends : "")
   );
+  selectView(ENTRY_VIEW);
+  if (ENTRY_VIEW === "maintenance") {
+    els.maintenanceViewButton.focus();
+  } else {
+    els.roomsViewButton.focus();
+  }
+}
+
+function selectView(view) {
+  if (!state.session || state.view === view) return;
+  const epoch = newEpoch();
+  state.view = view;
+  state.room = null;
+  state.rooms = [];
+  clearRoomPanes();
+  const showMaintenance = view === "maintenance";
+  els.mainView.hidden = showMaintenance;
+  els.maintenanceView.hidden = !showMaintenance;
+  els.roomsViewButton.setAttribute("aria-current", String(!showMaintenance));
+  els.maintenanceViewButton.setAttribute("aria-current", String(showMaintenance));
+  if (showMaintenance) {
+    maintenance.open();
+  } else {
+    maintenance.close();
+  }
+  loadRoomsList(epoch);
 }
 
 async function submitLogin(event) {
@@ -277,10 +333,10 @@ async function submitLogin(event) {
     method: "POST",
     body: { username, password, "purpose": "console" },
   });
-  els.loginSubmit.disabled = false;
   if (epoch !== state.epoch) {
     return;
   }
+  els.loginSubmit.disabled = false;
   const payload = result.payload;
   const token =
     payload && typeof payload["access_token"] === "string"
@@ -293,8 +349,9 @@ async function submitLogin(event) {
       expiresAt: Number(payload["expires_at"]) || 0,
     };
     els.password.value = "";
+    if (expireIfDue()) return;
+    scheduleSessionExpiry();
     showConsole();
-    loadRoomsList(newEpoch());
     return;
   }
   if (result.status === 401) {
@@ -339,6 +396,10 @@ async function loadRoomsList(epoch) {
 }
 
 function renderRooms() {
+  if (state.view === "maintenance") {
+    maintenance.setRooms(state.rooms, state.roomsPane);
+    return;
+  }
   const list = els.roomList;
   list.replaceChildren();
   if (state.roomsPane.loading) {
@@ -429,6 +490,11 @@ function selectRoom(roomId) {
 
 function refreshAll() {
   if (state.session === null) {
+    return;
+  }
+  if (state.view === "maintenance") {
+    maintenance.refresh();
+    if (!state.roomsPane.loading && state.session) loadRoomsList(state.epoch);
     return;
   }
   const epoch = newEpoch();
@@ -863,6 +929,11 @@ function errorRow(message, retryAction) {
 els.loginForm.addEventListener("submit", submitLogin);
 els.logoutButton.addEventListener("click", logout);
 els.refreshButton.addEventListener("click", refreshAll);
+els.roomsViewButton.addEventListener("click", () => selectView("rooms"));
+els.maintenanceViewButton.addEventListener("click", () => selectView("maintenance"));
+document.addEventListener("visibilitychange", () => {
+  if (!expireIfDue()) maintenance.visibilityChanged();
+});
 els.tabTimeline.addEventListener("click", () => setTab("timeline"));
 els.tabChats.addEventListener("click", () => setTab("chats"));
 els.tabBar.addEventListener("keydown", (event) => {

@@ -8,6 +8,7 @@ const {
 
 const origin = "http://127.0.0.1:18765";
 const landing = new URL("/console/", origin);
+const dashboard = new URL("/dashboard/", origin);
 
 test("opens the console at the configured Server origin", () => {
   for (const [server, expected] of [
@@ -33,6 +34,11 @@ test("opens the console at the configured Server origin", () => {
   }
 });
 
+test("opens the dashboard at the configured Server origin", () => {
+  assert.equal(serverConsoleUrl(origin, "dashboard").href, dashboard.href);
+  assert.throws(() => serverConsoleUrl("http://teamup.example", "dashboard"), /Server origin/);
+});
+
 test("allows the console page, assets, operator login, and console reads", () => {
   for (const [path, method, resourceType] of [
     ["/console/", "GET", "mainFrame"],
@@ -48,9 +54,25 @@ test("allows the console page, assets, operator login, and console reads", () =>
   }
 });
 
+test("allows the shared maintenance script and same-origin maintenance reads", () => {
+  for (const view of [landing, dashboard]) {
+    for (const [url, method, resourceType] of [
+      [view.href, "GET", "mainFrame"],
+      [origin + "/console/maintenance.js", "GET", "script"],
+      [origin + "/v1/auth/login", "POST", "xhr"],
+      [origin + "/v1/console/maintenance/health", "GET", "xhr"],
+      [origin + "/v1/console/rooms/room/load", "GET", "xhr"],
+      [origin + "/v1/console/maintenance/logs?limit=10", "GET", "xhr"],
+    ]) {
+      assert.ok(allowsServerConsoleRequest(view, { url, method, resourceType, initiatorOrigin: origin }), url);
+    }
+  }
+});
+
 test("blocks navigation and requests outside the operator window's scope", () => {
   for (const [url, method, resourceType, initiatorOrigin = origin] of [
     ["https://teamup.example/console/", "GET", "mainFrame"],
+    [dashboard.href, "GET", "mainFrame"],
     [origin + "/console/", "GET", "subFrame"],
     [origin + "/v1/console/rooms", "GET", "mainFrame"],
     [origin + "/v1/auth/login", "GET", "xhr"],
@@ -67,11 +89,11 @@ test("blocks navigation and requests outside the operator window's scope", () =>
   }
 });
 
-test("closes a stalled window and makes the Server menu usable again", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+function windowHarness(load) {
   const windows = [];
   const errors = [];
-  class StalledWindow extends EventEmitter {
+  let headersReceived;
+  class OperatorWindow extends EventEmitter {
     constructor() {
       super();
       this.webContents = new EventEmitter();
@@ -80,7 +102,12 @@ test("closes a stalled window and makes the Server menu usable again", async (t)
       windows.push(this);
     }
 
-    loadURL() { return new Promise(() => {}); }
+    loadURL(url) {
+      this.url = url;
+      return load(this, (response) => headersReceived(response, () => {}));
+    }
+
+    show() { this.shown = true; }
     isDestroyed() { return this.destroyed; }
     destroy() {
       this.destroyed = true;
@@ -90,13 +117,65 @@ test("closes a stalled window and makes the Server menu usable again", async (t)
   const session = new EventEmitter();
   session.setPermissionCheckHandler = () => {};
   session.setPermissionRequestHandler = () => {};
-  session.webRequest = { onBeforeRequest() {}, onHeadersReceived() {} };
-  const show = createServerConsole({
-    BrowserWindow: StalledWindow,
-    dialog: { showErrorBox(_title, message) { errors.push(message); } },
-    serverSession: session,
-    readOrigin: async () => origin,
-  });
+  session.webRequest = {
+    onBeforeRequest() {},
+    onHeadersReceived(listener) { headersReceived = listener; },
+  };
+  return {
+    windows,
+    errors,
+    options: {
+      BrowserWindow: OperatorWindow,
+      dialog: { showErrorBox(_title, message) { errors.push(message); } },
+      serverSession: session,
+      readOrigin: async () => origin,
+    },
+  };
+}
+
+function servedAssets(paths) {
+  return async (window, receiveHeaders) => {
+    window.webContents.emit("did-navigate", {}, window.url, 200);
+    for (const path of paths) {
+      receiveHeaders({ url: new URL(path, window.url).href, statusCode: 200 });
+    }
+  };
+}
+
+test("opens the Room Console on a Server that publishes only the original assets", async () => {
+  const { windows, errors, options } = windowHarness(servedAssets([
+    "/console/console.css", "/console/console.js",
+  ]));
+  createServerConsole(options)();
+  await nextTurn();
+  assert.equal(windows[0].url, landing.href);
+  assert.equal(windows[0].shown, true);
+  assert.deepEqual(errors, []);
+});
+
+test("retries the Server Dashboard after a missing maintenance script becomes available", async () => {
+  const deployed = ["/console/console.css", "/console/console.js"];
+  const { windows, errors, options } = windowHarness(servedAssets(deployed));
+  const show = createServerConsole({ ...options, view: "dashboard" });
+
+  show();
+  await nextTurn();
+  assert.equal(windows[0].url, dashboard.href);
+  assert.equal(windows[0].destroyed, true);
+  assert.match(errors[0], /assets/);
+
+  deployed.push("/console/maintenance.js");
+  show();
+  await nextTurn();
+  assert.equal(windows[1].url, dashboard.href);
+  assert.equal(windows[1].shown, true);
+  assert.equal(errors.length, 1);
+});
+
+test("closes a stalled window and makes the Server menu usable again", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { windows, errors, options } = windowHarness(() => new Promise(() => {}));
+  const show = createServerConsole(options);
 
   show();
   await nextTurn();

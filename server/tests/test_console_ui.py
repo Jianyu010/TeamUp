@@ -1,6 +1,6 @@
-"""Static regression tests for the Console UI package (#5).
+"""Regression tests for the Rooms and Maintenance console UI (#5 and #32).
 
-The console ships as three static files under
+The console ships as static files under
 ``server/src/teamup_server/console/`` (see docs/modules/control-console.md,
 section "Console UI 消费方契约"). These tests lock the consumer contract
 without a browser: the exact file set, same-origin-only resources, no
@@ -18,12 +18,14 @@ retention-cleared message activities have no jump target.
 """
 
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
 
 CONSOLE_DIR = Path(__file__).parents[1] / "src" / "teamup_server" / "console"
-EXPECTED_FILES = {"index.html", "console.css", "console.js"}
+EXPECTED_FILES = {"index.html", "console.css", "console.js", "maintenance.js"}
 
 STORAGE_APIS = ("localStorage", "sessionStorage", "indexedDB", "document.cookie")
 INJECTION_SINKS = (
@@ -70,6 +72,11 @@ def js():
     return read("console.js")
 
 
+@pytest.fixture(scope="module")
+def scripts(js):
+    return js + "\n" + read("maintenance.js")
+
+
 def test_console_static_file_set():
     assert CONSOLE_DIR.is_dir(), f"Missing console package directory: {CONSOLE_DIR}"
     actual = {entry.name for entry in CONSOLE_DIR.iterdir()}
@@ -93,10 +100,15 @@ def test_html_same_origin_resources_only(html):
     links = re.findall(r"<link\b[^>]*>", html, re.IGNORECASE)
     assert [
         re.search(r'href=["\']([^"\']*)["\']', link).group(1) for link in links
-    ] == ["console.css"]
+    ] == ["/console/console.css"]
     scripts = re.findall(r"<script\b[^>]*>", html, re.IGNORECASE)
-    assert len(scripts) == 1
-    assert re.search(r'src=["\']console\.js["\']', scripts[0])
+    assert [
+        re.search(r'src=["\']([^"\']*)["\']', script).group(1) for script in scripts
+    ] == [
+        "/console/maintenance.js",
+        "/console/console.js",
+    ]
+    assert all(re.search(r"\bdefer\b", script) for script in scripts)
     for tag in ("img", "iframe", "source", "video", "object", "embed"):
         assert f"<{tag}" not in html.lower()
     assert "<style" not in html.lower()
@@ -135,6 +147,21 @@ def test_html_required_structure(html):
         "chatsMore",
         "refreshButton",
         "logoutButton",
+        "roomsViewButton",
+        "maintenanceViewButton",
+        "maintenanceView",
+        "maintenanceHealthStatus",
+        "maintenanceSources",
+        "maintenanceTraffic",
+        "maintenanceRoomSelect",
+        "maintenanceRoomStatus",
+        "maintenanceRoomMetrics",
+        "maintenanceEventsForm",
+        "maintenanceSince",
+        "maintenanceUntil",
+        "maintenanceComponent",
+        "maintenanceEventsStatus",
+        "maintenanceEventsBody",
     }
     for element_id in required_ids:
         assert f'id="{element_id}"' in html, f"Missing id: {element_id}"
@@ -143,25 +170,25 @@ def test_html_required_structure(html):
     assert html.lower().count('role="tab"') >= 2
 
 
-def test_js_no_persistence_or_injection(js):
+def test_js_no_persistence_or_injection(scripts):
     for api in STORAGE_APIS:
-        assert api not in js, f"Console must not touch {api}"
+        assert api not in scripts, f"Console must not touch {api}"
     for sink in INJECTION_SINKS:
-        assert sink not in js, f"Console must not use {sink}"
-    assert "srcdoc" not in js
+        assert sink not in scripts, f"Console must not use {sink}"
+    assert "srcdoc" not in scripts
 
 
-def test_js_no_external_origins(js):
-    assert "https://" not in js and "http://" not in js
+def test_js_no_external_origins(scripts):
+    assert "https://" not in scripts and "http://" not in scripts
 
 
-def test_js_fetch_targets_and_methods(js):
-    assert '"/v1/auth/login"' in js
-    assert '"/v1/console"' in js or '"/v1/console/"' in js
-    assert "/v1/members" not in js
-    assert js.count('"POST"') == 1
-    assert "https://fetch" not in js
-    literal_paths = set(re.findall(r'["\'](/v1/[a-z0-9/_${}.-]*)["\']', js))
+def test_js_fetch_targets_and_methods(scripts):
+    assert '"/v1/auth/login"' in scripts
+    assert '"/v1/console"' in scripts or '"/v1/console/"' in scripts
+    assert "/v1/members" not in scripts
+    assert scripts.count('"POST"') == 1
+    assert "https://fetch" not in scripts
+    literal_paths = set(re.findall(r'["\'](/v1/[a-z0-9/_${}.-]*)["\']', scripts))
     assert literal_paths <= {"/v1/auth/login", "/v1/console"}
 
 
@@ -311,8 +338,8 @@ def test_html_no_implementation_only_or_redundant_copy(html):
         assert token not in html
 
 
-def test_js_referenced_ids_exist(html, js):
-    referenced = set(re.findall(r'getElementById\(["\']([^"\']+)["\']\)', js))
+def test_js_referenced_ids_exist(html, scripts):
+    referenced = set(re.findall(r'getElementById\(["\']([^"\']+)["\']\)', scripts))
     defined = set(re.findall(r'id="([^"]+)"', html))
     assert referenced
     assert referenced <= defined, referenced - defined
@@ -326,3 +353,456 @@ def test_css_no_external_references(css):
 def test_css_responsive_density(css):
     assert "@media" in css
     assert "focus-visible" in css
+
+
+CONSOLE_BROWSER = r"""
+const assert = require("node:assert/strict");
+const { readFileSync } = require("node:fs");
+const vm = require("node:vm");
+const [dir, pathname] = process.argv.slice(1);
+const html = readFileSync(dir + "/index.html", "utf8");
+
+class Element {
+  children = [];
+  ownText = "";
+  value = "";
+  attributes = {};
+  listeners = {};
+  classList = { toggle() {} };
+
+  constructor(tag, hidden = false) {
+    this.tagName = tag;
+    this.hidden = hidden;
+  }
+
+  set textContent(value) { this.ownText = String(value); this.children = []; }
+  get textContent() {
+    return this.ownText + this.children.map((child) => child.textContent).join(" ");
+  }
+  append(...nodes) { this.children.push(...nodes); }
+  replaceChildren(...nodes) { this.textContent = ""; this.append(...nodes); }
+  setAttribute(name, value) { this.attributes[name] = String(value); }
+  removeAttribute(name) { delete this.attributes[name]; }
+  addEventListener(type, listener) {
+    (this.listeners[type] ||= []).push(listener);
+  }
+  emit(type) {
+    return Promise.all((this.listeners[type] || []).map((listener) =>
+      listener({ preventDefault() {} })));
+  }
+  focus() {}
+}
+
+const nodes = Object.fromEntries(
+  [...html.matchAll(/<(\w+)\b[^>]*\bid="([^"]+)"([^>]*)>/g)]
+    .map(([, tag, id, attrs]) => [id, new Element(tag, /\bhidden\b/.test(attrs))])
+);
+const el = (id) => {
+  assert.ok(nodes[id], "Missing console element " + id);
+  return nodes[id];
+};
+const document = new Element("document");
+document.hidden = false;
+document.visibilityState = "visible";
+document.getElementById = el;
+document.createElement = (tag) => new Element(tag);
+
+const initialTime = Date.parse("2026-11-25T02:00:00Z");
+let now = initialTime;
+let expiresIn = 3600;
+let nextTimer = 0;
+const timers = new Map();
+function schedule(callback, delay, repeats) {
+  timers.set(++nextTimer, { callback, delay, repeats, at: now + delay });
+  return nextTimer;
+}
+function advance(ms) {
+  const until = now + ms;
+  while (true) {
+    const next = [...timers.entries()]
+      .filter(([, timer]) => timer.at <= until)
+      .sort((left, right) => left[1].at - right[1].at)[0];
+    if (!next) break;
+    const [id, timer] = next;
+    now = timer.at;
+    if (timer.repeats) timer.at += timer.delay;
+    else timers.delete(id);
+    timer.callback();
+  }
+  now = until;
+}
+
+const base = "/v1/console";
+const healthPath = base + "/maintenance/health";
+const roomsPath = base + "/rooms";
+const logsPath = base + "/maintenance/logs";
+const loginPath = "/v1/auth/login";
+const sampledAt = new Date(now).toISOString();
+const response = (status, payload) => ({ status, json: async () => payload });
+const sample = (source, values) => ({
+  source, sampled_at: sampledAt, state: "fresh", values, rates: null,
+  sample_interval_seconds: 15, stale_after_seconds: 45, unavailable_after_seconds: 90,
+});
+const healthy = {
+  generated_at: sampledAt,
+  sources: {
+    host: sample("host", { process_uptime_seconds: 214, host_cpu_busy_fraction: null }),
+    gateway: sample("gateway", {
+      http_requests_total: [{ route: "/v1/rooms", method: "GET", status_class: "2xx", count: 4 }],
+      http_request_duration_seconds_total: [{ route: "/v1/rooms", seconds: 0.1 }],
+      http_request_duration_count: [{ route: "/v1/rooms", count: 4 }],
+      http_error_responses_total: [{ code: "forbidden", count: 1 }],
+      active_http_requests: 1, active_sse_streams: 0, sse_connections_total: 0,
+    }),
+    collaboration: sample("collaboration", { pending_inbox_events: 12 }),
+  },
+};
+const rooms = ["alpha", "beta"].map((room_id) => ({
+  room_id, name: room_id, member_count: 1, last_activity: null,
+}));
+const roomLoad = (room_id, members) => response(200, { room: {
+  room_id, sampled_at: sampledAt, state: "fresh", member_count: members,
+  messages_stored: 0, pending_inbox_events: 0, oldest_pending_age_seconds: null,
+  last_activity_at: null, load_rates: null,
+} });
+const events = response(200, { state: "available", truncated: true, entries: [{
+  at: sampledAt, severity: "warning", component: "gateway", event_code: "request_error",
+  method: "GET", route: "/v1/rooms", status_class: "4xx", error_code: "forbidden",
+  duration_ms: 4, raw_body: "PRIVATE-FIELD",
+}] });
+
+const calls = [];
+const handlers = {};
+const callsFor = (path) => calls.filter(({ url }) => url.pathname === path);
+async function fetch(path, options) {
+  const url = new URL(path, "http://localhost");
+  calls.push({ url, options });
+  if (handlers[url.pathname]) return handlers[url.pathname](url, options);
+  if (url.pathname === loginPath) {
+    return response(200, { access_token: "operator-token", expires_at: now / 1000 + expiresIn });
+  }
+  if (url.pathname === roomsPath) return response(200, { rooms });
+  if (url.pathname === healthPath) return response(200, healthy);
+  throw new Error("Unexpected request " + path);
+}
+
+class Clock extends Date {
+  static now() { return now; }
+  constructor(...args) { super(...(args.length ? args : [now])); }
+}
+const context = vm.createContext({
+  document, location: { pathname }, fetch, AbortController, URLSearchParams, Date: Clock,
+  performance: { now: () => now - initialTime },
+  setTimeout: (fn, ms) => schedule(fn, ms, false),
+  setInterval: (fn, ms) => schedule(fn, ms, true),
+  clearTimeout: (id) => timers.delete(id),
+  clearInterval: (id) => timers.delete(id),
+});
+for (const [, src] of html.matchAll(/<script\b[^>]*\bsrc="([^"]+)"/g)) {
+  const file = src.split("/").at(-1);
+  vm.runInContext(readFileSync(dir + "/" + file, "utf8"), context, { filename: file });
+}
+const settle = () => new Promise((resolve) => setImmediate(resolve));
+async function signIn() {
+  el("username").value = "operator";
+  el("password").value = "password";
+  await el("loginForm").emit("submit");
+  await settle();
+}
+function visibility(visible) {
+  document.hidden = !visible;
+  document.visibilityState = visible ? "visible" : "hidden";
+  return document.emit("visibilitychange");
+}
+function queryEvents() {
+  return el("maintenanceEventsForm").emit("submit");
+}
+"""
+
+
+def run_console_browser(scenario, entry="/dashboard/"):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip(
+            "Node.js is required for the console's browser lifecycle regressions"
+        )
+    script = (
+        CONSOLE_BROWSER
+        + "\n(async () => {\n"
+        + scenario
+        + "\n})().catch((error) => { console.error(error); process.exitCode = 1; });"
+    )
+    result = subprocess.run(
+        [node, "-e", script, str(CONSOLE_DIR), entry],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("entry", ["/dashboard/", "/console/"])
+def test_entry_switches_console_views_without_reauthenticating(entry):
+    run_console_browser(
+        """
+        assert.equal(calls.length, 0);
+        await signIn();
+        const dashboard = pathname === "/dashboard/";
+        assert.equal(el("loginView").hidden, true);
+        assert.equal(el("mainView").hidden, dashboard);
+        assert.equal(el("maintenanceView").hidden, !dashboard);
+        assert.equal(callsFor(healthPath).length, dashboard ? 1 : 0);
+        assert.equal(JSON.parse(calls[0].options.body).purpose, "console");
+        assert.equal(calls[0].options.headers.Authorization, undefined);
+        await el(dashboard ? "roomsViewButton" : "maintenanceViewButton").emit("click");
+        await settle();
+        assert.equal(el("mainView").hidden, !dashboard);
+        assert.equal(el("maintenanceView").hidden, dashboard);
+        assert.equal(callsFor(loginPath).length, 1);
+        assert.equal(callsFor(healthPath).length, 1);
+        assert.ok(calls.slice(1).every(({ options }) =>
+          options.headers.Authorization === "Bearer operator-token"));
+        """,
+        entry,
+    )
+
+
+def test_health_polling_pauses_when_hidden_or_switched_and_drops_late_results():
+    run_console_browser(
+        """
+        await signIn();
+        assert.equal(callsFor(healthPath).length, 1);
+        advance(14999);
+        assert.equal(callsFor(healthPath).length, 1);
+        let finish;
+        handlers[healthPath] = () => new Promise((resolve) => { finish = resolve; });
+        advance(1);
+        assert.equal(callsFor(healthPath).length, 2);
+        await visibility(false);
+        assert.ok(callsFor(healthPath)[1].options.signal.aborted);
+        advance(30000);
+        assert.equal(callsFor(healthPath).length, 2);
+        finish(response(403, null));
+        await settle();
+        assert.doesNotMatch(el("maintenanceHealthStatus").textContent, /maintenance_read/);
+        delete handlers[healthPath];
+        await visibility(true);
+        await settle();
+        assert.equal(callsFor(healthPath).length, 3);
+        await el("roomsViewButton").emit("click");
+        advance(30000);
+        assert.equal(callsFor(healthPath).length, 3);
+        assert.equal(callsFor(logsPath).length, 0);
+        """
+    )
+
+
+def test_maintenance_permissions_are_scoped_and_log_queries_are_explicit():
+    run_console_browser(
+        """
+        handlers[healthPath] = () => response(403, { error: { code: "forbidden" } });
+        handlers[roomsPath + "/alpha/load"] = handlers[healthPath];
+        handlers[logsPath] = handlers[healthPath];
+        await signIn();
+        assert.match(el("maintenanceHealthStatus").textContent, /maintenance_read/);
+        assert.equal(callsFor(logsPath).length, 0);
+        assert.equal(el("loginView").hidden, true);
+        el("maintenanceRoomSelect").value = "alpha";
+        await el("maintenanceRoomSelect").emit("change");
+        await settle();
+        assert.match(el("maintenanceRoomStatus").textContent, /maintenance_read/);
+
+        const since = el("maintenanceSince").value;
+        el("maintenanceSince").value = "2026-11-24T23:00:00";
+        await queryEvents();
+        assert.match(el("maintenanceEventsStatus").textContent, /hour/i);
+        assert.equal(callsFor(logsPath).length, 0);
+        el("maintenanceSince").value = since;
+        await queryEvents();
+        await settle();
+        assert.match(el("maintenanceEventsStatus").textContent, /logs_read/);
+        assert.doesNotMatch(el("maintenanceEventsStatus").textContent, /maintenance_read/);
+
+        handlers[logsPath] = () => events;
+        el("maintenanceComponent").value = "gateway";
+        await queryEvents();
+        await settle();
+        const query = callsFor(logsPath).at(-1).url.searchParams;
+        assert.equal(query.get("since"), "2026-11-25T01:45:00.000Z");
+        assert.equal(query.get("until"), "2026-11-25T02:00:00.000Z");
+        assert.equal(query.get("component"), "gateway");
+        assert.equal(query.has("limit"), false);
+        assert.match(el("maintenanceEventsStatus").textContent, /partial|truncated/i);
+        assert.match(el("maintenanceEventsStatus").textContent, /01:45:00 UTC to .*02:00:00 UTC/);
+        const entries = el("maintenanceEventsBody").textContent;
+        assert.match(entries, /request_error/);
+        assert.doesNotMatch(entries, /PRIVATE-FIELD/);
+        el("refreshButton").emit("click");
+        await settle();
+        assert.equal(callsFor(logsPath).length, 2);
+        """
+    )
+
+
+def test_room_load_replaces_only_the_current_selection():
+    run_console_browser(
+        """
+        let finishAlpha;
+        handlers[roomsPath + "/alpha/load"] = () => new Promise((resolve) => {
+          finishAlpha = resolve;
+        });
+        handlers[roomsPath + "/beta/load"] = () => roomLoad("beta", 28);
+        await signIn();
+        const select = el("maintenanceRoomSelect");
+        assert.deepEqual(select.children.map((child) => child.value), ["", "alpha", "beta"]);
+        select.value = "alpha";
+        select.emit("change");
+        select.value = "beta";
+        await select.emit("change");
+        await settle();
+        assert.ok(callsFor(roomsPath + "/alpha/load")[0].options.signal.aborted);
+        assert.match(el("maintenanceRoomMetrics").textContent, /28/);
+        finishAlpha(roomLoad("alpha", 95));
+        await settle();
+        assert.doesNotMatch(el("maintenanceRoomMetrics").textContent, /95/);
+        assert.equal(calls.filter(({ url }) => url.pathname.startsWith(roomsPath + "/")).length, 2);
+        """
+    )
+
+
+@pytest.mark.parametrize("room_state", ["displayed", "pending"])
+def test_maintenance_denial_discards_room_load_and_preserves_events(room_state):
+    run_console_browser(
+        "const roomState = "
+        + repr(room_state)
+        + ";\n"
+        + """
+        await signIn();
+        handlers[logsPath] = () => events;
+        await queryEvents();
+        await settle();
+        let finishRoom;
+        const roomPath = roomsPath + "/alpha/load";
+        handlers[roomPath] = roomState === "displayed"
+          ? () => roomLoad("alpha", 28)
+          : () => new Promise((resolve) => { finishRoom = resolve; });
+        const select = el("maintenanceRoomSelect");
+        select.value = "alpha";
+        select.emit("change");
+        await settle();
+        if (roomState === "displayed") assert.match(el("maintenanceRoomMetrics").textContent, /28/);
+        handlers[healthPath] = () => response(403, { error: { code: "forbidden" } });
+        advance(15000);
+        await settle();
+        assert.equal(el("maintenanceRoomMetrics").textContent, "");
+        assert.match(el("maintenanceRoomStatus").textContent, /maintenance_read/);
+        assert.match(el("maintenanceEventsBody").textContent, /request_error/);
+        assert.equal(el("loginView").hidden, true);
+        if (roomState === "pending") {
+          assert.ok(callsFor(roomPath)[0].options.signal.aborted);
+          finishRoom(roomLoad("alpha", 28));
+          await settle();
+          assert.equal(el("maintenanceRoomMetrics").textContent, "");
+        }
+        """
+    )
+
+
+def test_stalled_health_request_is_aborted_and_next_poll_retries():
+    run_console_browser(
+        """
+        let finish;
+        handlers[healthPath] = () => new Promise((resolve) => { finish = resolve; });
+        await signIn();
+        assert.equal(callsFor(healthPath).length, 1);
+        advance(10000);
+        await settle();
+        assert.ok(callsFor(healthPath)[0].options.signal.aborted);
+        assert.match(el("maintenanceHealthStatus").textContent, /timed out/i);
+        delete handlers[healthPath];
+        advance(5000);
+        await settle();
+        assert.equal(callsFor(healthPath).length, 2);
+        assert.match(el("maintenanceSources").textContent, /fresh/i);
+        finish(response(403, null));
+        await settle();
+        assert.match(el("maintenanceSources").textContent, /fresh/i);
+        assert.doesNotMatch(el("maintenanceHealthStatus").textContent, /maintenance_read/);
+        """
+    )
+
+
+def test_room_load_denial_discards_health_data_for_the_shared_grant():
+    run_console_browser(
+        """
+        await signIn();
+        assert.match(el("maintenanceSources").textContent, /fresh/i);
+        handlers[roomsPath + "/alpha/load"] = () => response(403, null);
+        el("maintenanceRoomSelect").value = "alpha";
+        await el("maintenanceRoomSelect").emit("change");
+        assert.equal(el("maintenanceSources").textContent, "");
+        assert.match(el("maintenanceHealthStatus").textContent, /maintenance_read/);
+        """
+    )
+
+
+@pytest.mark.parametrize("end_session", ["expiry", "unauthorized", "sign out"])
+def test_maintenance_session_end_clears_data_and_drops_the_pending_events(end_session):
+    run_console_browser(
+        "const reason = "
+        + repr(end_session)
+        + ";\n"
+        + """
+        expiresIn = 5;
+        await signIn();
+        assert.match(el("maintenanceSources").textContent, /Pending/i);
+        handlers[logsPath] = () => events;
+        await queryEvents();
+        await settle();
+        assert.match(el("maintenanceEventsBody").textContent, /request_error/);
+
+        let finish;
+        handlers[logsPath] = () => new Promise((resolve) => { finish = resolve; });
+        queryEvents();
+        if (reason === "expiry") advance(5000);
+        if (reason === "unauthorized") {
+          handlers[healthPath] = () => response(401, null);
+          el("refreshButton").emit("click");
+        }
+        if (reason === "sign out") await el("logoutButton").emit("click");
+        await settle();
+        assert.equal(el("loginView").hidden, false);
+        assert.equal(el("maintenanceView").hidden, true);
+        assert.equal(el("maintenanceSources").textContent, "");
+        assert.equal(el("maintenanceEventsBody").textContent, "");
+        assert.ok(callsFor(logsPath).at(-1).options.signal.aborted);
+        finish(events);
+        await settle();
+        assert.equal(el("maintenanceEventsBody").textContent, "");
+        const healthCalls = callsFor(healthPath).length;
+        advance(20000);
+        assert.equal(callsFor(healthPath).length, healthCalls);
+        """
+    )
+
+
+def test_maintenance_labels_cached_sample_ages_and_gateway_mean():
+    run_console_browser(
+        """
+        await signIn();
+        assert.match(el("maintenanceSources").textContent, /fresh/i);
+        assert.match(el("maintenanceSources").textContent, /sampled.*0 s/i);
+        assert.match(el("maintenanceTraffic").textContent, /25(?:\\.0+)? ms/);
+        assert.match(el("maintenanceTraffic").textContent, /forbidden/);
+        handlers[healthPath] = () => response(503, null);
+        advance(60000);
+        await settle();
+        assert.match(el("maintenanceSources").textContent, /stale/i);
+        assert.match(el("maintenanceSources").textContent, /sampled.*60 s/i);
+        advance(45000);
+        await settle();
+        assert.match(el("maintenanceSources").textContent, /unavailable/i);
+        assert.doesNotMatch(el("maintenanceTraffic").textContent, /25(?:\\.0+)? ms/);
+        """
+    )

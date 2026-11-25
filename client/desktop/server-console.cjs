@@ -1,12 +1,25 @@
 const { isIPv4 } = require("node:net");
+const { createRemoteWindow } = require("./remote-window.cjs");
 
-const assets = new Map([
+const roomAssets = new Map([
   ["/console/console.css", "stylesheet"],
   ["/console/console.js", "script"],
 ]);
-const loadTimeoutMs = 12000;
+const assets = new Map([...roomAssets, ["/console/maintenance.js", "script"]]);
+const views = {
+  rooms: {
+    path: "/console/",
+    title: "Room Console",
+    requiredAssets: Array.from(roomAssets.keys()),
+  },
+  dashboard: {
+    path: "/dashboard/",
+    title: "Server Dashboard",
+    requiredAssets: Array.from(assets.keys()),
+  },
+};
 
-function serverConsoleUrl(value) {
+function serverConsoleUrl(value, view = "rooms") {
   const origin = typeof value === "string" &&
     /^https?:\/\/[^/?#\\@\s\x00-\x1f\x7f]+\/?$/i.test(value) &&
     URL.parse(value);
@@ -15,7 +28,7 @@ function serverConsoleUrl(value) {
     const loopback = host === "localhost" || host === "[::1]" ||
       (isIPv4(host) && host.startsWith("127."));
     if (origin.protocol === "https:" || loopback) {
-      return new URL("/console/", origin);
+      return new URL(views[view].path, origin);
     }
   }
   throw new Error("The selected TeamUp profile does not name a valid Server origin.");
@@ -40,89 +53,23 @@ function allowsServerConsoleRequest(landing, request) {
     (method === "GET" && target.pathname.startsWith("/v1/console/"));
 }
 
-function createServerConsole({ BrowserWindow, dialog, serverSession, readOrigin }) {
-  let window;
-  let opening;
-  const block = (event) => event.preventDefault();
-  serverSession.setPermissionCheckHandler(() => false);
-  serverSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
-  serverSession.on("will-download", block);
-
-  async function open() {
-    const landing = serverConsoleUrl(await readOrigin());
-    serverSession.webRequest.onBeforeRequest((request, callback) => {
-      callback({ cancel: !allowsServerConsoleRequest(landing, request) });
-    });
-    const candidate = new BrowserWindow({
-      title: "TeamUp Control Console",
-      width: 1000,
-      height: 800,
-      minWidth: 680,
-      minHeight: 520,
-      show: false,
-      webPreferences: {
-        session: serverSession,
-        sandbox: true,
-        contextIsolation: true,
-        nodeIntegration: false,
-      },
-    });
-    window = candidate;
-    candidate.once("closed", () => { window = null; });
-    candidate.webContents.on("will-frame-navigate", block);
-    candidate.webContents.on("will-redirect", block);
-    candidate.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-    let status;
-    candidate.webContents.once("did-navigate", (_event, _url, code) => { status = code; });
-    const pendingAssets = new Set(Array.from(assets.keys(), (path) => new URL(path, landing).href));
-    serverSession.webRequest.onHeadersReceived((response, callback) => {
-      if (response.statusCode === 200 || response.statusCode === 304) {
-        pendingAssets.delete(response.url);
-      }
-      callback({});
-    });
-
-    let timeout;
-    const deadline = new Promise((_resolve, reject) => {
-      timeout = setTimeout(
-        () => reject(new Error("Opening the Server Control Console timed out.")),
-        loadTimeoutMs,
-      );
-    });
-    try {
-      await Promise.race([candidate.loadURL(landing.href), deadline]);
-      if (status !== 200) {
-        throw new Error("The Server did not serve its Control Console at /console/.");
-      }
-      if (pendingAssets.size) {
-        throw new Error("The Server did not serve all Control Console assets.");
-      }
-      candidate.show();
-    } catch (error) {
-      if (candidate.isDestroyed()) return;
-      candidate.destroy();
-      throw error;
-    } finally {
-      clearTimeout(timeout);
-      serverSession.webRequest.onHeadersReceived(null);
-    }
-  }
-
-  return function showServerConsole() {
-    if (opening) return;
-    if (window) {
-      if (window.isMinimized()) window.restore();
-      window.show();
-      window.focus();
-      return;
-    }
-    opening = open().catch((error) => {
-      dialog.showErrorBox(
-        "Could not open the Server Control Console",
-        error.message + "\n\nCheck the configured Server and its connection, then try again.",
-      );
-    }).finally(() => { opening = null; });
-  };
+function createServerConsole({ BrowserWindow, dialog, serverSession, readOrigin, view = "rooms" }) {
+  const { title, requiredAssets } = views[view];
+  return createRemoteWindow({
+    BrowserWindow,
+    dialog,
+    remoteSession: serverSession,
+    title,
+    retryHint: "Check the configured Server and its connection, then try again.",
+    resolveView: async () => {
+      const landing = serverConsoleUrl(await readOrigin(), view);
+      return {
+        landing,
+        requiredAssets,
+        allowsRequest: (request) => allowsServerConsoleRequest(landing, request),
+      };
+    },
+  });
 }
 
 module.exports = { serverConsoleUrl, allowsServerConsoleRequest, createServerConsole };
