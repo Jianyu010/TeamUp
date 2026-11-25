@@ -212,7 +212,7 @@ export function roomMembers({read, subject, chat, policyChanged, namesChanged}) 
     details(moved);
   }
 
-  function reset() {
+  function reset({preserveNames = false} = {}) {
     close();
     page = null;
     request = null;
@@ -222,7 +222,7 @@ export function roomMembers({read, subject, chat, policyChanged, namesChanged}) 
     scheduleExpiry(rail);
     get("roster-title").textContent = "Members";
     get("roster-status").textContent = "";
-    namesChanged?.(new Map());
+    if (!preserveNames) namesChanged?.(new Map());
     policyChanged();
   }
 

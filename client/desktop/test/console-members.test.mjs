@@ -185,3 +185,15 @@ test("room role labels reflect the current authorized roster and clear on reset"
   await deniedRead;
   assert.deepEqual(updates.at(-1), new Map());
 });
+
+test("a board refresh preserves known role labels while the roster reloads", async (t) => {
+  const updates = [];
+  const roster = room(t, [{id: "member", role: "Reviewer"}], [], {
+    namesChanged: (names) => updates.push(names),
+  });
+  await roster.refresh();
+  roster.reset({preserveNames: true});
+
+  assert.deepEqual(updates, [new Map([["member", "Reviewer"]])]);
+  assert.deepEqual(roster.orderedIds(), []);
+});

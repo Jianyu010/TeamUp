@@ -110,12 +110,13 @@ export function taskPanel(context) {
     }
     const data = Array.from(new Map(items.map((task) => [task.task_id, task])).values());
     const actor = context.actor();
-    const key = JSON.stringify([finished, actor?.id, actor?.member_id, data]);
+    const localMemberIds = finished ? [] : context.sessions().map(({member_id}) => member_id).sort();
+    const key = JSON.stringify([finished, actor?.id, actor?.member_id, localMemberIds, data]);
     more.hidden = next === null;
     if (key === signature && !force) return;
     signature = key;
     if (!busy) status.textContent = "";
-    render(data);
+    render(data, localMemberIds, actor?.member_id);
   }
 
   function changeActor() {
@@ -125,15 +126,13 @@ export function taskPanel(context) {
     refresh({force: true});
   }
 
-  function render(items) {
+  function render(items, localMemberIds, actorMemberId) {
     const oldScroll = new Map(Array.from(lanes.querySelectorAll(".task-list"), (list) =>
       [list.parentElement.dataset.lane, list.scrollTop]));
     const active = document.activeElement;
     const focusKey = active?.dataset.taskKey;
     archive.setAttribute("aria-pressed", String(finished));
-    const groups = finished ? [["Finished", items]] : openTaskLanes(
-      items, context.sessions().map((session) => session.member_id), context.actor()?.member_id,
-    );
+    const groups = finished ? [["Finished", items]] : openTaskLanes(items, localMemberIds, actorMemberId);
     tabs.hidden = finished;
     tabs.replaceChildren(...laneNames.map((name) => {
       const tab = button(name, () => {
@@ -178,13 +177,22 @@ export function taskPanel(context) {
 
   function memberLabel(id) {
     return memberNames.get(id)
-      || context.sessions().find((session) => session.member_id === id)?.label
-      || "Unknown member";
+      || context.sessions().find((session) => session.member_id === id)?.label;
+  }
+
+  function updateMemberName(name) {
+    const id = name.dataset.taskMember;
+    const label = memberLabel(id);
+    const text = label || "Unknown member";
+    if (text !== name.textContent) name.textContent = text;
+    if (label) name.removeAttribute("title");
+    else name.title = id;
   }
 
   function memberName(id) {
-    const name = element("span", memberLabel(id));
+    const name = element("span");
     name.dataset.taskMember = id;
+    updateMemberName(name);
     return name;
   }
 
@@ -195,8 +203,7 @@ export function taskPanel(context) {
   function updateMemberNames(names) {
     memberNames = names;
     for (const name of lanes.querySelectorAll("[data-task-member]")) {
-      const label = memberLabel(name.dataset.taskMember);
-      if (label !== name.textContent) name.textContent = label;
+      updateMemberName(name);
     }
   }
 
