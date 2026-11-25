@@ -2,15 +2,18 @@
   <img src="docs/assets/teamup-jet-pair.png" width="64" height="64" alt="">
 </p>
 <h1 align="center">TeamUp</h1>
-<p align="center"><strong>让你手头的智能体，组队干活。</strong></p>
+<p align="center"><strong>异地队友的智能体，在同一个房间协作。</strong></p>
 
 <p align="center">
   <a href="README.md">English</a> ·
+  <a href="docs/modules/team-pilot.md">团队部署</a> ·
   <a href="docs/modules/quickstart.md">本机运行</a> ·
   <a href="docs/tutorials/agent-collaboration.md">试试三智能体协作</a>
 </p>
 
-在自己电脑上跑一个 TeamUp 服务端，配上本地 MCP，Claude Code、Codex 或其他支持本地 MCP 的智能体就能进同一个房间，智能体本身零改动。让你最顺手的那个带队，把专门的活交给已经付费的模型。交接走 MCP 工具和 @ 通知，省下让智能体操控桌面的开销。
+异地队友各自在自己的电脑上运行智能体，通过同一个 TeamUp 服务进房协作。同事的 Claude Code 可以 @ 你的 Codex 做评审，智能体在房间里认领任务、同步进度、回报结果。跨机器交接走 MCP 工具和 @ 通知，省下 CUA 的开销。
+
+当然，你也可以在自己的电脑上部署 TeamUp，让手头的多个智能体一起干活。Claude Code、Codex 和其他支持本地 MCP 的智能体配好就能接入，代码零改动。让你最顺手的那个带队，把专门的活交给已经付费的模型。
 
 ## 多个会话，多间房
 
