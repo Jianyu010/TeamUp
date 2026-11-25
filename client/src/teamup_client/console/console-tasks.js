@@ -32,6 +32,16 @@ function time(stamp) {
   });
 }
 
+export function openTaskLanes(items, localMemberIds, actorMemberId) {
+  const localMembers = new Set(localMemberIds);
+  const available = items.filter((task) => !task.participant_member_ids.length &&
+    (!task.addressed_member_ids.length || task.addressed_member_ids.some((id) => localMembers.has(id))));
+  const taken = actorMemberId
+    ? items.filter((task) => task.participant_member_ids.includes(actorMemberId))
+    : [];
+  return [["Available", available], ["Taken", taken], ["Ongoing", items]];
+}
+
 export function taskPanel(context) {
   const lanes = byId("task-lanes");
   const status = byId("task-status");
@@ -40,6 +50,7 @@ export function taskPanel(context) {
   const tabs = byId("task-lane-nav");
   const expanded = new Set();
   const drafts = new Map();
+  let memberNames = new Map();
   let selectedLane = "Available";
   let finished = false;
   let pages = 1;
@@ -98,12 +109,14 @@ export function taskPanel(context) {
       return;
     }
     const data = Array.from(new Map(items.map((task) => [task.task_id, task])).values());
-    const key = JSON.stringify([finished, context.actor()?.id, data]);
+    const actor = context.actor();
+    const localMemberIds = finished ? [] : context.sessions().map(({member_id}) => member_id).sort();
+    const key = JSON.stringify([finished, actor?.id, actor?.member_id, localMemberIds, data]);
     more.hidden = next === null;
     if (key === signature && !force) return;
     signature = key;
     if (!busy) status.textContent = "";
-    render(data);
+    render(data, localMemberIds, actor?.member_id);
   }
 
   function changeActor() {
@@ -113,21 +126,13 @@ export function taskPanel(context) {
     refresh({force: true});
   }
 
-  function render(items) {
+  function render(items, localMemberIds, actorMemberId) {
     const oldScroll = new Map(Array.from(lanes.querySelectorAll(".task-list"), (list) =>
       [list.parentElement.dataset.lane, list.scrollTop]));
     const active = document.activeElement;
     const focusKey = active?.dataset.taskKey;
     archive.setAttribute("aria-pressed", String(finished));
-    const mine = new Set(context.sessions().map((session) => session.member_id));
-    const running = items.filter((task) => task.participant_member_ids.length > 0);
-    const available = items.filter((task) => !task.participant_member_ids.length &&
-      (!task.addressed_member_ids.length || task.addressed_member_ids.some((id) => mine.has(id))));
-    const groups = finished ? [["Finished", items]] : [
-      ["Available", available],
-      ["Taken", running.filter((task) => task.participant_member_ids.some((id) => mine.has(id)))],
-      ["Ongoing", running],
-    ];
+    const groups = finished ? [["Finished", items]] : openTaskLanes(items, localMemberIds, actorMemberId);
     tabs.hidden = finished;
     tabs.replaceChildren(...laneNames.map((name) => {
       const tab = button(name, () => {
@@ -170,9 +175,36 @@ export function taskPanel(context) {
     for (const tab of tabs.children) tab.setAttribute("aria-pressed", String(tab.dataset.lane === selectedLane));
   }
 
-  function role(member) {
-    return context.sessions().find((session) => session.member_id === member)?.label
-      || member.slice(0, 8);
+  function memberLabel(id) {
+    return memberNames.get(id)
+      || context.sessions().find((session) => session.member_id === id)?.label;
+  }
+
+  function updateMemberName(name) {
+    const id = name.dataset.taskMember;
+    const label = memberLabel(id);
+    const text = label || "Unknown member";
+    if (text !== name.textContent) name.textContent = text;
+    if (label) name.removeAttribute("title");
+    else name.title = id;
+  }
+
+  function memberName(id) {
+    const name = element("span");
+    name.dataset.taskMember = id;
+    updateMemberName(name);
+    return name;
+  }
+
+  function appendNames(line, ids, prefix = "") {
+    ids.forEach((id, index) => line.append(index ? ", " + prefix : prefix, memberName(id)));
+  }
+
+  function updateMemberNames(names) {
+    memberNames = names;
+    for (const name of lanes.querySelectorAll("[data-task-member]")) {
+      updateMemberName(name);
+    }
   }
 
   function card(task, lane) {
@@ -188,15 +220,17 @@ export function taskPanel(context) {
     item.append(title);
     if (task.stalled_since) item.append(element("p", "Stalled since " + time(task.stalled_since), "stalled"));
     if (task.addressed_member_ids.length) {
-      item.append(element("p", task.addressed_member_ids.map((id) => "@" + role(id)).join(", "), "muted"));
+      const addressed = element("p", "", "muted");
+      appendNames(addressed, task.addressed_member_ids, "@");
+      item.append(addressed);
     }
 
     const body = element("div", "", "task-expanded");
     if (task.description) body.append(element("p", task.description));
     const people = element("p", "", "muted");
-    people.append(element("strong", "Participants"), document.createTextNode(
-      " · " + (task.participant_member_ids.map(role).join(", ") || "None yet")
-    ));
+    people.append(element("strong", "Participants"), " · ");
+    if (task.participant_member_ids.length) appendNames(people, task.participant_member_ids);
+    else people.append("None yet");
     body.append(people);
     if (task.last_progress_at) body.append(element("p", "Last progress · " + time(task.last_progress_at), "muted"));
     if (task.finished_at) body.append(element("p", "Finished · " + time(task.finished_at), "muted"));
@@ -259,8 +293,10 @@ export function taskPanel(context) {
       loading.remove();
       if (result.state !== "ready") throw new Error();
       for (const entry of result.events) {
-        region.append(element("p", role(entry.actor_member_id) + " · " + entry.kind + " · " +
-          time(entry.created_at) + (entry.note ? " · " + entry.note : ""), "muted"));
+        const event = element("p", "", "muted");
+        event.append(memberName(entry.actor_member_id), " · " + entry.kind + " · " +
+          time(entry.created_at) + (entry.note ? " · " + entry.note : ""));
+        region.append(event);
       }
       if (result.next_after) region.append(button("More history", async (click) => {
         click.currentTarget.remove();
@@ -311,5 +347,5 @@ export function taskPanel(context) {
     pages++;
     refresh({force: true});
   });
-  return {refresh, reset, changeActor};
+  return {refresh, reset, changeActor, updateMemberNames};
 }

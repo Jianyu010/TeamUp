@@ -110,6 +110,7 @@ const members = roomMembers({
   subject: () => state.page === "room" && state.reader ? {room: state.room, session: state.reader} : null,
   chat: () => state.chat,
   policyChanged: renderHistoryBoundary,
+  namesChanged: tasks.updateMemberNames,
 });
 
 function renderRoomView() {
@@ -501,13 +502,12 @@ async function refresh() {
       if (oldReader && !state.reader) tasks.reset();
       else if (state.actor !== oldActor) tasks.changeActor();
       const board = active.memberships.find((item) => item.session === state.reader);
-      const contextChanged = state.reader !== oldReader || sessionFor(state.reader)?.member_id !== oldMember ||
-        !sameBoard(board, oldBoard);
-      if (contextChanged) {
+      const scopeChanged = state.reader !== oldReader || sessionFor(state.reader)?.member_id !== oldMember;
+      if (scopeChanged || !sameBoard(board, oldBoard)) {
         state.requestNumber++;
         state.chat = null;
         state.roomRead = null;
-        members.reset();
+        members.reset({preserveNames: !scopeChanged});
         renderChat();
       }
       if (!state.roomRead) refreshRoom();
