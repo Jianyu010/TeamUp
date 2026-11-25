@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import re
 import secrets
 import sqlite3
 from contextlib import asynccontextmanager, suppress
@@ -34,6 +35,10 @@ DM = {"dm_id": is_uuid}
 HISTORY_POLICIES = ("retained", "since_joining")
 TASK_STATUSES = ("open", "finished")
 PRESENCE_INTERVAL = 15
+
+
+def _membership_id(value):
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{32}", value) is not None
 
 
 def _history_policy(value):
@@ -86,6 +91,12 @@ OPERATIONS = {
     ),
     "join_room": Operation("POST", "/rooms/{room_id}/join", ROOM),
     "leave_room": Operation("POST", "/rooms/{room_id}/leave", ROOM),
+    "list_room_members": Operation("GET", "/rooms/{room_id}/members", ROOM),
+    "remove_room_member": Operation(
+        "POST",
+        "/rooms/{room_id}/members/{member_id}/remove",
+        {**ROOM, "member_id": is_uuid, "membership_id": _membership_id},
+    ),
     "get_board": Operation("GET", "/rooms/{room_id}/board", ROOM),
     "ack_board": Operation(
         "POST", "/rooms/{room_id}/board/ack", {**ROOM, "version": POSITIVE}
@@ -238,6 +249,7 @@ class Coordinator:
         self._watching = False
         self._sessions = {}
         self._retired = notices.retired_sessions(self._server_url)
+        self._pending_retirements: dict[tuple[str, str], tuple[Session, dict]] = {}
         for binding in config.bindings:
             if (binding.harness_instance_id, binding.session_key) not in self._retired:
                 self._add_session(binding)
@@ -349,7 +361,7 @@ class Coordinator:
         ):
             raise ClientError("invalid_request", "Invalid session attachment")
         identity, _ = self._identity(key, session_ref)
-        if identity in self._retired:
+        if identity in self._retired or identity in self._pending_retirements:
             raise self._retired_error()
         lease = self._set_lease(
             identity, Lease("claude-code", params["address"], params["token"])
@@ -376,6 +388,12 @@ class Coordinator:
         if retired := self._retired.get(identity):
             if method == "retire_identity":
                 return self._retirement_receipt(retired)
+            raise self._retired_error()
+        if pending := self._pending_retirements.get(identity):
+            session, _ = pending
+            if method == "retire_identity":
+                return await self._retire(session)
+            await self._sync_retirement(session)
             raise self._retired_error()
         session = await self._resolve(identity, install, session_ref)
         binding = session.binding
@@ -413,6 +431,8 @@ class Coordinator:
             for name, value in params.items()
             if f"{{{name}}}" not in operation.route
         }
+        if method == "list_room_members":
+            fields["include_membership"] = "true"
         try:
             if operation.verb == "GET":
                 result = await self._upstream.request(
@@ -426,7 +446,7 @@ class Coordinator:
             if exc.code == "not_registered" and await self._sync_retirement(session):
                 raise self._retired_error() from None
             raise
-        if identity in self._retired:
+        if identity in self._retired or identity in self._pending_retirements:
             raise self._retired_error()
         if method == "ack_board":
             session.inbox_changed.set()
@@ -446,6 +466,8 @@ class Coordinator:
         if retired := self._retired.get(identity):
             if method == "retire_session":
                 return self._retirement_receipt(retired)
+            raise self._retired_error()
+        if identity in self._pending_retirements and method != "retire_session":
             raise self._retired_error()
         if method in {"leave_session_room", "retire_session"}:
             return await self._session_action(identity, params.get("room_id"))
@@ -490,9 +512,11 @@ class Coordinator:
         if identity not in self._retired:
             lease = self._leases.get(identity)
             harness = lease.kind if lease else identity[0]
+            self._pending_retirements[identity] = session, receipt
             self._notices.retire_session(
                 self._server_url, identity, session.scope, harness, receipt
             )
+            del self._pending_retirements[identity]
             self._leases.pop(identity, None)
             self._retired[identity] = {
                 **self._retirement_receipt(receipt),
@@ -507,21 +531,40 @@ class Coordinator:
         if session.identity in self._retired:
             return True
         try:
-            receipt = await self._upstream.request(
-                "GET", "/members/me/retirement", session.binding.member_token
-            )
+            pending = self._pending_retirements.get(session.identity)
+            if pending is None:
+                receipt = await self._upstream.request(
+                    "GET", "/members/me/retirement", session.binding.member_token
+                )
+            else:
+                _, receipt = pending
             self._archive_session(session, receipt)
         except ClientError:
             return False
+        except sqlite3.Error:
+            # The Server confirmed retirement. The watcher can retry the local archive.
+            return True
         return True
 
     async def _retire(self, session):
-        receipt = await self._upstream.request(
-            "POST", "/members/me/retire", session.binding.member_token
-        )
-        return self._archive_session(session, receipt)
+        pending = self._pending_retirements.get(session.identity)
+        if pending is None:
+            receipt = await self._upstream.request(
+                "POST", "/members/me/retire", session.binding.member_token
+            )
+        else:
+            _, receipt = pending
+        try:
+            return self._archive_session(session, receipt)
+        except sqlite3.Error:
+            raise unavailable() from None
 
     async def _session_action(self, identity, room_id, membership_id=None):
+        if pending := self._pending_retirements.get(identity):
+            if room_id is not None:
+                raise self._retired_error()
+            session, _ = pending
+            return await self._retire(session)
         session = self._sessions.get(identity)
         if session is None:
             raise ClientError("not_found", "Unknown or unapproved session")
@@ -579,7 +622,7 @@ class Coordinator:
             for identity, profile in self._retired.items():
                 if self._console_id(identity) == session_id:
                     return {"state": "ready", **self._retirement_receipt(profile)}
-        for identity in self._sessions:
+        for identity in self._sessions.keys() | self._pending_retirements.keys():
             if self._console_id(identity) == session_id:
                 result = await self._session_action(identity, room_id, membership_id)
                 return {"state": "ready", **result}
@@ -650,6 +693,7 @@ class Coordinator:
                 session.binding.member_token,
             )
             for identity, session in sorted(self._sessions.items())
+            if identity not in self._pending_retirements
         )
 
     def _session_report(self):
@@ -660,6 +704,7 @@ class Coordinator:
         }
         report = []
         identities.update(dict.fromkeys(self._retired, "retired"))
+        identities.update(dict.fromkeys(self._pending_retirements, "retired"))
         for identity, state in sorted(identities.items()):
             lease = self._leases.get(identity)
             report.append(
@@ -763,9 +808,9 @@ class Coordinator:
                 delay = 0.25
             except ClientError as exc:
                 if exc.code == "not_registered":
-                    with suppress(sqlite3.Error):
-                        if await self._sync_retirement(session):
-                            return
+                    await self._sync_retirement(session)
+                    if session.identity in self._retired:
+                        return
             except (OSError, OverflowError, sqlite3.Error):
                 pass
             try:

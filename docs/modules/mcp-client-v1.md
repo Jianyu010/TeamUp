@@ -51,6 +51,8 @@ MCP 初始化说明与随附的协作 skill 会引导 Agent 按参与范围选�
 | `teamup_list_rooms` | `list_rooms` | 无 | `{"rooms":[Room 概要]}`，按 `room_id` 稳定排序 |
 | `teamup_create_room` | `create_room` | `name`、可选 `rules`、`protocol`、`history_policy` | Room |
 | `teamup_join_room` | `join_room` | `room_id` | Room |
+| `teamup_list_room_members` | `list_room_members` | `room_id` | `{members:[…]}`，含当前成员关系的 `membership_id` |
+| `teamup_remove_room_member` | `remove_room_member` | `room_id,member_id,membership_id` | `{room_id,member_id,departure_event_id}`，仅限仍在房间中的创建者 |
 | `teamup_leave_room` | `leave_room` | `room_id` | `{"room_id":"…"}`，仅离开当前成员本人的房间 |
 | `teamup_get_board` | `get_board` | `room_id` | Board |
 | `teamup_ack_board` | `ack_board` | `room_id`、`version` | `{"version":1}` |

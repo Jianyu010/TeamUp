@@ -149,6 +149,22 @@ class Handler(BaseHTTPRequestHandler):
             self._action_body(required=False)
             return self._reader.session_action(params["session"], room_id, membership_id)
 
+        if path == "/api/room-members/remove":
+            params = self._params(query)
+            if (
+                set(params) != {"room", "session", "member"}
+                or not self._hex_id(params["session"], 64)
+                or not is_uuid(params["room"])
+                or not is_uuid(params["member"])
+            ):
+                raise ValueError
+            body = self._action_body(required=True)
+            if set(body) != {"membership_id"} or not self._hex_id(body["membership_id"], 32):
+                raise ValueError
+            return self._reader.remove_room_member(
+                params["session"], params["room"], params["member"], body["membership_id"],
+            )
+
         if path == "/api/room-board":
             params = self._params(query)
             if set(params) != {"room", "session"} or not is_uuid(params["room"]):

@@ -46,9 +46,6 @@ export function sessionControls({request, changed}) {
     if (busy.has(session.id)) return;
     busy.add(session.id);
     retire.disabled = true;
-    for (const control of get("room-session-actions").querySelectorAll("button")) {
-      if (control.dataset.session === session.id) control.disabled = true;
-    }
     status.textContent = room ? "Leaving room…" : "Retiring identity…";
     try {
       const path = room ? "/api/sessions/leave" : "/api/sessions/retire";
@@ -70,9 +67,6 @@ export function sessionControls({request, changed}) {
     } finally {
       busy.delete(session.id);
       retire.disabled = Boolean(focused && busy.has(focused.id));
-      for (const control of get("room-session-actions").querySelectorAll("button")) {
-        if (control.dataset.session === session.id) control.disabled = false;
-      }
     }
   }
 
@@ -94,26 +88,6 @@ export function sessionControls({request, changed}) {
     });
     get("retired-list").replaceChildren(...(entries.length ? entries : [node("p", "No retired sessions", "muted")]));
     if (subject && !retired.some((entry) => entry.id === subject.id)) archive.close();
-  }
-
-  function room(room, sessions) {
-    const actions = get("room-session-actions");
-    actions.hidden = !sessions.length;
-    actions.replaceChildren(...sessions.map((session) => {
-      const label = sessions.some((item) => item.id !== session.id && item.label === session.label)
-        ? session.label + " (" + session.member_id.slice(0, 8) + ")" : session.label;
-      const membership = room.memberships.find((entry) => entry.session === session.id);
-      const control = button("Leave", () => act(session, room, membership?.membership_id));
-      control.title = "Leave and notify this session";
-      control.setAttribute("aria-label", "Leave room as " + label);
-      control.dataset.session = session.id;
-      control.disabled = busy.has(session.id);
-      const row = node("div", undefined, "room-session-action");
-      const name = node("span", label);
-      name.title = label;
-      row.append(name, control);
-      return row;
-    }));
   }
 
   async function archived(params) {
@@ -248,5 +222,5 @@ export function sessionControls({request, changed}) {
   selector.addEventListener("change", () => readHistory());
   get("archive-older").addEventListener("click", (event) => readHistory(event.currentTarget.dataset.before));
 
-  return {workspace, room};
+  return {workspace, leave: act};
 }

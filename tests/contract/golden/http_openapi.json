@@ -1696,6 +1696,16 @@
             }
           },
           {
+            "in": "query",
+            "name": "include_membership",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Membership",
+              "type": "boolean"
+            }
+          },
+          {
             "in": "header",
             "name": "authorization",
             "required": false,
@@ -1727,6 +1737,71 @@
           }
         },
         "summary": "Room Members"
+      }
+    },
+    "/v1/rooms/{room_id}/members/{member_id}/remove": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "room_id",
+            "required": true,
+            "schema": {
+              "title": "Room Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "member_id",
+            "required": true,
+            "schema": {
+              "title": "Member Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/_RemoveRoomMember"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Remove Room Member V1 Rooms  Room Id  Members  Member Id  Remove Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Remove Room Member"
       }
     },
     "/v1/rooms/{room_id}/messages": {
@@ -2770,6 +2845,21 @@
         "protocol"
       ],
       "title": "_PublishBoard",
+      "type": "object"
+    },
+    "_RemoveRoomMember": {
+      "additionalProperties": false,
+      "properties": {
+        "membership_id": {
+          "pattern": "^[0-9a-f]{32}$",
+          "title": "Membership Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "membership_id"
+      ],
+      "title": "_RemoveRoomMember",
       "type": "object"
     },
     "_Room": {

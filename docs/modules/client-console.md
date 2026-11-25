@@ -16,7 +16,7 @@ The optional browser listener belongs to the Client. It binds to an ephemeral po
 
 The Client publishes its own approved session descriptors and reads Server data through member routes. Each membership summary and transcript is authorized using the corresponding session. A room transcript is read through one explicitly selected session. The initial page contains the latest authorized messages. Older pages use the exclusive `before` cursor, and live catch-up uses the exclusive `after` cursor from the last displayed message. Both cursors use the published room history API and preserve the session's current access rules. The Team view uses one approved session to list team members.
 
-Agents join rooms and acknowledge their boards. Owners can end a local session’s membership with **Leave** in the room panel. DM summaries are tracked by [#34](https://github.com/Jianyu010/TeamUp/issues/34).
+Agents join rooms and acknowledge their boards. An approved local session has a **Leave this room** icon on its member row. The action appears on hover and keyboard focus and stays visible when the primary pointer does not support hover. The joined creator session can remove other members from their rows. The [membership contract](member-lifecycle.md#creator-removal-and-roster-controls-70-71-72) defines access, retries and Client refresh. The renderer sends `POST /api/room-members/remove?session=ID&room=UUID&member=UUID` with `{"membership_id":"…"}` through the loopback listener or named Electron bridge. DM summaries are tracked by [#34](https://github.com/Jianyu010/TeamUp/issues/34).
 
 ### Room Board
 

@@ -39,7 +39,7 @@ test("older pages and polls preserve survivors under a stable expiration waterma
   assert.deepEqual(calls, [{after: id(0)}, {after: id(30)}, {after: id(61)}, {after: id(90)}]);
 });
 
-test("polling refreshes retired sender labels on all loaded pages", async () => {
+test("polling rotates through loaded pages to update sender labels with two reads per poll", async () => {
   const messages = Array.from({length: 60}, (_, index) => ({
     id: String(index + 1),
     sender: index === 48 ? "Backend" : "Reviewer",
@@ -49,11 +49,21 @@ test("polling refreshes retired sender labels on all loaded pages", async () => 
   const current = messages.map((message) => message.id === "49"
     ? {...message, sender: "Retired member (93e57f02)"}
     : message);
-  const {page, reset} = await readTranscript(previous, null, async ({after}) => {
+  const calls = [];
+  async function fetchPage({after}) {
+    calls.push(after);
     const messages = current.filter((message) => Number(message.id) > Number(after)).slice(0, 30);
     return {state: "ready", board, messages, more_recent: messages.length === 30};
-  });
+  }
 
+  const first = await readTranscript(previous, null, fetchPage);
+  assert.equal(JSON.stringify(first.page).includes("recheck"), false);
+  assert.deepEqual(first.page.messages, messages);
+  assert.deepEqual(calls, ["0", "60"]);
+
+  calls.length = 0;
+  const {page, reset} = await readTranscript(first.page, null, fetchPage);
+  assert.deepEqual(calls, ["30", "60"]);
   assert.equal(reset, false);
   assert.equal(page.older, "1");
   assert.deepEqual(page.messages, current);
@@ -100,4 +110,29 @@ test("a rejoin between transcript pages discards the previous membership's rows"
     after === "4" ? previous : current);
   assert.equal(reset, true);
   assert.deepEqual(page.messages, [{id: "7"}]);
+});
+
+test("continuous traffic does not prevent an older page from being checked again", async () => {
+  const board = {current: 1, acknowledged: 1};
+  const messages = Array.from({length: 60}, (_, index) => ({id: String(index + 1), sender: "Member"}));
+  const stored = [...messages];
+  const fetchPage = async ({after}) => {
+    const messages = stored.slice(Number(after), Number(after) + 30);
+    return {state: "ready", board, messages, more_recent: messages.length === 30};
+  };
+  function append() {
+    for (let index = 0; index < 30; index++) {
+      stored.push({id: String(stored.length + 1), sender: "Member"});
+    }
+  }
+
+  let page = {state: "ready", board, messages};
+  append();
+  ({page} = await readTranscript(page, null, fetchPage));
+  stored[0] = {...stored[0], sender: "Renamed"};
+  append();
+  ({page} = await readTranscript(page, null, fetchPage));
+  append();
+  ({page} = await readTranscript(page, null, fetchPage));
+  assert.equal(page.messages[0].sender, "Renamed");
 });

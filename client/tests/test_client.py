@@ -2085,3 +2085,50 @@ def test_notice_store_migrates_v1_rows_and_keeps_typed_dm_notices():
             ]
             assert store.page(scope, 5, 50) == [dm_notice]
             assert store.page(scope, 8, 50) == []
+
+
+def test_server_retirement_surfaces_while_local_archive_write_is_retried(tmp_path):
+    import sqlite3
+
+    from teamup_client._config import read_config
+    from teamup_client._coordinator import Coordinator
+    from teamup_client._notices import NoticeStore
+    from teamup_client.ipc import ClientError
+
+    profile = {"member_id": MEMBERS[0], "role_description": "Retired", "retired": True}
+
+    class RetiredServer:
+        async def request(self, verb, path, token, **kwargs):
+            assert token == BINDINGS[0]["member_token"]
+            if (verb, path) == ("GET", "/members/me/retirement"):
+                return profile
+            assert (verb, path) == ("GET", "/rooms")
+            raise ClientError("not_registered", "The bearer is revoked")
+
+    async def run():
+        config_path, _ = write_config(tmp_path, "http://127.0.0.1:1", bindings=[BINDINGS[0]])
+        config = read_config(config_path)
+        with sqlite3.connect(":memory:") as db:
+            notices = NoticeStore(db)
+            coordinator = Coordinator(config, RetiredServer(), notices, None, None, {})
+            db.execute("""
+                CREATE TRIGGER fail_archive BEFORE INSERT ON retired_sessions
+                BEGIN SELECT RAISE(ABORT, 'local write failed'); END
+            """)
+            for attempt in range(2):
+                with pytest.raises(ClientError) as retired:
+                    await coordinator.execute(BINDINGS[0]["binding_key"], "list_rooms", {})
+                assert retired.value.code == "member_retired"
+                if attempt == 0:
+                    assert coordinator.console_retired_sessions() == []
+                    assert coordinator.console_sessions() == ()
+                    # An owner rejection can remove the active binding while archiving is pending.
+                    coordinator._sessions.clear()
+                    for method in ("notifications", "mention_status"):
+                        with pytest.raises(ClientError) as revoked:
+                            await coordinator.execute(BINDINGS[0]["binding_key"], method, {})
+                        assert revoked.value.code == "member_retired"
+                    db.execute("DROP TRIGGER fail_archive")
+            assert coordinator.console_retired_sessions()[0]["member_id"] == profile["member_id"]
+
+    asyncio.run(run())

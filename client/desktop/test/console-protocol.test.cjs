@@ -23,6 +23,7 @@ test("serves the bundled console without a running Client", async () => {
   assert.match(response.headers.get("Content-Security-Policy"), /connect-src 'self'/);
   assert.match(html, /id="board-toggle"[^>]*aria-controls="board-panel"[^>]*aria-expanded="false"/);
   assert.match(html, /id="room-id"[\s\S]*id="board-panel"[^>]*hidden/);
+  assert.doesNotMatch(html, /id="room-session-actions"/);
   for (const asset of ["/console-members.js", "/console-history.mjs", "/console-board.js", "/console-sessions.js"]) {
     const script = await handle(new Request(origin + asset));
     assert.equal(script.status, 200);
@@ -48,7 +49,7 @@ test("accepts only the Client's loopback launch URL", () => {
   }
 });
 
-test("relays named reads and task actions with the main process credential", async (t) => {
+test("relays named reads and writes with the main process credential", async (t) => {
   const received = [];
   const server = http.createServer(async (request, response) => {
     const chunks = [];
@@ -117,6 +118,13 @@ test("relays named reads and task actions with the main process credential", asy
   assert.equal((await handle(consoleRequest(board, publish, "https://example.com"))).status, 403);
   assert.equal((await handle(consoleRequest(board, { method: "DELETE" }))).status, 404);
 
+  const remove = "/api/room-members/remove?room=room&session=local&member=target";
+  const membership = JSON.stringify({ membership_id: "a".repeat(32) });
+  const removeAction = { ...publish, body: membership };
+  assert.equal((await handle(consoleRequest(remove, removeAction))).status, 409);
+  assert.equal((await handle(consoleRequest(remove, removeAction, "https://example.com"))).status, 403);
+  assert.equal((await handle(consoleRequest(remove))).status, 404);
+
   const task = "/api/tasks/01234567-89ab-4cde-8123-456789abcdef/progress?room=room&session=local";
   const body = JSON.stringify({ client_progress_id: "progress-1", note: "In review" });
   const write = await handle(consoleRequest(task, {
@@ -143,6 +151,7 @@ test("relays named reads and task actions with the main process credential", asy
     [retire, "POST", ""],
     [board, "GET", ""],
     [board, "POST", boardBody],
+    [remove, "POST", membership],
     [task, "POST", body],
     ["/api/team?session=redirect", "GET", ""],
   ].map(([url, method, body]) => ({

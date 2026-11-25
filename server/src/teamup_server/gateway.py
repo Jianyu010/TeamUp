@@ -88,7 +88,8 @@ _MemberToken = Annotated[
 _Identifier = Annotated[str, AfterValidator(_uuid)]
 _After = Annotated[int, Query(ge=0)]
 _Before = Annotated[int, Query(ge=1)]
-_MembershipID = Annotated[str, Query(pattern=r"^[0-9a-f]{32}$")]
+_MEMBERSHIP_PATTERN = r"^[0-9a-f]{32}$"
+_MembershipID = Annotated[str, Query(pattern=_MEMBERSHIP_PATTERN)]
 _Limit = Annotated[int, Query(ge=1, le=100)]
 
 
@@ -140,6 +141,12 @@ class _Room(_Body):
         if value is None:
             raise ValueError("Board text must be a string when provided")
         return value
+
+
+class _RemoveRoomMember(_Body):
+    membership_id: Annotated[
+        str, StringConstraints(strict=True, pattern=_MEMBERSHIP_PATTERN)
+    ]
 
 
 class _ConfirmBoard(_Body):
@@ -487,9 +494,32 @@ class Gateway:
             return collaboration.room_detail(token, room_id)
 
         @app.get("/v1/rooms/{room_id}/members", dependencies=[Depends(_reject_body)])
-        def room_members(token: _Bearer, room_id: _Identifier, response: Response) -> dict:
+        def room_members(
+            token: _Bearer,
+            room_id: _Identifier,
+            response: Response,
+            include_membership: bool = False,
+        ) -> dict:
             _no_store(response)
-            return {"members": collaboration.room_members(token, room_id)}
+            return {
+                "members": collaboration.room_members(
+                    token, room_id, include_membership=include_membership
+                ),
+            }
+
+        @app.post(
+            "/v1/rooms/{room_id}/members/{member_id}/remove",
+            dependencies=[Depends(_require_utf8)],
+        )
+        def remove_room_member(
+            token: _Bearer,
+            room_id: _Identifier,
+            member_id: _Identifier,
+            body: _RemoveRoomMember,
+        ) -> dict:
+            return collaboration.remove_room_member(
+                token, room_id, member_id, body.membership_id
+            )
 
         @app.post("/v1/rooms/{room_id}/join", dependencies=[Depends(_reject_body)])
         def join_room(token: _Bearer, room_id: _Identifier) -> dict:

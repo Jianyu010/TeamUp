@@ -282,12 +282,17 @@ class ConsoleReader:
                 )
                 if latest is not None and (shared["latest_message_id"] or 0) < latest:
                     shared["latest_message_id"] = latest
+                if room.get("can_remove_members") is True:
+                    permissions = {"can_remove_members": True}
+                else:
+                    permissions = {}
                 shared["memberships"].append(
                     {
                         "session": session["id"],
                         "acknowledged": room["acked_board_version"],
                         "current": room["current_board_version"],
                         "active_task": None,
+                        **permissions,
                         **({"membership_id": room["membership_id"]} if room.get("membership_id") else {}),
                     }
                 )
@@ -509,6 +514,18 @@ class ConsoleReader:
             return {"state": exc.code}
         return {"state": "ready", "board": board}
 
+    async def remove_room_member(
+        self, identity: str, room_id: str, member_id: str, membership_id: str
+    ) -> dict:
+        try:
+            result = await self._write(
+                identity, f"/rooms/{room_id}/members/{member_id}/remove",
+                {"membership_id": membership_id},
+            )
+        except ClientError as exc:
+            return {"state": exc.code}
+        return {"state": "ready", **result}
+
     async def room_members(self, identity: str, room_id: str) -> dict:
         session = self._current(identity)
         if session is None:
@@ -520,23 +537,28 @@ class ConsoleReader:
                 self._presence(session), self._roster_tasks(session, path)
             )
             # Read membership last so optional observations cannot outlive this read scope.
-            members = (await self._read(session, f"{path}/members"))["members"]
+            members = (await self._read(
+                session, f"{path}/members", {"include_membership": "true"}
+            ))["members"]
         except ClientError as exc:
             return {"state": exc.code, "members": []}
         by_member = _tasks_by_member(members, tasks) if tasks is not None else {}
+        roster = []
+        for member in members:
+            item = {
+                **_member_with_presence(member, presence),
+                "acknowledged": member["acked_board_version"],
+                "tasks": by_member.get(member["member_id"]),
+            }
+            if membership_id := member.get("membership_id"):
+                item["membership_id"] = membership_id
+            roster.append(item)
         return {
             "state": "ready",
             "current": detail["current_board_version"],
             "history_policy": detail["history_policy"],
             "presence_as_of": as_of,
-            "members": [
-                {
-                    **_member_with_presence(member, presence),
-                    "acknowledged": member["acked_board_version"],
-                    "tasks": by_member.get(member["member_id"]),
-                }
-                for member in members
-            ],
+            "members": roster,
         }
 
     async def room(

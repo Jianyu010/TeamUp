@@ -394,7 +394,7 @@ def test_v3_upgrade_prunes_timestamps_and_keeps_null_times(tmp_path):
         assert get(client, "old", "/inbox").json() == {"events": []}
         error(post(client, "old", "/inbox/17/ack"), 404, "not_found")
     with closing(sqlite3.connect(db_path)) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 9
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 10
 
 
 def test_retention_startup_pass_drives_bounded_batches_to_completion(tmp_path):

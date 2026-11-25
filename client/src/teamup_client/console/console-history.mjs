@@ -20,23 +20,39 @@ export async function readTranscript(previous, before, fetchPage) {
   const cached = previous?.messages;
   if (previous?.state !== "ready" || !cached.length) return latest();
 
-  // Refresh loaded pages: a rejoin can narrow access, retention can remove
-  // individual messages, and senders can be renamed or retired between polls.
+  // Retention can leave holes below the expiry watermark. Above it, check one
+  // cached page per poll to refresh sender labels without rereading the whole view.
   const newest = cached.at(-1).id;
   const all = new Map();
-  let after = String(BigInt(cached[0].id) - 1n);
+  const first = String(BigInt(cached[0].id) - 1n);
+  const cycleEnd = previous.recheck?.through ?? newest;
+  let after = before ? first : previous.recheck?.after ?? first;
   let probe = await fetchPage({after});
   const watermark = probe.expired_through_message_id;
+  const rotate = !before && (!watermark || compareIds(cached[0].id, watermark) > 0);
+  if (probe.state === "ready" && !rotate && after !== first) {
+    after = first;
+    probe = await fetchPage({after});
+  }
+  let recheck;
   while (true) {
     if (probe.state !== "ready") return {page: probe, reset: true};
     if (!sameBoard(previous.board, probe.board) || probe.expired_through_message_id !== watermark) return latest();
     truncated ||= probe.history_truncated === true;
     for (const item of probe.messages) all.set(item.id, item);
-    if (!probe.more_recent) break;
-
     const last = probe.messages.at(-1)?.id;
-    if (!last || compareIds(last, after) <= 0) return latest();
-    if (compareIds(last, newest) >= 0) break;
+    if (probe.more_recent && (!last || compareIds(last, after) <= 0)) return latest();
+    if (rotate) {
+      const through = probe.more_recent ? last : newest;
+      for (const item of cached) {
+        if (compareIds(item.id, after) <= 0 || compareIds(item.id, through) > 0) {
+          all.set(item.id, item);
+        }
+      }
+      if (compareIds(through, cycleEnd) < 0) recheck = {after: through, through: cycleEnd};
+      break;
+    }
+    if (!probe.more_recent || compareIds(last, newest) >= 0) break;
     after = last;
     probe = await fetchPage({after});
   }
@@ -48,6 +64,8 @@ export async function readTranscript(previous, before, fetchPage) {
   for (const item of page.messages) all.set(item.id, item);
   page.messages = [...all.values()].sort((a, b) => compareIds(a.id, b.id));
   if (!before) page.older = previous.older;
+  // Console page comparisons should only see data that affects the rendered chat.
+  if (recheck) Object.defineProperty(page, "recheck", {value: recheck});
   page.history_truncated ||= truncated;
   return {page, reset: false};
 }
