@@ -55,7 +55,7 @@ A delivery receipt records what reached the Client. Agents can retrieve authoriz
 
 - **Search** uses a Server-scoped room query with a stable cursor and bounded results. Return snippets and previews only from messages the caller can read. If we use SQLite FTS5, Collaboration maintains and purges that derived index with the transcript. An index hit still requires the current room access check before its text is returned. [SQLite FTS5 external-content indexes](https://www.sqlite.org/fts5.html#external_content_tables)
 - **Retention** is configured separately for rooms and DMs. Agree on the pilot durations before implementation. Expiry should remove message content from history, search, and outstanding deliveries. Expose the retained boundary when a resume position falls behind it so the caller can tell that some history expired. The allocator never reuses pruned message IDs.
-- **Migration** preserves the existing room order and authorization boundary. New entries get a Server-recorded timestamp. Old records with no timestamp display it as unknown. Backup access and expiry follow the deployment’s data policy.
+- **Migration** preserves the existing room order and authorization boundary. New entries get a Server-recorded timestamp. Old records with no timestamp display it as unknown. Expiry fails closed in both room and DM retention: a record whose timestamp is missing, has no UTC offset, or is unusable never expires -- an unusable stamp includes one whose explicit offset puts its UTC conversion outside the representable calendar, and such a row is spared without aborting the scan. Backup access and expiry follow the deployment’s data policy.
 
 ## Acceptance before implementation
 
