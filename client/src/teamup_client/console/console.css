@@ -109,7 +109,7 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
 .stage[data-page="team"] :is(.session-panel,.room-panel,.detail) { visibility: hidden; }
 #compact-room { display: none; }
 .room-main, .roster { min-width: 0; min-height: 0; display: grid; }
-.room-main { grid-template-rows: auto auto minmax(0,1fr); }
+.room-main { grid-template: auto auto minmax(0,1fr) / minmax(0,1fr); }
 .roster { grid-template-rows: auto auto minmax(0,1fr); background: var(--panel); border-left: 1px solid var(--line); }
 .roster h2 { padding: 8px 4px; text-align: center; }
 #roster-status { padding-inline: 8px; }
@@ -153,7 +153,7 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
 }
 #board-toggle[aria-expanded="true"]::before { transform: rotate(135deg); }
 #board-panel {
-  display: grid; gap: 8px; max-height: min(44dvh, 340px);
+  display: grid; grid-template-columns: minmax(0,1fr); gap: 8px; max-height: min(44dvh, 340px);
   overflow: auto; overscroll-behavior: contain; border-top: 1px solid var(--edge); padding: 8px 3px 3px;
 }
 #board-panel :is(h3, label) { font-size: 13px; }
@@ -193,7 +193,7 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
 #copy-room:is(:hover,:focus-visible) + .copy-tip { opacity: 1; visibility: visible; transition-delay: 1.5s; }
 .copy-control[data-feedback] .copy-tip { opacity: 1; visibility: visible; transition: none; }
 .chat-heading { padding: 9px 0; border-bottom: 1px solid var(--line); }
-.task-toolbar label { color: var(--muted); font-size: 12px; }
+.task-toolbar label { min-width: 0; color: var(--muted); font-size: 12px; }
 #chat-status, #history-boundary { padding: 5px; }
 #history-boundary:empty { display: none; }
 #task-actor { max-width: 100%; }
@@ -234,7 +234,7 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
 
 .room-tabs { display: flex; gap: 4px; }
 .task-board {
-  min-height: 0; display: grid; grid-template-rows: auto auto minmax(0, 1fr); gap: 6px;
+  min-height: 0; display: grid; grid-template: auto auto minmax(0,1fr) / minmax(0,1fr); gap: 6px;
 }
 .task-toolbar { display: flex; align-items: center; gap: 6px; padding-top: 5px; flex-wrap: wrap; }
 #task-lane-nav { display: none; gap: 3px; }

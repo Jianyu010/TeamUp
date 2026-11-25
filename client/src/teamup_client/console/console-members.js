@@ -61,15 +61,18 @@ function memberNames(members) {
   for (const {role} of members) counts.set(role, (counts.get(role) || 0) + 1);
   return members.map(({id, role}) => {
     const name = element("span", "", "member-name");
+    let label = role;
     name.append(element("span", role));
     if (counts.get(role) > 1) {
       const prefix = id.slice(0, 8);
       const shared = members.some((other) => other.id !== id && other.role === role && other.id.startsWith(prefix));
-      const qualifier = element("small", "(" + (shared ? id : prefix) + ")");
+      const suffix = "(" + (shared ? id : prefix) + ")";
+      const qualifier = element("small", suffix);
+      label += " " + suffix;
       qualifier.title = id;
       name.append(document.createTextNode(" "), qualifier);
     }
-    return name;
+    return {name, label};
   });
 }
 
@@ -79,13 +82,13 @@ export function renderTeam(result, requestedAt) {
   const names = memberNames(members);
   list.replaceChildren(...members.map((member, index) => {
     const row = element("li");
-    row.append(names[index], presenceBadge(member.presence, requestedAt));
+    row.append(names[index].name, presenceBadge(member.presence, requestedAt));
     return row;
   }));
   scheduleExpiry(list);
 }
 
-export function roomMembers({read, subject, chat, policyChanged}) {
+export function roomMembers({read, subject, chat, policyChanged, namesChanged}) {
   const rail = get("roster");
   const panel = get("member-detail");
   let page = null;
@@ -219,6 +222,7 @@ export function roomMembers({read, subject, chat, policyChanged}) {
     scheduleExpiry(rail);
     get("roster-title").textContent = "Members";
     get("roster-status").textContent = "";
+    namesChanged?.(new Map());
     policyChanged();
   }
 
@@ -239,12 +243,13 @@ export function roomMembers({read, subject, chat, policyChanged}) {
       button.setAttribute("aria-controls", panel.id);
       button.setAttribute("aria-expanded", String(selected === button));
       const badge = presenceBadge(member.presence, started);
-      button.replaceChildren(names[index], badge);
+      button.replaceChildren(names[index].name, badge);
       return {button, badge};
     });
     for (const button of existing.values()) button.remove();
     reorder();
     scheduleExpiry(rail, reorder);
+    namesChanged?.(new Map(members.map(({id}, index) => [id, names[index].label])));
     policyChanged();
   }
 

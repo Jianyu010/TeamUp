@@ -110,6 +110,7 @@ const members = roomMembers({
   subject: () => state.page === "room" && state.reader ? {room: state.room, session: state.reader} : null,
   chat: () => state.chat,
   policyChanged: renderHistoryBoundary,
+  namesChanged: tasks.updateMemberNames,
 });
 
 function renderRoomView() {
