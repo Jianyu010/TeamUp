@@ -12,6 +12,7 @@ DOCS = (
     "docs/modules/account-login-v1.md",
     "docs/modules/room-tasks.md",
     "docs/modules/direct-messages.md",
+    "docs/modules/control-console.md",
 )
 METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
 # FastAPI's generic 422 body model is framework output, not a TeamUp contract.
@@ -33,7 +34,7 @@ def routes(spec):
 
 def documented_routes():
     found = set()
-    pattern = r"`(GET|POST|PUT|PATCH|DELETE) (/v1/[^`?]*)"
+    pattern = r"`(GET|POST|PUT|PATCH|DELETE) (/[^`?]*)"
     for doc in DOCS:
         text = (ROOT / doc).read_text(encoding="utf-8")
         for method, path in re.findall(pattern, text):
@@ -47,7 +48,7 @@ def test_every_route_is_documented_and_every_documented_route_exists(tmp_path):
     assert served == documented, (
         f"Served but undocumented: {sorted(served - documented)}; "
         f"documented but not served: {sorted(documented - served)}. "
-        "Update the applicable module contract before changing routes."
+        "Update the contract documents under docs/modules/ first."
     )
 
 

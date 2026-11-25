@@ -13,14 +13,13 @@ from __future__ import annotations
 
 import argparse
 import os
-import re
 import sys
 import urllib.error
 import urllib.parse
 from pathlib import Path
 from typing import Any
 
-from scripts.ci.gate import GitHub, load_policy
+from scripts.ci.gate import GitHub, load_policy, referenced_numbers
 
 MANIFEST = Path(__file__).resolve().parents[2] / "docs" / "ci" / "labeling.md"
 MANIFEST_HEADING = "## 清单"
@@ -48,9 +47,6 @@ GATE_LABELS = {
 }
 REVIEW_LABEL = "gate/ai-review-failed"
 FAILED = frozenset({"failure", "timed_out", "startup_failure"})
-LINKS = re.compile(
-    r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+#(\d+)\b", re.IGNORECASE
-)
 
 
 def parse_manifest(text: str) -> dict[str, tuple[str, str]]:
@@ -240,10 +236,6 @@ def triage(gh: GitHub, number: int, owner: str) -> str:
 # ---- pull requests ------------------------------------------------------------------------
 
 
-def linked_issues(body: str) -> list[int]:
-    return sorted({int(n) for n in LINKS.findall(body or "")})
-
-
 def gate_failures(
     check_runs: list[dict[str, Any]], review_runs: list[dict[str, Any]]
 ) -> set[str]:
@@ -283,17 +275,28 @@ def plan_pr(
 def label_pr(gh: GitHub, pull: dict[str, Any]) -> str:
     number, sha = int(pull["number"]), str(pull["head"]["sha"])
     names = _names(pull)
-    issues = [n for n in linked_issues(str(pull.get("body") or "")) if n != number]
+    # The same rule as the gate's `1 · Linked Issue`: any reference to an issue, not a PR.
+    text = f"{pull.get('title') or ''}\n{pull.get('body') or ''}"
+    refs = [n for n in referenced_numbers(text, gh.repo) if n != number][:20]
     types: list[str] = []
-    for n in issues:
+    issues: list[int] = []
+    unread = False
+    for n in refs:
         try:
             issue = gh.call("GET", f"/issues/{n}")
-        except urllib.error.HTTPError:
+        except urllib.error.HTTPError as exc:
+            unread |= exc.code not in (404, 410)  # 404/410: no such issue or PR
             continue
-        if "pull_request" not in issue:
+        except (urllib.error.URLError, TimeoutError):  # skips only that number
+            unread = True
+            continue
+        if isinstance(issue, dict) and "pull_request" not in issue:
+            issues.append(n)
             types += [x for x in _names(issue) if x.startswith("type/")]
     failing = gate_failures(gh.check_runs(sha), gh.review_runs(sha))
-    add, remove = plan_pr(names, failing, types, bool(issues))
+    # A reference that could not be read may be the link: leave `pr/no-issue` as it is this run.
+    linked = bool(issues) or (unread and NO_ISSUE not in names)
+    add, remove = plan_pr(names, failing, types, linked)
     _add(gh, number, add)
     for label in remove:
         _remove(gh, number, label)

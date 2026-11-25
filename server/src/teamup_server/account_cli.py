@@ -15,8 +15,18 @@ def parser() -> argparse.ArgumentParser:
     )
     accounts.add_argument("--db", required=True, type=Path)
     commands = accounts.add_subparsers(dest="command", required=True)
-    for name in ("create", "reset-password", "disable"):
+    for name in (
+        "create",
+        "reset-password",
+        "disable",
+        "grant-console",
+        "revoke-console",
+    ):
         commands.add_parser(name).add_argument("username")
+    for name in ("grant-transcript", "revoke-transcript"):
+        room_command = commands.add_parser(name)
+        room_command.add_argument("username")
+        room_command.add_argument("room_id")
     commands.add_parser("list")
     return accounts
 
@@ -48,18 +58,36 @@ def run(args: argparse.Namespace, collaboration: Collaboration) -> None:
             collaboration.create_account(args.username, _read_password())
         elif args.command == "reset-password":
             collaboration.reset_account_password(args.username, _read_password())
+        elif args.command == "grant-console":
+            collaboration.grant_console_read(args.username)
+        elif args.command == "revoke-console":
+            collaboration.revoke_console_read(args.username)
+        elif args.command == "grant-transcript":
+            collaboration.grant_transcript_read(args.username, args.room_id)
+        elif args.command == "revoke-transcript":
+            collaboration.revoke_transcript_read(args.username, args.room_id)
         else:
             collaboration.disable_account(args.username)
     except CollaborationError as exc:
-        messages = {
-            "invalid_request": (
-                "Use a username of 3–64 lowercase ASCII characters starting with a letter "
-                "(letters, digits, _ and -), and a password of 12–128 characters."
-            ),
-            "not_found": "Account does not exist.",
-            "conflict": "Account already exists."
-            if args.command == "create"
-            else "Account is disabled.",
-        }
-        raise ValueError(messages[exc.code]) from None
+        raise ValueError(_failure_message(args.command, exc.code)) from None
     print(f"{args.command} succeeded for {args.username}")
+
+
+def _failure_message(command: str, code: str) -> str:
+    if code == "not_found":
+        if command in ("grant-transcript", "revoke-transcript"):
+            return "Account or room does not exist."
+        return "Account does not exist."
+    if code == "conflict":
+        return (
+            "Account already exists." if command == "create" else "Account is disabled."
+        )
+    if command in ("grant-transcript", "revoke-transcript"):
+        return (
+            "Use a username of 3–64 lowercase ASCII characters starting with a letter "
+            "(letters, digits, _ and -), and a standard UUID room ID."
+        )
+    return (
+        "Use a username of 3–64 lowercase ASCII characters starting with a letter "
+        "(letters, digits, _ and -), and a password of 12–128 characters."
+    )
