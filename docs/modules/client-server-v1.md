@@ -2,6 +2,8 @@
 
 本契约用于 TeamUp 最小闭环。提供方为 Server Gateway，业务状态归 Collaboration，消费方为 Client。本文锁定首轮登记、公共房间、公告确认、历史、定向通知及补收，并增量提供成员本人房间列表。私聊、邀请房间、公告发布、停用、健康和 harness 唤醒仍按 [MVP 设计](../specs/mvp.md) 演进。
 
+私聊（DM）的加法契约另见 [Direct Messages](direct-messages.md)：新增 `/v1/dms` 路由、收件箱 `kinds` 查询参数与 `kind: "dm"` 事件，房间语义不变。
+
 新增的人类账号登录与停用规则见 [账号登录 v1](account-login-v1.md)。新增的房间历史策略、消息时间戳、历史反向分页与房间搜索见 [会话历史、搜索与保留](conversation-history.md)。
 
 房间任务的增量接口见 [Room tasks v1](room-tasks.md)。

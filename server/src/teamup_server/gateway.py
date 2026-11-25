@@ -34,6 +34,7 @@ _ERRORS = {
     "board_ack_required": (409, "Confirm the current board version first."),
     "conflict": (409, "The request conflicts with the existing state."),
     "invalid_mention": (422, "Mention another member of this room."),
+    "invalid_peer": (422, "The DM peer must be another available member of this team."),
     "rate_limited": (429, "Too many login attempts. Try again later."),
 }
 _UUID = re.compile(r"[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}")
@@ -136,6 +137,27 @@ class _TaskCreate(_Body):
 class _TaskProgress(_Body):
     client_progress_id: _ShortText
     note: _LongText
+
+
+class _OpenDM(_Body):
+    member_id: _Identifier
+
+
+class _DMMessage(_Body):
+    client_message_id: _ShortText
+    text: _LongText
+
+
+_EVENT_KINDS = frozenset(("message", "mention", "dm"))
+
+
+def _event_kinds(value: str | None) -> tuple[str, ...]:
+    if value is None:
+        return ("message", "mention")
+    kinds = tuple(value.split(","))
+    if len(set(kinds)) != len(kinds) or not set(kinds) <= _EVENT_KINDS:
+        raise CollaborationError("invalid_request")
+    return kinds
 
 
 def _error(code: str, *, status_code: int | None = None) -> JSONResponse:
@@ -426,9 +448,32 @@ class Gateway:
         ) -> dict:
             return collaboration.claim_task_reminder(token, reminder_id)
 
-        @app.get("/v1/inbox")
-        def inbox(token: _Bearer, after: _After = 0, limit: _Limit = 50) -> dict:
-            return {"events": collaboration.inbox(token, after, limit)}
+        @app.post("/v1/dms", dependencies=[Depends(_require_utf8)])
+        def open_dm(token: _Bearer, body: _OpenDM) -> dict:
+            return collaboration.open_dm(token, body.member_id)
+
+        @app.post("/v1/dms/{dm_id}/messages", dependencies=[Depends(_require_utf8)])
+        def send_dm(token: _Bearer, dm_id: _Identifier, body: _DMMessage) -> dict:
+            return collaboration.send_dm(
+                token, dm_id, body.client_message_id, body.text
+            )
+
+        @app.get("/v1/dms/{dm_id}/messages")
+        def dm_history(
+            token: _Bearer, dm_id: _Identifier, after: _After = 0, limit: _Limit = 50
+        ) -> dict:
+            return {"messages": collaboration.dm_history(token, dm_id, after, limit)}
+
+        @app.get("/v1/inbox", dependencies=[Depends(_require_query_utf8)])
+        def inbox(
+            token: _Bearer,
+            after: _After = 0,
+            limit: _Limit = 50,
+            kinds: str | None = None,
+        ) -> dict:
+            return {
+                "events": collaboration.inbox(token, after, limit, _event_kinds(kinds))
+            }
 
         @app.post("/v1/inbox/{event_id}/ack", dependencies=[Depends(_reject_body)])
         def acknowledge_event(

@@ -1,4 +1,5 @@
 [
+  "GET /v1/dms/{dm_id}/messages",
   "GET /v1/events",
   "GET /v1/inbox",
   "GET /v1/members",
@@ -12,6 +13,8 @@
   "GET /v1/rooms/{room_id}/tasks/{task_id}/events",
   "GET /v1/task-reminders",
   "POST /v1/auth/login",
+  "POST /v1/dms",
+  "POST /v1/dms/{dm_id}/messages",
   "POST /v1/inbox/{event_id}/ack",
   "POST /v1/members",
   "POST /v1/rooms",

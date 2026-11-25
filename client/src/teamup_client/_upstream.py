@@ -14,6 +14,7 @@ ERROR_MESSAGES = {
     "board_ack_required": "Confirm the current board before exchanging messages",
     "conflict": "Request conflicts with existing server state",
     "invalid_mention": "Mention must target another member of the room",
+    "invalid_peer": "DM peer must be another available member of this team",
     "rate_limited": "Too many login attempts. Try again later",
 }
 

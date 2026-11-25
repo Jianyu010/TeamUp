@@ -328,7 +328,7 @@ def test_tasks_survive_restart_on_an_existing_database(tmp_path):
     with closing(sqlite3.connect(db_path)) as connection, connection:
         for statement in (*_SCHEMA, *_ACCOUNT_SCHEMA):
             connection.execute(statement)
-        connection.execute("PRAGMA user_version = 3")
+        connection.execute("PRAGMA user_version = 4")
 
     with live_server(db_path) as client:
         _members, room_path = team_room(client)
@@ -348,7 +348,7 @@ def test_tasks_survive_restart_on_an_existing_database(tmp_path):
         ]
 
     with closing(sqlite3.connect(db_path)) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
         tables = {
             row[0]
             for row in connection.execute(
