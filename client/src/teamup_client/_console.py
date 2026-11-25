@@ -14,7 +14,7 @@ from importlib.resources import files
 from urllib.parse import parse_qs, urlsplit
 
 from ._console_data import MAX_BEFORE, ConsoleReader
-from ._protocol import REQUEST_LIMIT, decode_json, is_string, is_uuid
+from ._protocol import REQUEST_LIMIT, decode_json, is_integer, is_string, is_uuid
 from .ipc import ClientError
 
 CONSOLE_REQUEST_SECONDS = 18
@@ -25,6 +25,7 @@ STATIC = {
     "/console.js": ("console.js", "text/javascript; charset=utf-8"),
     "/console-history.mjs": ("console-history.mjs", "text/javascript; charset=utf-8"),
     "/console-members.js": ("console-members.js", "text/javascript; charset=utf-8"),
+    "/console-board.js": ("console-board.js", "text/javascript; charset=utf-8"),
     "/console-tasks.js": ("console-tasks.js", "text/javascript; charset=utf-8"),
     "/console-sessions.js": ("console-sessions.js", "text/javascript; charset=utf-8"),
     "/jet-pair.png": ("jet-pair.png", "image/png"),
@@ -121,7 +122,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             target = urlsplit(self.path)
             operation = self._write_operation(target.path, target.query)
-        except (KeyError, ValueError, RecursionError, OSError):
+        except (KeyError, TypeError, ValueError, RecursionError, OSError):
             self._json(400, {"state": "invalid_request"})
             return
         if operation is None:
@@ -145,8 +146,23 @@ class Handler(BaseHTTPRequestHandler):
             membership_id = params.get("membership_id")
             if membership_id is not None and not self._hex_id(membership_id, 32):
                 raise ValueError
-            self._task_body("empty")
+            self._action_body(required=False)
             return self._reader.session_action(params["session"], room_id, membership_id)
+
+        if path == "/api/room-board":
+            params = self._params(query)
+            if set(params) != {"room", "session"} or not is_uuid(params["room"]):
+                raise ValueError
+            draft = self._action_body(required=True)
+            if (
+                set(draft) != {"version", "rules", "protocol"}
+                or not is_integer(draft["version"], 1)
+                or not is_string(draft["rules"], 8000)
+                or not is_string(draft["protocol"], 8000)
+            ):
+                raise ValueError
+            return self._reader.room_board(params["session"], params["room"], draft)
+
         parts = path.split("/")
         if len(parts) != 5 or parts[1:3] != ["api", "tasks"]:
             return None
@@ -156,27 +172,30 @@ class Handler(BaseHTTPRequestHandler):
         params = self._params(query)
         if set(params) != {"room", "session"} or not is_uuid(params["room"]):
             raise ValueError
-        data = self._task_body(action)
-        return self._reader.task_action(params["session"], params["room"], task_id, action, data)
+        data = self._action_body(required=action == "progress")
+        if data is not None and (
+            set(data) != {"client_progress_id", "note"}
+            or not is_string(data["client_progress_id"], 128)
+            or not is_string(data["note"], 8000)
+        ):
+            raise ValueError
+        return self._reader.task_action(
+            params["session"], params["room"], task_id, action, data
+        )
 
-    def _task_body(self, action):
+    def _action_body(self, *, required):
         length = int(self.headers.get("Content-Length", "0"))
         if self.headers.get("Transfer-Encoding") or not 0 <= length <= REQUEST_LIMIT:
             raise ValueError
-        if action != "progress":
+        if not required:
             if length:
                 raise ValueError
             return None
         if not length or self.headers.get_content_type() != "application/json":
             raise ValueError
         data = decode_json(self.rfile.read(length))
-        if (
-            not isinstance(data, dict)
-            or set(data) != {"client_progress_id", "note"}
-            or not is_string(data["client_progress_id"], 128)
-            or not is_string(data["note"], 8000)
-        ):
-            raise ValueError
+        if not isinstance(data, dict):
+            raise TypeError
         return data
 
     def _run(self, operation, *, write=False):
@@ -202,6 +221,7 @@ class Handler(BaseHTTPRequestHandler):
                     "ready": 200,
                     "unauthorized": 401,
                     "not_registered": 401,
+                    "forbidden": 403,
                     "not_found": 404,
                     "board_ack_required": 409,
                     "conflict": 409,
@@ -239,6 +259,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._retired_operation(params)
         if path == "/api/team" and set(params) == {"session"}:
             return self._reader.team(params["session"])
+        if path == "/api/room-board":
+            if set(params) != {"session", "room"} or not is_uuid(params["room"]):
+                raise ValueError
+            return self._reader.room_board(params["session"], params["room"])
         if path == "/api/room-members":
             if set(params) != {"session", "room"} or not is_uuid(params["room"]):
                 raise ValueError

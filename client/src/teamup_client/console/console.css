@@ -27,7 +27,7 @@ button {
 button:active { scale: .98; }
 button:hover { background: var(--raised); }
 button[aria-pressed="true"], [aria-current="page"], .node.related { background: #293b38; color: var(--accent); }
-button:focus-visible, select:focus-visible, input:focus-visible {
+button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-visible {
   outline: 2px solid var(--accent); outline-offset: 2px;
 }
 .console {
@@ -109,7 +109,7 @@ button:focus-visible, select:focus-visible, input:focus-visible {
 .stage[data-page="team"] :is(.session-panel,.room-panel,.detail) { visibility: hidden; }
 #compact-room { display: none; }
 .room-main, .roster { min-width: 0; min-height: 0; display: grid; }
-.room-main { grid-template-rows: auto auto minmax(0,1fr); }
+.room-main { grid-template: auto auto minmax(0,1fr) / minmax(0,1fr); }
 .roster { grid-template-rows: auto auto minmax(0,1fr); background: var(--panel); border-left: 1px solid var(--line); }
 .roster h2 { padding: 8px 4px; text-align: center; }
 #roster-status { padding-inline: 8px; }
@@ -145,7 +145,30 @@ button:focus-visible, select:focus-visible, input:focus-visible {
   display: flex; align-items: center; justify-content: space-between; gap: 7px; flex-wrap: wrap;
 }
 #room-heading { overflow-wrap: anywhere; }
-#board-status { color: var(--muted); font-size: 12px; }
+#board-status { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+#board-toggle { display: flex; align-items: center; gap: 8px; padding: 2px 7px; font-weight: inherit; }
+#board-toggle::before {
+  content: ""; width: 6px; height: 6px; border: solid var(--accent);
+  border-width: 1.5px 1.5px 0 0; transform: rotate(45deg);
+}
+#board-toggle[aria-expanded="true"]::before { transform: rotate(135deg); }
+#board-panel {
+  display: grid; grid-template-columns: minmax(0,1fr); gap: 8px; max-height: min(44dvh, 340px);
+  overflow: auto; overscroll-behavior: contain; border-top: 1px solid var(--edge); padding: 8px 3px 3px;
+}
+#board-panel :is(h3, label) { font-size: 13px; }
+#board-panel h3 { margin: 0 0 3px; }
+#board-panel :is(select, textarea) {
+  min-width: 0; max-width: 100%; padding: 5px; border: 1px solid var(--edge);
+  border-radius: 5px; background: #192224; color: inherit; font: inherit;
+}
+#board-panel textarea { display: block; width: 100%; margin-top: 3px; resize: vertical; }
+#board-feedback:empty { display: none; }
+#board-view p { white-space: pre-wrap; overflow-wrap: anywhere; margin-bottom: 8px; }
+#board-form { display: grid; gap: 8px; }
+.board-actions { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
+#board-edit, #board-publish { border-color: #52645f; color: var(--accent); }
+#board-panel button:disabled { cursor: default; opacity: .55; }
 .room-id { display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: 6px; }
 .room-id label { color: var(--muted); font-size: 12px; }
 .room-id input, #task-actor {
@@ -170,7 +193,7 @@ button:focus-visible, select:focus-visible, input:focus-visible {
 #copy-room:is(:hover,:focus-visible) + .copy-tip { opacity: 1; visibility: visible; transition-delay: 1.5s; }
 .copy-control[data-feedback] .copy-tip { opacity: 1; visibility: visible; transition: none; }
 .chat-heading { padding: 9px 0; border-bottom: 1px solid var(--line); }
-.task-toolbar label { color: var(--muted); font-size: 12px; }
+.task-toolbar label { min-width: 0; color: var(--muted); font-size: 12px; }
 #chat-status, #history-boundary { padding: 5px; }
 #history-boundary:empty { display: none; }
 #task-actor { max-width: 100%; }
@@ -211,7 +234,7 @@ button:focus-visible, select:focus-visible, input:focus-visible {
 
 .room-tabs { display: flex; gap: 4px; }
 .task-board {
-  min-height: 0; display: grid; grid-template-rows: auto auto minmax(0, 1fr); gap: 6px;
+  min-height: 0; display: grid; grid-template: auto auto minmax(0,1fr) / minmax(0,1fr); gap: 6px;
 }
 .task-toolbar { display: flex; align-items: center; gap: 6px; padding-top: 5px; flex-wrap: wrap; }
 #task-lane-nav { display: none; gap: 3px; }

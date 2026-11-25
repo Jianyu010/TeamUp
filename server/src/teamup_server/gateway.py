@@ -146,6 +146,11 @@ class _ConfirmBoard(_Body):
     version: Annotated[int, Field(strict=True, gt=0)]
 
 
+class _PublishBoard(_ConfirmBoard):
+    rules: _LongText
+    protocol: _LongText
+
+
 class _Message(_Body):
     client_message_id: _ShortText
     text: _LongText
@@ -500,6 +505,23 @@ class Gateway:
             return collaboration.leave_room(
                 token, room_id, notify=notify, membership_id=membership_id
             )
+
+        @app.get("/v1/rooms/{room_id}/board/view", dependencies=[Depends(_reject_body)])
+        def view_board(
+            token: _Bearer, room_id: _Identifier, response: Response
+        ) -> dict:
+            _no_store(response)
+            return collaboration.view_board(token, room_id)
+
+        @app.post("/v1/rooms/{room_id}/board", dependencies=[Depends(_require_utf8)])
+        def publish_board(
+            token: _Bearer,
+            room_id: _Identifier,
+            body: _PublishBoard,
+            response: Response,
+        ) -> dict:
+            _no_store(response)
+            return collaboration.publish_board(token, room_id, **body.model_dump())
 
         @app.get("/v1/rooms/{room_id}/board", dependencies=[Depends(_reject_body)])
         def read_board(token: _Bearer, room_id: _Identifier) -> dict:

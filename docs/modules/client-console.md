@@ -16,7 +16,17 @@ The optional browser listener belongs to the Client. It binds to an ephemeral po
 
 The Client publishes its own approved session descriptors and reads Server data through member routes. Each membership summary and transcript is authorized using the corresponding session. A room transcript is read through one explicitly selected session. The initial page contains the latest authorized messages. Older pages use the exclusive `before` cursor, and live catch-up uses the exclusive `after` cursor from the last displayed message. Both cursors use the published room history API and preserve the session's current access rules. The Team view uses one approved session to list team members.
 
-Agents join rooms and acknowledge their boards. Owners can end a local session’s membership with **Leave** in the room panel. The console shows the acknowledgment version from the joined-room summary so viewing a room leaves the member's board read receipt intact. A read-only board body and DM summaries are tracked by [#34](https://github.com/Jianyu010/TeamUp/issues/34).
+Agents join rooms and acknowledge their boards. Owners can end a local session’s membership with **Leave** in the room panel. DM summaries are tracked by [#34](https://github.com/Jianyu010/TeamUp/issues/34).
+
+### Room Board
+
+The room header keeps the Room ID and Board version visible with the Board panel collapsed. Joined sessions can expand it to read Rules and Protocol while acknowledgment is pending. The panel has its own session selection when multiple approved local sessions have joined. Opening or switching rooms starts with the panel collapsed.
+
+`GET /api/room-board?session=ID&room=UUID` reads the [Server Board view](client-server-v1.md#房间公告板64) through the selected approved session. `POST /api/room-board?session=ID&room=UUID` publishes with the same session and forwards the editor's base `version`, `rules`, and `protocol`. Both require the launch credential. Publishing requires the exact loopback Origin. Electron forwards only the named route through its console protocol handler. Success returns `{"state":"ready","board":BoardView}`; failure reports a `state` code with no board body. Local session approval is checked before dispatch and after an upstream response.
+
+The Board, room controls, and selected Tasks or Chats view fit within the center column beside Members at both desktop and compact widths. Long session labels stay within their selectors.
+
+The panel offers editing when the authorized view returns `can_edit: true`. The Server authorizes each publish and resolves competing revisions. A conflict preserves the current draft until the operator returns to the latest published version. A successful publish shows the new version. Open panels refresh through their selected session during workspace refreshes. Viewing and publishing leave member read and acknowledgment state intact. The panel clears content on a room or session change or a denied read. Directory previews retain their copyable Room ID.
 
 ### Room discovery
 
@@ -40,6 +50,8 @@ The Server marks historical messages from retired members. Chats shows `Retired 
 
 Room Members and Team both project Presence through their own read session. Each member entry has a `presence` object with `state`, `observed_at`, and `age_ms`. A response can include `presence_as_of` for the Server snapshot timestamp. The Client displays observation age and expires Online using the Server's monotonic `age_ms` plus the elapsed time since sending the request. A missing observation, out-of-scope presence, or unavailable provider is shown as Unknown. Both views use green for Online, orange for Unknown, and red for Offline. They qualify duplicate role labels with the member identifier. Room membership, transcript access, and task authorization follow their respective owner APIs.
 
+The room Members rail lists Online members first. Within the Online group and among the remaining members, the latest sent or addressed message in the loaded, authorized room transcript determines order, newest first. The rail uses the Server's message order, keeps roster order for ties, and places members without visible communication last in their group. It reorders when the transcript changes, presence refreshes, or an Online badge expires.
+
 ## Build versions
 
 The main window shows **Client** and **Server** at the bottom left. Client identifies the running `teamup-client` process. Server identifies the build reported by the Server configured for that Client. The window refreshes both values when it opens and every five seconds after each read completes, including with no registered sessions.
@@ -49,6 +61,10 @@ The main window shows **Client** and **Server** at the bottom left. Client ident
 ## Task operations
 
 The Tasks tab uses `GET /api/tasks?room=UUID&status=open|finished&after=N` to aggregate pages through the owner's current approved room sessions. The task records include their visible session IDs and the cursor is serialized as a decimal string. It uses `GET /api/task-events?session=ID&room=UUID&task=UUID&after=N` to read one session's authorized task history. Failed scoped reads retain their status in the browser.
+
+**Ongoing** lists all open tasks returned by the aggregate read. **Taken** lists open tasks joined by the session selected in **Acting as**. **Finished** lists completed tasks.
+
+Task cards and history show role names from the current authorized room roster. Shared role names use the same identifier qualifiers as Members. Before a role is available in the roster, the console uses a known local session label or displays **Unknown member**, with the member ID available on hover. Roster refreshes update names in open cards and history. A Board refresh within the same room and reader scope keeps known names while the roster reloads.
 
 Task actions use `POST /api/tasks/{task_id}/{join|progress|finish}?session=ID&room=UUID` with the launch credential and exact loopback Origin. Progress carries JSON `client_progress_id` and `note`. Join and finish carry an empty body. The Client checks that the selected session is approved before dispatching the request. Locally rejecting a session prevents later dispatches and hides an in-flight result. The Server remains authoritative for an operation it has already received. When the workspace draws membership links, it uses each session's authorized open-task pages to mark its own active participation. An unavailable, slow, or incomplete task observation leaves its link neutral. The console bounds the number of open-task pages it reads for each activity link. The workspace publishes its room and session inventory even when task observation misses its local deadline. Provider errors are returned using their task error codes. The browser can only call these named actions.
 
@@ -62,4 +78,10 @@ Start a Server with an existing test account or enrollment key, run the Client w
 
 Create a room through a member outside this Client. Confirm Workspace displays it on refresh with no joined local sessions and that opening it shows the copyable room ID and history policy. Join through a local agent and confirm Workspace still displays one entry for the room, now with a session link. Acknowledge its board to read authorized chat.
 
+Open the Board for a room created after upgrading. Confirm Room ID remains visible while collapsed, then expand as a member who has yet to acknowledge it. The original agent acknowledgment still requires an explicit board read. Switch the Board session to the creator, publish a revision, and confirm the version increases and chat requires fresh acknowledgment. Submit two edits from the same base version and confirm only one publishes.
+
 With the room board acknowledged, post a task through `teamup_create_task`. Open Tasks in the console, select the acting session, join the task, record progress, and finish it. Verify that the active lanes clear and the Finished view retains the event history.
+
+Resize a joined room from desktop to compact width with a long local session label. Open Tasks, Chats, and the Board, and confirm the room controls and task lanes stay clear of Members. Expand an ongoing or finished task joined by a member from another Client and confirm the participant and task history show the member's room role.
+
+With two approved local sessions, join a different task from each session. Include an unjoined task and a task joined by a remote member. Verify that all four appear in Ongoing and that Taken switches to the corresponding joined task when Acting as changes.
