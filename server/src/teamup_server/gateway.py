@@ -410,9 +410,7 @@ class Gateway:
             limit: _Limit = 50,
             before: _Before | None = None,
         ) -> dict:
-            return {
-                "messages": collaboration.history(token, room_id, after, limit, before)
-            }
+            return collaboration.history(token, room_id, after, limit, before)
 
         @app.get(
             "/v1/rooms/{room_id}/search", dependencies=[Depends(_require_query_utf8)]
@@ -424,7 +422,7 @@ class Gateway:
             after: _After = 0,
             limit: _Limit = 50,
         ) -> dict:
-            return {"matches": collaboration.search(token, room_id, q, after, limit)}
+            return collaboration.search(token, room_id, q, after, limit)
 
         @app.post(
             "/v1/rooms/{room_id}/tasks", dependencies=[Depends(_require_utf8)]
@@ -537,7 +535,7 @@ class Gateway:
         def dm_history(
             token: _Bearer, dm_id: _Identifier, after: _After = 0, limit: _Limit = 50
         ) -> dict:
-            return {"messages": collaboration.dm_history(token, dm_id, after, limit)}
+            return collaboration.dm_history(token, dm_id, after, limit)
 
         @app.get("/v1/inbox", dependencies=[Depends(_require_query_utf8)])
         def inbox(
