@@ -1,3 +1,4 @@
+import {roomMembers, renderTeam} from "/console-members.js";
 import {taskPanel} from "/console-tasks.js";
 
 const get = (id) => document.getElementById(id);
@@ -8,6 +9,10 @@ const state = {
   page: "workspace",
   focused: null,
   room: null,
+  reader: null,
+  teamReader: null,
+  teamMember: null,
+  teamPending: false,
   actor: null,
   chat: null,
   roomView: "chats",
@@ -66,6 +71,27 @@ function related(room) {
   return room.memberships.some((join) => join.session === state.focused);
 }
 
+function readyMemberships(room) {
+  return room.memberships.filter((item) => sessionFor(item.session)?.state === "ready");
+}
+
+function acknowledged(item) {
+  return item.current === item.acknowledged;
+}
+
+function preferredSession(memberships) {
+  return (memberships.find((item) => item.session === state.focused) || memberships[0])?.session ?? null;
+}
+
+function selectRoomSubjects(room) {
+  const joined = readyMemberships(room);
+  const eligible = joined.filter(acknowledged);
+  if (!joined.some((item) => item.session === state.reader)) {
+    state.reader = preferredSession(eligible.length ? eligible : joined);
+  }
+  if (!eligible.some((item) => item.session === state.actor)) state.actor = preferredSession(eligible);
+}
+
 const tasks = taskPanel({
   request: read,
   room: () => state.room,
@@ -74,12 +100,18 @@ const tasks = taskPanel({
   active: () => state.page === "room" && state.roomView === "tasks",
 });
 
+const members = roomMembers({
+  read,
+  subject: () => state.page === "room" && state.reader ? {room: state.room, session: state.reader} : null,
+  chat: () => state.chat,
+  policyChanged: renderHistoryBoundary,
+});
+
 function setRoomView(view) {
   state.roomView = view;
   const isTasks = view === "tasks";
   get("tasks-tab").setAttribute("aria-pressed", String(isTasks));
   get("chats-tab").setAttribute("aria-pressed", String(!isTasks));
-  get("actor-label").textContent = isTasks ? "Acting as" : "Viewing as";
   get("task-board").hidden = !isTasks;
   get("chat-scroll").hidden = isTasks;
   if (isTasks) tasks.refresh();
@@ -191,6 +223,20 @@ function drawWires() {
 }
 
 function show(page) {
+  if (page !== "room") {
+    state.requestNumber++;
+    state.roomRead = null;
+    state.chat = null;
+    state.reader = null;
+    state.room = null;
+    members.reset();
+    renderChat();
+  }
+  if (page !== "team") {
+    state.teamNumber++;
+    state.teamPending = false;
+    get("team-list").replaceChildren();
+  }
   state.page = page;
   stage.dataset.page = page;
   get("workspace-nav").setAttribute("aria-pressed", String(page !== "team"));
@@ -213,17 +259,18 @@ function renderRoomHeader() {
   get("compact-room").textContent = room.name;
   get("room-id").value = room.id;
   get("detail").setAttribute("aria-label", room.name);
-  const chooser = get("chat-session");
-  const options = room.memberships.map(({session}) => {
-    const option = node("option", sessionFor(session)?.label || session);
-    option.value = session;
-    option.selected = state.actor === session;
+  const chooser = get("task-actor");
+  const actors = readyMemberships(room).filter(acknowledged).map(({session}) => sessionFor(session));
+  chooser.disabled = actors.length === 0;
+  chooser.replaceChildren(...actors.map((session) => {
+    const duplicate = actors.some((other) => other.id !== session.id && other.label === session.label);
+    const option = node("option", duplicate ? session.label + " · " + session.id : session.label);
+    option.value = session.id;
+    option.selected = state.actor === session.id;
     return option;
-  });
-  chooser.replaceChildren(...options);
-  const members = room.memberships.map(({session}) => node("span", sessionFor(session)?.label || session));
-  get("roster").replaceChildren(...members);
-  const membership = room.memberships.find((item) => item.session === state.actor);
+  }));
+  if (!actors.length) chooser.append(node("option", "No acknowledged session"));
+  const membership = room.memberships.find((item) => item.session === state.reader);
   get("board-status").textContent = membership
     ? "Version " + membership.current + " · " + (membership.acknowledged === membership.current ? "Acknowledged" : "Acknowledgment needed")
     : "";
@@ -235,14 +282,18 @@ function openRoom(id) {
   if (!room) return;
   tasks.reset();
   state.room = id;
-  state.actor = room.memberships.find((join) => join.session === state.focused)?.session ?? room.memberships[0].session;
+  state.reader = null;
+  state.actor = null;
+  selectRoomSubjects(room);
   state.chat = null;
+  members.reset();
   show("room");
   renderRoomHeader();
   renderChat();
   setRoomView(state.roomView);
   get("back").focus({preventScroll:true});
   refreshRoom();
+  members.refresh();
 }
 
 const messagesForState = {
@@ -253,6 +304,16 @@ const messagesForState = {
   unavailable: "Chat is temporarily unavailable.",
 };
 
+function renderHistoryBoundary() {
+  const chat = state.chat;
+  const policy = members.historyPolicy() || chat?.history_policy;
+  const boundary = policy === "retained" ? "Includes retained messages from before joining."
+    : policy === "since_joining" ? "History starts when this member joined the room."
+    : "Room history follows this member’s access and the room’s history policy.";
+  get("history-boundary").textContent = chat?.state === "ready"
+    ? boundary + (chat.history_truncated ? " Some earlier messages have expired." : "") : "";
+}
+
 function renderChat(options = {}) {
   const chat = state.chat;
   const page = get("chat-scroll");
@@ -262,6 +323,9 @@ function renderChat(options = {}) {
   get("older").hidden = !chat?.older;
   get("chat-status").textContent = !chat ? "Reading room messages…"
     : messagesForState[chat.state] || (chat.messages?.length ? "" : "No messages in this session’s history.");
+  renderHistoryBoundary();
+  members.details();
+  const expanded = new Set(Array.from(get("messages").querySelectorAll("details[open]"), (item) => item.dataset.id));
   const rows = (chat?.messages || []).map((message) => {
     const date = message.created_at ? new Date(message.created_at) : null;
     const time = node("time", date && !Number.isNaN(date.getTime())
@@ -272,7 +336,17 @@ function renderChat(options = {}) {
     }
     const row = node("article", undefined, "message");
     const content = node("div");
-    content.append(node("strong", message.sender), node("p", message.text));
+    const targets = message.mentioned_recipients ?? (message.mentioned ? [message.mentioned] : []);
+    const header = targets.length ? message.sender + " -> " + targets.slice(0, 2).join(", ") : message.sender;
+    content.append(node("strong", header));
+    if (targets.length > 2) {
+      const more = node("details", undefined, "mention-overflow");
+      more.dataset.id = message.id;
+      more.open = expanded.has(message.id);
+      more.append(node("summary", "(and " + (targets.length - 2) + " more)"), node("span", targets.slice(2).join(", ")));
+      content.append(more);
+    }
+    content.append(node("p", message.text));
     row.append(time, content);
     return row;
   });
@@ -282,31 +356,74 @@ function renderChat(options = {}) {
   else page.scrollTop = prior;
 }
 
-async function refreshRoom(before) {
-  if (state.page !== "room") return;
-  const request = ++state.requestNumber;
-  const identity = state.actor;
-  const room = state.room;
-  const observedLatest = activeRoom()?.latest_message_id;
-  const previous = state.chat;
-  state.roomRead = {room, identity, request};
-  const after = !before && previous?.state === "ready" ? previous.messages.at(-1)?.id ?? "0" : null;
-  const valid = () => request === state.requestNumber && room === state.room &&
-    identity === state.actor && state.page === "room";
-  try {
-    const response = await read("/api/room", {session: identity, room, before, after});
-    if (!valid()) return;
-    if (response.state === "ready" && previous?.state === "ready") {
-      const all = new Map(previous.messages.map((message) => [message.id, message]));
-      for (const message of response.messages) all.set(message.id, message);
-      response.messages = Array.from(all.values()).sort((a, b) =>
-        a.id.length - b.id.length || a.id.localeCompare(b.id));
-      if (after !== null) response.older = previous.older;
-      if (before) response.more_recent = previous.more_recent;
+// Server IDs are decimal strings and can exceed Number.MAX_SAFE_INTEGER.
+function compareIds(left, right) {
+  return left.length - right.length || left.localeCompare(right);
+}
+
+function sameBoard(left, right) {
+  return left?.current === right?.current && left?.acknowledged === right?.acknowledged;
+}
+
+async function readTranscript(previous, before, fetchPage) {
+  let truncated = previous?.history_truncated === true;
+  const latest = async () => {
+    const page = await fetchPage({});
+    if (page.state === "ready" && sameBoard(previous?.board, page.board)) {
+      page.history_truncated ||= truncated;
     }
-    response.observedLatest = before ? previous?.observedLatest : observedLatest;
-    state.chat = response;
-    renderChat({prepend: Boolean(before), reset: !previous});
+    return {page, reset: true};
+  };
+  const cached = previous?.messages;
+  if (previous?.state !== "ready" || !cached.length) return latest();
+
+  // A new membership can narrow history between polls with no change in board
+  // version. A fresh prefix also preserves legacy rows that survive below an
+  // expiry watermark, which records the greatest deleted ID, not every deletion.
+  const probe = await fetchPage({after: String(BigInt(cached[0].id) - 1n)});
+  if (probe.state !== "ready") return {page: probe, reset: true};
+  if (!sameBoard(previous.board, probe.board)) return latest();
+  truncated ||= probe.history_truncated === true;
+  const last = probe.messages.at(-1)?.id;
+  const watermark = probe.expired_through_message_id;
+  const uncheckedTail = last && probe.more_recent && compareIds(last, cached.at(-1).id) < 0;
+  if (uncheckedTail && watermark && compareIds(last, watermark) < 0) return latest();
+
+  const retained = uncheckedTail
+    ? [...probe.messages, ...cached.filter((item) => compareIds(item.id, last) > 0)]
+    : probe.messages;
+  const page = await fetchPage(before ? {before} : {after: cached.at(-1).id});
+  if (page.state !== "ready") return {page, reset: true};
+  if (!sameBoard(probe.board, page.board) || page.expired_through_message_id !== watermark) return latest();
+
+  const all = new Map(retained.map((item) => [item.id, item]));
+  for (const item of page.messages) all.set(item.id, item);
+  page.messages = [...all.values()].sort((a, b) => compareIds(a.id, b.id));
+  if (!before) page.older = previous.older;
+  page.history_truncated ||= truncated;
+  return {page, reset: false};
+}
+
+async function refreshRoom(before) {
+  if (state.page !== "room" || !state.reader) return;
+  const request = ++state.requestNumber;
+  const session = state.reader;
+  const room = state.room;
+  const previous = state.chat;
+  const valid = () => request === state.requestNumber && room === state.room &&
+    session === state.reader && state.page === "room";
+  state.roomRead = {request};
+  try {
+    const {page, reset} = await readTranscript(previous, before, async (cursor) => {
+      const result = await read("/api/room", {session, room, ...cursor});
+      if (!valid()) throw new Error("Room read superseded");
+      return result;
+    });
+    if (!valid()) return;
+    state.chat = page;
+    if (JSON.stringify(previous) !== JSON.stringify(page)) {
+      renderChat({prepend: Boolean(before) && !reset, reset});
+    }
   } catch {
     if (valid()) {
       state.chat = {state:"unavailable", messages:[]};
@@ -318,10 +435,17 @@ async function refreshRoom(before) {
 }
 
 async function refreshTeam() {
-  const request = ++state.teamNumber;
   const preferred = sessionFor(state.focused);
-  const actor = preferred?.state === "ready" ? preferred
+  const current = sessionFor(state.teamReader);
+  const actor = current?.state === "ready" ? current : preferred?.state === "ready" ? preferred
     : state.workspace.sessions.find((item) => item.state === "ready");
+  const changed = actor?.id !== state.teamReader || actor?.member_id !== state.teamMember;
+  if (!changed && state.teamPending) return;
+  const request = ++state.teamNumber;
+  if (changed) get("team-list").replaceChildren();
+  state.teamReader = actor?.id;
+  state.teamMember = actor?.member_id;
+  state.teamPending = Boolean(actor);
   if (!actor) {
     get("team-list").replaceChildren();
     get("team-status").textContent = "An approved, registered session can view the team.";
@@ -329,14 +453,20 @@ async function refreshTeam() {
   }
   if (!get("team-list").children.length) get("team-status").textContent = "Reading team members…";
   try {
+    const started = performance.now();
     const result = await read("/api/team", {session: actor.id});
     if (request !== state.teamNumber || state.page !== "team") return;
     get("team-status").textContent = result.state === "ready"
-      ? "Viewing as " + actor.label
+      ? ""
       : "Team is unavailable for this session.";
-    get("team-list").replaceChildren(...result.members.map((member) => node("li", member.role)));
+    renderTeam(result, started);
   } catch {
-    if (request === state.teamNumber) get("team-status").textContent = "Team is temporarily unavailable.";
+    if (request === state.teamNumber) {
+      get("team-list").replaceChildren();
+      get("team-status").textContent = "Team is temporarily unavailable.";
+    }
+  } finally {
+    if (request === state.teamNumber) state.teamPending = false;
   }
 }
 
@@ -350,7 +480,9 @@ async function refresh() {
   try {
     const snapshot = await read("/api/workspace");
     const changed = JSON.stringify(snapshot) !== JSON.stringify(state.workspace);
-    const oldBoard = activeRoom()?.memberships.find((item) => item.session === state.actor);
+    const oldReader = state.reader;
+    const oldMember = sessionFor(oldReader)?.member_id;
+    const oldBoard = activeRoom()?.memberships.find((item) => item.session === oldReader);
     state.workspace = snapshot;
     if (!sessionFor(state.focused)) state.focused = null;
     const active = activeRoom();
@@ -360,24 +492,22 @@ async function refresh() {
       state.chat = null;
       state.room = null;
       show("workspace");
-    } else if (state.page === "room" && !active.memberships.some((item) => item.session === state.actor)) {
-      state.actor = active.memberships[0].session;
-      state.chat = null;
-      renderChat();
-      refreshRoom();
     } else if (state.page === "room") {
-      const board = active.memberships.find((item) => item.session === state.actor);
-      const boardChanged = board.current !== oldBoard?.current || board.acknowledged !== oldBoard?.acknowledged;
-      if (boardChanged) {
+      const oldActor = state.actor;
+      selectRoomSubjects(active);
+      if (state.actor !== oldActor) tasks.changeActor();
+      const board = active.memberships.find((item) => item.session === state.reader);
+      const contextChanged = state.reader !== oldReader || sessionFor(state.reader)?.member_id !== oldMember ||
+        !sameBoard(board, oldBoard);
+      if (contextChanged) {
+        state.requestNumber++;
         state.chat = null;
+        state.roomRead = null;
+        members.reset();
         renderChat();
       }
-      const readingCurrentRoom = state.roomRead?.room === state.room &&
-        state.roomRead?.identity === state.actor;
-      const behind = active.latest_message_id !== state.chat?.observedLatest || state.chat?.more_recent;
-      if (boardChanged || (!readingCurrentRoom && (behind || state.chat?.state === "unavailable"))) {
-        refreshRoom();
-      }
+      if (!state.roomRead) refreshRoom();
+      members.refresh();
     }
     if (changed) {
       renderWorkspace();
@@ -437,13 +567,12 @@ get("rooms").addEventListener("click", (event) => {
 });
 get("tasks-tab").addEventListener("click", () => setRoomView("tasks"));
 get("chats-tab").addEventListener("click", () => setRoomView("chats"));
-get("chat-session").addEventListener("change", (event) => {
+get("task-actor").addEventListener("change", (event) => {
+  const room = activeRoom();
+  if (state.roomView !== "tasks" || !room || !readyMemberships(room).some((item) =>
+    item.session === event.target.value && acknowledged(item))) return;
   state.actor = event.target.value;
-  state.chat = null;
-  renderRoomHeader();
-  renderChat();
-  tasks.refresh({force: true});
-  refreshRoom();
+  tasks.changeActor();
 });
 get("copy-room").addEventListener("click", copyId);
 get("older").addEventListener("click", () => {

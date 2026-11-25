@@ -106,6 +106,13 @@ export function taskPanel(context) {
     render(data);
   }
 
+  function changeActor() {
+    lanes.replaceChildren();
+    signature = "";
+    status.textContent = "";
+    refresh({force: true});
+  }
+
   function render(items) {
     const oldScroll = new Map(Array.from(lanes.querySelectorAll(".task-list"), (list) =>
       [list.parentElement.dataset.lane, list.scrollTop]));
@@ -266,24 +273,28 @@ export function taskPanel(context) {
   }
 
   async function change(task, actor, action, body, draftKey) {
-    if (busy) return;
-    busy = true;
     const room = context.room();
+    const current = () => context.active() && room === context.room() &&
+      actor.id === context.actor()?.id && actor.member_id === context.actor()?.member_id;
+    if (busy || !current() || task.room_id !== room) return;
+    busy = true;
     status.textContent = "Saving…";
     try {
       const result = await context.request("/api/tasks/" + task.task_id + "/" + action, {room, session: actor.id}, {body});
-      if (room !== context.room() || !context.active()) return;
+      if (!current()) return;
       if (result.state === "ready") {
         if (draftKey) drafts.delete(draftKey);
         if (action === "join") selectedLane = "Ongoing";
         await refresh({force: true});
+        if (!current()) return;
         status.textContent = {join: "Task joined.", progress: "Progress recorded.", finish: "Task finished."}[action];
       } else {
         if (result.state === "conflict") await refresh({force: true});
+        if (!current()) return;
         status.textContent = errors[result.state] || errors.unavailable;
       }
     } catch {
-      if (room === context.room()) status.textContent = errors.unavailable;
+      if (current()) status.textContent = errors.unavailable;
     } finally {
       busy = false;
     }
@@ -300,5 +311,5 @@ export function taskPanel(context) {
     pages++;
     refresh({force: true});
   });
-  return {refresh, reset};
+  return {refresh, reset, changeActor};
 }

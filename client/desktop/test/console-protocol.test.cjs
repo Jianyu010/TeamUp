@@ -19,6 +19,9 @@ test("serves the bundled console without a running Client", async () => {
   assert.equal(response.status, 200);
   assert.match(await response.text(), /<title>TeamUp/);
   assert.match(response.headers.get("Content-Security-Policy"), /connect-src 'self'/);
+  const members = await handle(new Request(origin + "/console-members.js"));
+  assert.equal(members.status, 200);
+  assert.equal(members.headers.get("Content-Type"), "text/javascript; charset=utf-8");
   assert.equal((await handle(consoleRequest("/launch.py"))).status, 404);
   assert.equal((await handle(new Request("teamup://elsewhere/"))).status, 404);
 });
@@ -76,6 +79,13 @@ test("relays named reads and task actions with the main process credential", asy
   assert.deepEqual(await read.json(), { state: "ready" });
   assert.equal(read.headers.get("Set-Cookie"), null);
 
+  const roomMembers = "/api/room-members?room=01234567-89ab-4cde-8123-456789abcdef&session=local";
+  const roster = await handle(consoleRequest(roomMembers));
+  assert.equal(roster.status, 200);
+  assert.deepEqual(await roster.json(), { state: "ready" });
+  assert.equal((await handle(consoleRequest(roomMembers, { method: "POST" }))).status, 404);
+  assert.equal((await handle(consoleRequest(roomMembers, {}, "https://example.com"))).status, 403);
+
   const task = "/api/tasks/01234567-89ab-4cde-8123-456789abcdef/progress?room=room&session=local";
   const body = JSON.stringify({ client_progress_id: "progress-1", note: "In review" });
   const write = await handle(consoleRequest(task, {
@@ -95,6 +105,7 @@ test("relays named reads and task actions with the main process credential", asy
 
   assert.deepEqual(received, [
     ["/api/team?session=local", "GET", ""],
+    [roomMembers, "GET", ""],
     [task, "POST", body],
     ["/api/team?session=redirect", "GET", ""],
   ].map(([url, method, body]) => ({

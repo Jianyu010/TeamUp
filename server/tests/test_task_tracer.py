@@ -14,6 +14,7 @@ import pytest
 from teamup_server.collaboration import Collaboration, CollaborationError
 from teamup_server.gateway import Gateway
 from teamup_server.main import create_app, main
+from teamup_server.presence import Presence
 
 
 def credential(label):
@@ -304,7 +305,7 @@ def test_reminder_routes_are_owner_scoped_paged_and_atomic(tmp_path):
     assert len(reminders) == 2
 
     async def exercise():
-        transport = httpx.ASGITransport(app=Gateway(instance).app)
+        transport = httpx.ASGITransport(app=Gateway(instance, Presence(instance)).app)
         async with httpx.AsyncClient(
             transport=transport, base_url="http://test"
         ) as client:

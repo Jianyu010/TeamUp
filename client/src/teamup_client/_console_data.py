@@ -1,10 +1,12 @@
 """Read projections for the local console using existing member authorization."""
 
 import asyncio
+from collections import Counter
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from ._protocol import is_integer, is_string
 from ._upstream import unavailable
 from .ipc import ClientError
 
@@ -12,7 +14,67 @@ PAGE = 30
 VISIBLE_WIRE_LIMIT = 20
 TASK_OBSERVATION_SECONDS = 2
 TASK_OBSERVATION_PAGES = 2
+PRESENCE_OBSERVATION_SECONDS = 2
 MAX_BEFORE = 1 << 63  # The Server treats this as an unbounded latest-page read.
+
+
+def _member_labels(members: list[dict]) -> dict[str, str]:
+    roles = {member["member_id"]: member["role_description"] for member in members}
+    counts = Counter(roles.values())
+    return {
+        identifier: f"{role} ({identifier[:8]})" if counts[role] > 1 else role
+        for identifier, role in roles.items()
+    }
+
+
+def _message(item: dict, labels: dict[str, str]) -> dict:
+    sender = item["sender_member_id"]
+    first_target = item["mention_member_id"]
+    targets = item.get("mention_member_ids", [first_target] if first_target else [])
+    mentioned = [labels.get(target, target[:8]) for target in targets]
+    result = {
+        "id": str(item["message_id"]),
+        "sender": labels.get(sender, sender[:8]),
+        "sender_member_id": sender,
+        "text": item["text"],
+        "created_at": item.get("created_at"),
+        "mentioned": mentioned[0] if mentioned else None,
+        "recipient_member_ids": targets,
+    }
+    if len(mentioned) > 1:
+        result["mentioned_recipients"] = mentioned
+    return result
+
+
+def _member_with_presence(member: dict, presence: dict[str, dict]) -> dict:
+    identifier = member["member_id"]
+    return {
+        "id": identifier,
+        "role": member["role_description"],
+        "presence": presence.get(
+            identifier, {"state": "unknown", "observed_at": None, "age_ms": None}
+        ),
+    }
+
+
+def _tasks_by_member(members: list[dict], tasks: list[dict]) -> dict[str, list[dict]]:
+    roles = {member["member_id"]: member["role_description"] for member in members}
+    by_member: dict[str, list[dict]] = {identifier: [] for identifier in roles}
+    for task in tasks:
+        participants = [
+            {"id": identifier, "role": roles[identifier]}
+            for identifier in task["participant_member_ids"]
+            if identifier in roles
+        ]
+        for participant in participants:
+            by_member[participant["id"]].append(
+                {
+                    "id": task["task_id"],
+                    "title": task["title"],
+                    "teammates": [peer for peer in participants if peer != participant],
+                }
+            )
+    return by_member
 
 
 @dataclass(frozen=True)
@@ -188,15 +250,93 @@ class ConsoleReader:
         session = self._current(identity)
         if session is None:
             return {"state": "not_found", "members": []}
+        as_of, presence = await self._presence(session)
         try:
             result = await self._read(session, "/members")
         except ClientError as exc:
             return {"state": exc.code, "members": []}
         return {
             "state": "ready",
+            "presence_as_of": as_of,
             "members": [
-                {"id": member["member_id"], "role": member["role_description"]}
-                for member in result["members"]
+                _member_with_presence(member, presence) for member in result["members"]
+            ],
+        }
+
+    async def _presence(self, session: ConsoleSession) -> tuple[str | None, dict]:
+        try:
+            async with asyncio.timeout(PRESENCE_OBSERVATION_SECONDS):
+                result = await self._read(session, "/presence")
+        except (ClientError, TimeoutError):
+            return None, {}
+        presence = {}
+        for member in result["members"]:
+            state = member["state"]
+            age = member.get("age_ms")
+            observed_at = member.get("observed_at")
+            if (
+                state in ("online", "offline")
+                and is_integer(age, 0)
+                and is_string(observed_at)
+            ):
+                presence[member["member_id"]] = {
+                    "state": state,
+                    "observed_at": observed_at,
+                    "age_ms": age,
+                }
+        return result["as_of"], presence
+
+    async def _roster_tasks(
+        self, session: ConsoleSession, room_path: str
+    ) -> list[dict] | None:
+        after = 0
+        tasks = []
+        try:
+            async with asyncio.timeout(TASK_OBSERVATION_SECONDS):
+                for _ in range(TASK_OBSERVATION_PAGES):
+                    page = await self._read(
+                        session,
+                        f"{room_path}/tasks",
+                        {"status": "open", "after": after, "limit": 100},
+                    )
+                    tasks.extend(page["tasks"])
+                    cursor = page["next_after"]
+                    if cursor is None:
+                        return tasks
+                    if cursor <= after:
+                        break
+                    after = cursor
+        except (ClientError, TimeoutError):
+            return None
+        return None
+
+    async def room_members(self, identity: str, room_id: str) -> dict:
+        session = self._current(identity)
+        if session is None:
+            return {"state": "not_found", "members": []}
+        path = f"/rooms/{room_id}"
+        try:
+            detail = await self._read(session, path)
+            (as_of, presence), tasks = await asyncio.gather(
+                self._presence(session), self._roster_tasks(session, path)
+            )
+            # Read membership last so optional observations cannot outlive this read scope.
+            members = (await self._read(session, f"{path}/members"))["members"]
+        except ClientError as exc:
+            return {"state": exc.code, "members": []}
+        by_member = _tasks_by_member(members, tasks) if tasks is not None else {}
+        return {
+            "state": "ready",
+            "current": detail["current_board_version"],
+            "history_policy": detail["history_policy"],
+            "presence_as_of": as_of,
+            "members": [
+                {
+                    **_member_with_presence(member, presence),
+                    "acknowledged": member["acked_board_version"],
+                    "tasks": by_member.get(member["member_id"]),
+                }
+                for member in members
             ],
         }
 
@@ -242,34 +382,32 @@ class ConsoleReader:
             return {"state": exc.code, "board": board, "messages": [], "older": None}
 
         messages = history["messages"]
-        team = await self.team(identity) if messages else {"members": []}
-        if self._current(identity) != session:
-            return {"state": "not_found"}
-        if team.get("state") in {"not_found", "not_registered", "unauthorized"}:
-            return {"state": team["state"]}
-        roles = {member["id"]: member["role"] for member in team["members"]}
-        return {
+        labels: dict[str, str] = {}
+        if messages:
+            try:
+                directory = await self._read(session, "/members")
+            except ClientError as exc:
+                if self._current(identity) != session:
+                    return {"state": "not_found"}
+                if exc.code in {"not_found", "not_registered", "unauthorized"}:
+                    return {"state": exc.code}
+            else:
+                labels = _member_labels(directory["members"])
+        result = {
             "state": "ready",
             "board": board,
             "older": str(messages[0]["message_id"])
             if after is None and len(messages) == PAGE
             else None,
             "more_recent": after is not None and len(messages) == PAGE,
-            "messages": [
-                {
-                    "id": str(item["message_id"]),
-                    "sender": roles.get(
-                        item["sender_member_id"], item["sender_member_id"][:8]
-                    ),
-                    "text": item["text"],
-                    "created_at": item.get("created_at"),
-                    "mentioned": roles.get(item["mention_member_id"])
-                    if item["mention_member_id"]
-                    else None,
-                }
-                for item in messages
-            ],
+            "messages": [_message(item, labels) for item in messages],
         }
+        if "expired_through_message_id" in history:
+            result["expired_through_message_id"] = str(
+                history["expired_through_message_id"]
+            )
+            result["history_truncated"] = history["history_truncated"]
+        return result
 
     async def tasks(self, room_id: str, status: str, after: int) -> dict:
         path = f"/rooms/{room_id}/tasks"

@@ -9,10 +9,13 @@ const assets = new Map([
   ["/", ["index.html", "text/html; charset=utf-8"]],
   ["/console.css", ["console.css", "text/css; charset=utf-8"]],
   ["/console.js", ["console.js", "text/javascript; charset=utf-8"]],
+  ["/console-members.js", ["console-members.js", "text/javascript; charset=utf-8"]],
   ["/console-tasks.js", ["console-tasks.js", "text/javascript; charset=utf-8"]],
   ["/jet-pair.png", ["jet-pair.png", "image/png"]],
 ]);
-const reads = new Set(["/api/workspace", "/api/team", "/api/room", "/api/tasks", "/api/task-events"]);
+const reads = new Set([
+  "/api/workspace", "/api/team", "/api/room", "/api/room-members", "/api/tasks", "/api/task-events",
+]);
 const taskAction = /^\/api\/tasks\/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\/(?:join|progress|finish)$/i;
 const requestLimit = 128 * 1024;
 const headers = {

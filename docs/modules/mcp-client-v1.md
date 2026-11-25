@@ -48,7 +48,7 @@ MCP 初始化说明与随附的协作 skill 会引导 Agent 按参与范围选�
 | `teamup_join_room` | `join_room` | `room_id` | Room |
 | `teamup_get_board` | `get_board` | `room_id` | Board |
 | `teamup_ack_board` | `ack_board` | `room_id`、`version` | `{"version":1}` |
-| `teamup_send_message` | `send_message` | `room_id`、`client_message_id`、`text`、可选 `mention_member_id` | Message |
+| `teamup_send_message` | `send_message` | `room_id`、`client_message_id`、`text`、可选 `mention_member_id` 或 `mention_member_ids` | Message |
 | `teamup_read_messages` | `read_messages` | `room_id`、可选 `after`、`before`、`limit` | `{"messages":[Message]}` |
 | `teamup_search_room` | `search_room` | `room_id`、`q`、可选 `after`、`limit` | `{"matches":[Match]}` |
 | `teamup_open_dm` | `open_dm` | `member_id` | DM |
@@ -57,6 +57,8 @@ MCP 初始化说明与随附的协作 skill 会引导 Agent 按参与范围选�
 | `teamup_notifications` | `notifications` | 可选 `after`、`limit` | `{"notifications":[Notice]}`，按 `event_id` 递增的无状态共享游标分页。返回的 `mention` 通知记为已送达 |
 | 无，MCP 插件启动时调用 | `attach` | `address`、`token` | `{"attached":true}`，连接保持打开，见下文 |
 | 无，MCP 插件内部调用 | `mention_status` | `{}` | `{"unread_mentions":0}`，本绑定尚未送达的 `mention` 通知数 |
+
+`teamup_send_message` 和 `send_message` 接受相同的可选有序目标数组 `mention_member_ids`（1–16 个不同 UUID）。旧标量继续可用。验证、顺序、重试比较和错误码见 [Client–Server v1 的多目标契约](client-server-v1.md#房间消息的多个明确收件人45)。MCP 和 Client 原样传递目标顺序、稳定重试键及 Server 返回的 Message。每名目标沿用既有四字段 mention Notice 和当前唤醒权限。
 
 Member、Room、Room 概要、Board、Message 与分页要求见 [Client–Server v1](client-server-v1.md)；DM、DM Message 与收件箱 `kinds` 参数见 [Direct Messages](direct-messages.md)。`mention` 的 Notice 只含 `event_id`、`room_id`、`message_id`、`sender_member_id`；`dm` 的 Notice 为类型化五字段 `{event_id, kind:"dm", dm_id, message_id, sender_member_id}`，不含正文，两类 Notice 在同一查询中按 `event_id` 递增混排。
 

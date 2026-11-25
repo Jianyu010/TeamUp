@@ -784,7 +784,7 @@ def _room_member(
 ) -> sqlite3.Row:
     record = connection.execute(
         """
-        SELECT r.version, r.rules, r.protocol, r.history_policy,
+        SELECT r.name, r.version, r.rules, r.protocol, r.history_policy,
             r.expired_through_message_id, rm.read_board_version,
             rm.acked_board_version, rm.joined_after
         FROM room_members AS rm JOIN rooms AS r ON r.room_id = rm.room_id
@@ -1641,6 +1641,26 @@ class Collaboration:
         with self._transaction() as connection:
             return dict(_member(connection, token))
 
+    def authorized_presence_members(self, token: str) -> list[str]:
+        with self._transaction() as connection:
+            member_id = _member(connection, token)["member_id"]
+            rows = connection.execute(
+                """
+                SELECT ? AS member_id
+                UNION
+                SELECT m.member_id
+                FROM room_members AS own
+                JOIN room_members AS peer ON peer.room_id = own.room_id
+                JOIN members AS m ON m.member_id = peer.member_id
+                WHERE own.member_id = ? AND NOT EXISTS (
+                    SELECT 1 FROM accounts WHERE owner_id = m.owner_id AND disabled = 1
+                )
+                ORDER BY member_id
+                """,
+                (member_id, member_id),
+            )
+            return [row["member_id"] for row in rows]
+
     def search_members(self, token: str, query: str) -> list[dict]:
         with self._transaction() as connection:
             _member(connection, token)
@@ -1949,6 +1969,35 @@ class Collaboration:
                 (member_id,),
             )
             return [dict(record) for record in rows]
+
+    def room_detail(self, token: str, room_id: str) -> dict:
+        with self._transaction() as connection:
+            member_id = _member(connection, token)["member_id"]
+            room = _room_member(connection, room_id, member_id)
+            count = connection.execute(
+                "SELECT COUNT(*) FROM room_members WHERE room_id = ?", (room_id,)
+            ).fetchone()[0]
+            return {
+                "room_id": room_id,
+                "name": room["name"],
+                "history_policy": room["history_policy"],
+                "current_board_version": room["version"],
+                "member_count": count,
+            }
+
+    def room_members(self, token: str, room_id: str) -> list[dict]:
+        with self._transaction() as connection:
+            member_id = _member(connection, token)["member_id"]
+            _room_member(connection, room_id, member_id)
+            rows = connection.execute(
+                """
+                SELECT m.member_id, m.role_description, rm.acked_board_version
+                FROM room_members AS rm JOIN members AS m ON m.member_id = rm.member_id
+                WHERE rm.room_id = ? ORDER BY m.member_id
+                """,
+                (room_id,),
+            )
+            return [dict(row) for row in rows]
 
     def read_board(self, token: str, room_id: str) -> dict:
         with self._transaction(write=True) as connection:

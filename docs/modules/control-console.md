@@ -114,9 +114,11 @@ Transcript 翻页不使用 `after`：入口请求省略 `before` 取得最新页
 
 `transcript_access_audit` 表：`owner_id`、`room_id`、`action`（固定 `transcript_read`）、`at`（RFC 3339 文本）、`page_before`（可空整数）、`page_limit`（整数）。由 Collaboration 在 transcript 读取的同一事务内写入，每次成功响应一行；不暴露查询路由，不含正文。租户数据除该无正文审计外不受控制台写入影响。
 
-## Schema 与迁移（v6）
+## Schema 与迁移
 
-Collaboration schema 版本为 **6**。分层构成：v1/v2 为已发布基线；#6 历史层（`history_policy`/`created_at`/`id_counters`）叠加后为 v3 草稿；#3 DM 层（`dms` 表、可空 `messages.room_id` 与恰一非空约束、按家族分域的重试唯一索引、`inbox_events.kind` 扩展 `dm`）叠加为 **v4**；控制台层（`purpose` 会话列、`operator_grants`、`room_activity`、`transcript_access_audit`）收敛为 **v5**；最终 #6 保留层（rooms 与 dms 的 `expired_through_message_id` 可空水位列）在控制台基线之上收敛为 **v6**。两种 v3 草稿都报告 `user_version` 3，仅在 schema 迁移内以表列判别，运行时不依赖该判别：`account_sessions` 带 `purpose` 列且存在 `operator_grants` 表即已发布的 #5 鉴权预览 v3（`e495544`，无历史列）；存在 `rooms.history_policy` 而无操作员列即 #6 历史 v3；`messages` 带 DM 列即 #3 v4。此前 #6 独立保留工作树曾把同两列水位标为 v5，该形态从未发布，不设额外兼容分支：`user_version` 5 一律按已发布控制台 v5 处理。迁移次序（每行按序在同一个写事务内执行，最后统一回填活动投影并写 `user_version = 6`）：
+下表记录 #6 合入后的 v6 基线。后续 [#45](https://github.com/Jianyu010/TeamUp/issues/45) 扩展到 **v7**。迁移在现有写事务内为房间消息添加有序的附加目标子表，最后写入 `user_version = 7`。已有消息以旧列 `mention_member_id` 表示首个或唯一目标。房间消息到期清理时，附加目标随消息删除。操作员 `ConsoleMessage` 继续显示首个目标字段，房间成员读取遵循 [Client–Server v1](client-server-v1.md#房间消息的多个明确收件人45)。
+
+v6 基线分层构成：v1/v2 为已发布基线；#6 历史层（`history_policy`/`created_at`/`id_counters`）叠加后为 v3 草稿；#3 DM 层（`dms` 表、可空 `messages.room_id` 与恰一非空约束、按家族分域的重试唯一索引、`inbox_events.kind` 扩展 `dm`）叠加为 **v4**；控制台层（`purpose` 会话列、`operator_grants`、`room_activity`、`transcript_access_audit`）收敛为 **v5**；最终 #6 保留层（rooms 与 dms 的 `expired_through_message_id` 可空水位列）在控制台基线之上收敛为 **v6**。两种 v3 草稿都报告 `user_version` 3，仅在 schema 迁移内以表列判别，运行时不依赖该判别：`account_sessions` 带 `purpose` 列且存在 `operator_grants` 表即已发布的 #5 鉴权预览 v3（`e495544`，无历史列）；存在 `rooms.history_policy` 而无操作员列即 #6 历史 v3；`messages` 带 DM 列即 #3 v4。此前 #6 独立保留工作树曾把同两列水位标为 v5，该形态从未发布，不设额外兼容分支：`user_version` 5 一律按已发布控制台 v5 处理。迁移次序（每行按序在同一个写事务内执行，最后统一回填活动投影并写 `user_version = 6`）：
 
 | 起始版本 | 步骤 |
 | --- | --- |

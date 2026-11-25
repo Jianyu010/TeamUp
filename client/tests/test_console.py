@@ -1,6 +1,7 @@
 import asyncio
 
 import httpx
+import pytest
 from teamup_client import _console_data
 from teamup_client._console import serve_console
 from teamup_client._console_data import ConsoleReader, ConsoleSession
@@ -9,6 +10,8 @@ from teamup_client.ipc import ClientError
 ROOM = "247629c4-8e54-4d0e-8b25-7a8c43bf85b2"
 BACKEND = "93e57f02-b2d7-4145-a968-9f0b60319c71"
 REVIEWER = "a4a4610b-42b2-45d3-9002-c4ee89fe3427"
+REMOTE = "1fb1fae4-88ac-4bb8-aec1-be36cb403825"
+OUTSIDER = "bde4ac72-f5d5-4590-9ca0-51dcc075aa40"
 
 
 class Upstream:
@@ -51,7 +54,9 @@ class Upstream:
                 "messages": [
                     {
                         "message_id": 15,
+                        "room_id": ROOM,
                         "sender_member_id": BACKEND,
+                        "client_message_id": "ready-for-review",
                         "text": "Ready for review",
                         "mention_member_id": None,
                         "created_at": "2026-11-25T00:00:00Z",
@@ -88,6 +93,8 @@ def test_workspace_and_room_reads_keep_session_scope_and_board_ack():
         room = await reader.room("primary", ROOM)
         assert [message["text"] for message in room["messages"]] == ["Ready for review"]
         assert room["board"] == {"current": 2, "acknowledged": 2}
+        assert "expired_through_message_id" not in room
+        assert "history_truncated" not in room
         assert (
             "GET",
             f"/rooms/{ROOM}/messages",
@@ -98,6 +105,414 @@ def test_workspace_and_room_reads_keep_session_scope_and_board_ack():
         assert reviewer["state"] == "board_ack_required"
         assert reviewer["messages"] == []
         assert all(not path.endswith("/board") for _, path, _, _ in request.calls)
+        assert all(path != "/presence" for _, path, _, _ in request.calls)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("target", "members", "sender", "mentioned"),
+    [
+        (None, [], "93e57f02", None),
+        (REVIEWER, [(BACKEND, "Backend")], "Backend", "a4a4610b"),
+        (
+            REVIEWER,
+            [(BACKEND, "Engineer"), (REVIEWER, "Engineer")],
+            "Engineer (93e57f02)",
+            "Engineer (a4a4610b)",
+        ),
+        (
+            REVIEWER,
+            [(BACKEND, "Backend"), (REVIEWER, "Reviewer")],
+            "Backend",
+            "Reviewer",
+        ),
+    ],
+)
+def test_room_projects_structured_mentions_with_member_labels(
+    target, members, sender, mentioned
+):
+    async def scenario():
+        upstream = Upstream()
+
+        async def request(method, path, token, *, query=None):
+            if path == "/members":
+                return {
+                    "members": [
+                        {"member_id": identifier, "role_description": role}
+                        for identifier, role in members
+                    ]
+                }
+            result = await upstream(method, path, token, query=query)
+            if path.endswith("/messages"):
+                result["messages"][0].update(
+                    text="Literal @Reviewer", mention_member_id=target
+                )
+            return result
+
+        result = await ConsoleReader(sessions, request).room("primary", ROOM)
+        assert result["messages"][0] == {
+            "id": "15",
+            "sender": sender,
+            "text": "Literal @Reviewer",
+            "created_at": "2026-11-25T00:00:00Z",
+            "mentioned": mentioned,
+            "sender_member_id": BACKEND,
+            "recipient_member_ids": [target] if target else [],
+        }
+
+    asyncio.run(scenario())
+
+
+def test_room_projects_all_structured_recipients_in_server_order():
+    async def scenario():
+        upstream = Upstream()
+
+        async def request(method, path, token, *, query=None):
+            if path == "/members":
+                return {
+                    "members": [
+                        {"member_id": BACKEND, "role_description": "Backend"},
+                        {"member_id": REVIEWER, "role_description": "Reviewer"},
+                    ]
+                }
+            response = await upstream(method, path, token, query=query)
+            if path.endswith("/messages"):
+                response["messages"][0].update(
+                    mention_member_id=REVIEWER,
+                    mention_member_ids=[REVIEWER, REMOTE, OUTSIDER],
+                )
+            return response
+
+        result = await ConsoleReader(sessions, request).room("primary", ROOM)
+        message = result["messages"][0]
+        assert message["sender_member_id"] == BACKEND
+        assert message["recipient_member_ids"] == [REVIEWER, REMOTE, OUTSIDER]
+        assert message["mentioned"] == "Reviewer"
+        assert message["mentioned_recipients"] == ["Reviewer", "1fb1fae4", "bde4ac72"]
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("truncated", [True, False])
+def test_empty_room_page_keeps_server_retention_boundary(truncated):
+    async def scenario():
+        upstream = Upstream()
+
+        async def request(method, path, token, *, query=None):
+            if path.endswith("/messages"):
+                return {
+                    "messages": [],
+                    "expired_through_message_id": 2**53 + 1,
+                    "history_truncated": truncated,
+                }
+            return await upstream(method, path, token, query=query)
+
+        result = await ConsoleReader(sessions, request).room("primary", ROOM)
+        assert result["messages"] == []
+        assert result["expired_through_message_id"] == "9007199254740993"
+        assert result["history_truncated"] is truncated
+
+    asyncio.run(scenario())
+
+
+class RosterUpstream(Upstream):
+    as_of = "2026-11-25T00:00:10Z"
+    observed_at = "2026-11-25T00:00:00Z"
+
+    async def __call__(self, method, path, token, *, query=None):
+        roles = {
+            REMOTE: "Remote",
+            BACKEND: "Backend",
+            REVIEWER: "Reviewer",
+            OUTSIDER: "Outside the room",
+        }
+        if path not in {
+            f"/rooms/{ROOM}",
+            f"/rooms/{ROOM}/members",
+            f"/rooms/{ROOM}/tasks",
+            "/members",
+            "/presence",
+        }:
+            return await super().__call__(method, path, token, query=query)
+        self.calls.append((method, path, token, query))
+        if path == f"/rooms/{ROOM}":
+            return {
+                "room_id": ROOM,
+                "name": "Compatibility",
+                "history_policy": "retained",
+                "current_board_version": 2,
+                "member_count": 3,
+            }
+        if path == f"/rooms/{ROOM}/members":
+            return {
+                "members": [
+                    {
+                        "member_id": member,
+                        "role_description": roles[member],
+                        "acked_board_version": None if member == REVIEWER else 2,
+                    }
+                    for member in (REMOTE, BACKEND, REVIEWER)
+                ]
+            }
+        if path == "/members":
+            return {
+                "members": [
+                    {"member_id": member, "role_description": role}
+                    for member, role in roles.items()
+                ]
+            }
+        if path == "/presence":
+            return {
+                "as_of": self.as_of,
+                "members": [
+                    {
+                        "member_id": REMOTE,
+                        "state": "offline",
+                        "observed_at": "2026-11-24T23:59:00Z",
+                        "age_ms": 70_000,
+                    },
+                    {
+                        "member_id": BACKEND,
+                        "state": "online",
+                        "observed_at": self.observed_at,
+                        "age_ms": 700,
+                    },
+                ],
+            }
+        return await super().__call__(method, path, token, query=query)
+
+
+def test_room_members_route_keeps_scope_and_projects_complete_active_task_pages():
+    async def scenario():
+        upstream = RosterUpstream()
+        task_ids = (
+            "ab881a6d-f39e-4070-bdc0-99f5426cddd1",
+            "ee358086-24dd-4748-af54-bad669e85c26",
+        )
+
+        async def request(method, path, token, *, query=None):
+            assert method == "GET" and token == "backend-secret"
+            if path.endswith("/tasks"):
+                assert query == {
+                    "status": "open",
+                    "after": query["after"],
+                    "limit": 100,
+                }
+                assert query["after"] in (0, 1)
+                task_number = query["after"] + 1
+                return {
+                    "tasks": [
+                        {
+                            "task_id": task_ids[task_number - 1],
+                            "title": f"Task {task_number}",
+                            "participant_member_ids": [BACKEND, REMOTE],
+                        }
+                    ],
+                    "next_after": 1 if task_number == 1 else None,
+                }
+            return await upstream(method, path, token, query=query)
+
+        async with serve_console(ConsoleReader(sessions, request)) as url:
+            origin, token = url.split("#")
+            async with httpx.AsyncClient(trust_env=False) as client:
+                endpoint = origin + "api/room-members"
+                params = {"session": "primary", "room": ROOM}
+                assert (await client.get(endpoint, params=params)).status_code == 401
+                headers = {"Authorization": "Bearer " + token}
+                assert (
+                    await client.get(
+                        endpoint, headers=headers, params={**params, "after": 0}
+                    )
+                ).status_code == 400
+                response = await client.get(endpoint, headers=headers, params=params)
+
+        assert response.status_code == 200
+        assert "-secret" not in response.text
+        data = response.json()
+        assert data["state"] == "ready"
+        assert data["history_policy"] == "retained"
+        assert data["current"] == 2
+        assert data["presence_as_of"] == upstream.as_of
+        assert [member["id"] for member in data["members"]] == [
+            REMOTE,
+            BACKEND,
+            REVIEWER,
+        ]
+        remote, backend, reviewer = data["members"]
+        assert remote["presence"]["state"] == "offline"
+        assert remote["presence"]["age_ms"] == 70_000
+        assert backend == {
+            "id": BACKEND,
+            "role": "Backend",
+            "acknowledged": 2,
+            "presence": {
+                "state": "online",
+                "observed_at": upstream.observed_at,
+                "age_ms": 700,
+            },
+            "tasks": [
+                {
+                    "id": identifier,
+                    "title": f"Task {number}",
+                    "teammates": [{"id": REMOTE, "role": "Remote"}],
+                }
+                for number, identifier in enumerate(task_ids, 1)
+            ],
+        }
+        assert reviewer["acknowledged"] is None and reviewer["tasks"] == []
+        assert reviewer["presence"] == {
+            "state": "unknown",
+            "observed_at": None,
+            "age_ms": None,
+        }
+        assert upstream.calls[-1][1] == f"/rooms/{ROOM}/members"
+        assert all(not path.endswith("/board") for _, path, _, _ in upstream.calls)
+
+    asyncio.run(scenario())
+
+
+def test_team_uses_same_scoped_presence_for_local_remote_and_other_members():
+    async def scenario():
+        upstream = RosterUpstream()
+        result = await ConsoleReader(sessions, upstream).team("primary")
+        assert result["presence_as_of"] == upstream.as_of
+        assert {
+            item["id"]: item["presence"]["state"] for item in result["members"]
+        } == {
+            BACKEND: "online",
+            REMOTE: "offline",
+            REVIEWER: "unknown",
+            OUTSIDER: "unknown",
+        }
+        assert {token for _, _, token, _ in upstream.calls} == {"backend-secret"}
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {},
+        {"age_ms": None},
+        {"age_ms": -1},
+        {"age_ms": "7"},
+        {"age_ms": 1.5},
+        {"age_ms": True},
+    ],
+)
+def test_team_projects_unknown_for_an_online_observation_without_valid_age(metadata):
+    async def scenario():
+        upstream = Upstream()
+
+        async def request(method, path, token, *, query=None):
+            if path == "/presence":
+                return {
+                    "as_of": RosterUpstream.as_of,
+                    "members": [
+                        {
+                            "member_id": BACKEND,
+                            "state": "online",
+                            "observed_at": RosterUpstream.observed_at,
+                            **metadata,
+                        }
+                    ],
+                }
+            return await upstream(method, path, token, query=query)
+
+        team = await ConsoleReader(sessions, request).team("primary")
+        assert team["state"] == "ready"
+        assert team["members"][0]["presence"] == {
+            "state": "unknown",
+            "observed_at": None,
+            "age_ms": None,
+        }
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("failure", ["not_found", "unavailable"])
+def test_older_server_without_metadata_preserves_team_and_transcript_reads(failure):
+    async def scenario():
+        upstream = Upstream()
+
+        async def request(method, path, token, *, query=None):
+            if path in {"/presence", f"/rooms/{ROOM}", f"/rooms/{ROOM}/members"}:
+                raise ClientError(failure, "Unsupported route")
+            return await upstream(method, path, token, query=query)
+
+        reader = ConsoleReader(sessions, request)
+        assert await reader.room_members("primary", ROOM) == {
+            "state": failure,
+            "members": [],
+        }
+        team = await reader.team("primary")
+        assert team["state"] == "ready"
+        assert team["members"][0]["presence"] == {
+            "state": "unknown",
+            "observed_at": None,
+            "age_ms": None,
+        }
+        transcript = await reader.room("primary", ROOM)
+        assert transcript["messages"][0]["sender"] == "Backend"
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("blocked", [True, False])
+def test_roster_keeps_pending_or_incomplete_task_details_unavailable(blocked):
+    async def scenario():
+        upstream = RosterUpstream()
+        afters = []
+
+        async def request(method, path, token, *, query=None):
+            if path.endswith("/tasks"):
+                afters.append(query["after"])
+                if blocked:
+                    raise ClientError("board_ack_required", "Current board needed")
+                return {"tasks": [], "next_after": query["after"] + 1}
+            return await upstream(method, path, token, query=query)
+
+        result = await ConsoleReader(sessions, request).room_members("review", ROOM)
+        assert result["state"] == "ready"
+        assert all(member["tasks"] is None for member in result["members"])
+        assert afters == ([0] if blocked else [0, 1])
+        assert {token for _, _, token, _ in upstream.calls} == {"reviewer-secret"}
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("route", ["team", "roster"])
+@pytest.mark.parametrize("local", [True, False])
+def test_member_reads_discard_enrichment_if_access_revoked_mid_read(route, local):
+    async def scenario():
+        active = list(sessions())
+        upstream = RosterUpstream()
+        revoked = False
+
+        async def request(method, path, token, *, query=None):
+            nonlocal revoked
+            if path == "/presence":
+                revoked = True
+                if local:
+                    active.clear()
+            if revoked and path in {"/members", f"/rooms/{ROOM}/members"}:
+                raise ClientError(
+                    "not_found" if route == "roster" else "not_registered", "Revoked"
+                )
+            return await upstream(method, path, token, query=query)
+
+        reader = ConsoleReader(lambda: tuple(active), request)
+        result = await (
+            reader.team("primary")
+            if route == "team"
+            else reader.room_members("primary", ROOM)
+        )
+        assert revoked
+        assert result == {
+            "state": "not_found" if local or route == "roster" else "not_registered",
+            "members": [],
+        }
 
     asyncio.run(scenario())
 
@@ -132,6 +547,11 @@ def test_loopback_listener_requires_its_credential_and_serves_bundled_assets():
                 assert "TeamUp" in home.text
                 assert token not in home.text
                 assert (await client.get(origin + "console.js")).status_code == 200
+                members = await client.get(origin + "console-members.js")
+                assert members.status_code == 200
+                assert (
+                    members.headers["content-type"] == "text/javascript; charset=utf-8"
+                )
                 logo = await client.get(origin + "jet-pair.png")
                 assert logo.headers["content-type"] == "image/png"
                 assert logo.content.startswith(b"\x89PNG\r\n\x1a\n")
