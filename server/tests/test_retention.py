@@ -2,7 +2,7 @@ import sqlite3
 import subprocess
 from base64 import urlsafe_b64decode
 from contextlib import closing, contextmanager
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from hashlib import sha256
 from queue import Queue
 from threading import Thread
@@ -519,12 +519,16 @@ def test_retention_metadata_follows_policy_floor_and_pagination(tmp_path):
     )
     with retention_api(db_path) as client:
         watermark = second["message_id"]
-        # The retained creator pages the surviving message after the boundary.
-        assert get(client, "sender", f"{retained}/messages").json() == {
-            "messages": [third],
-            "expired_through_message_id": watermark,
-            "history_truncated": True,
-        }
+        # The startup pass runs on its own thread: poll to its committed state.
+        wait_for(
+            lambda: get(client, "sender", f"{retained}/messages").json()
+            == {
+                "messages": [third],
+                "expired_through_message_id": watermark,
+                "history_truncated": True,
+            },
+            timeout=10,
+        )
         assert (
             get(client, "sender", f"{retained}/messages?after={first['message_id']}")
             .json()
@@ -704,6 +708,26 @@ def test_expire_due_rejects_a_naive_or_non_datetime_clock(tmp_path):
         collaboration.expire_due(timedelta(hours=1), now=datetime(2026, 1, 1))
     with pytest.raises(ValueError):
         collaboration.expire_due(timedelta(hours=1), now="2026-01-01T00:00:00Z")
+
+
+def test_expire_due_rejects_a_clock_outside_representable_utc(tmp_path):
+    """An aware clock that cannot become a UTC cutoff is refused before any work."""
+    collaboration = Collaboration(
+        tmp_path / "team.sqlite3", {"alice": credential("enroll-alice")}
+    )
+    for unusable in (
+        # Aware extremes whose astimezone(UTC) leaves the calendar.
+        datetime.min.replace(tzinfo=timezone(timedelta(hours=1))),
+        datetime.max.replace(tzinfo=timezone(timedelta(hours=-1))),
+        # In UTC already, but the positive age subtraction underflows.
+        datetime.min.replace(tzinfo=UTC),
+    ):
+        with pytest.raises(ValueError):
+            collaboration.expire_due(timedelta(hours=1), now=unusable)
+    # Normal aware clocks keep expiring as before.
+    assert collaboration.expire_due(
+        timedelta(hours=1), now=datetime(2026, 1, 1, tzinfo=UTC)
+    ) == RetentionPass(0, 0, False)
 
 
 def test_expire_due_spares_naive_and_unusable_timestamps(tmp_path):

@@ -1727,6 +1727,11 @@ class Collaboration:
     def expire_due_dms(self, cutoff: datetime) -> tuple[int, bool]:
         """Delete one bounded batch of DM messages due at ``cutoff``.
 
+        The cutoff must be a timezone-aware datetime whose UTC
+        normalization stays representable -- naive, non-datetime and
+        offset-extreme values are rejected with ValueError before any
+        transaction.
+
         Candidate selection runs in the owner's read transaction with the
         aware-UTC cutoff applied SQL-side and a bounded result, so the
         potentially linear scan never holds the write lock. One atomic
@@ -1747,7 +1752,12 @@ class Collaboration:
         """
         if not isinstance(cutoff, datetime) or cutoff.tzinfo is None:
             raise ValueError("DM expiry cutoff must be a timezone-aware datetime")
-        cutoff_micros = _utc_micros(cutoff)
+        try:
+            cutoff_micros = _utc_micros(cutoff)
+        except OverflowError:
+            raise ValueError(
+                "DM expiry cutoff cannot be normalized to representable UTC"
+            ) from None
         with self._transaction() as connection:
             _register_expiry_clock(connection)
             candidates = connection.execute(
@@ -1966,15 +1976,22 @@ class Collaboration:
         at or before ``now - max_age`` expire; records without a usable
         RFC 3339 offset stay untouched. An explicitly supplied ``now``
         must be a timezone-aware datetime -- naive or non-datetime
-        values are rejected before any conversion. The ID counters
+        values are rejected before any conversion, and so is one whose
+        UTC normalization or cutoff subtraction leaves the representable
+        calendar, before any transaction. The ID counters
         never move, so later messages and events keep new, higher IDs.
         """
         if max_age <= timedelta(0):
             raise ValueError("The retention age must be positive")
         if now is not None and (not isinstance(now, datetime) or now.tzinfo is None):
             raise ValueError("The expiry clock must be a timezone-aware datetime")
-        moment = datetime.now(UTC) if now is None else now.astimezone(UTC)
-        cutoff = _utc_micros(moment - max_age)
+        try:
+            moment = datetime.now(UTC) if now is None else now.astimezone(UTC)
+            cutoff = _utc_micros(moment - max_age)
+        except OverflowError:
+            raise ValueError(
+                "The expiry clock cannot be normalized to representable UTC"
+            ) from None
         with self._transaction() as connection:
             _register_expiry_clock(connection)
             candidates = connection.execute(

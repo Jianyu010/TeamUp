@@ -1,7 +1,7 @@
 import sqlite3
 import subprocess
 from contextlib import closing
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from hashlib import sha256
 from time import sleep
 from uuid import uuid4
@@ -286,6 +286,27 @@ def test_dm_expiry_spares_unknown_timestamps_and_compares_true_instants(tmp_path
             prune(db_path, datetime(2020, 1, 1))
         with pytest.raises(ValueError):
             prune(db_path, "2020-01-01T00:00:00Z")
+
+
+def test_dm_expiry_rejects_a_cutoff_outside_representable_utc(tmp_path):
+    """An aware cutoff that cannot convert to UTC is refused before any work."""
+    db_path = tmp_path / "team.sqlite3"
+    with api(db_path) as client:
+        enroll_team(client, labels=("sender", "target"))
+        target = member(client, "target")
+        dm_id = open_dm(client, "sender", target).json()["dm_id"]
+        due = dm_send(client, "sender", dm_id, "due", "still due private").json()
+
+    for unusable in (
+        datetime.min.replace(tzinfo=timezone(timedelta(hours=1))),
+        datetime.max.replace(tzinfo=timezone(timedelta(hours=-1))),
+    ):
+        with pytest.raises(ValueError):
+            prune(db_path, unusable)
+
+    # The rejected cutoffs deleted nothing; a normal cutoff still prunes.
+    assert dm_message_ids(db_path) == [due["message_id"]]
+    assert prune(db_path, datetime.now(UTC)) == (1, False)
 
 
 def test_dm_expiry_prunes_bounded_batches_and_never_reuses_ids(tmp_path):
