@@ -149,6 +149,16 @@ class ConsoleReader:
                 raise ClientError("not_found", "Local session is unavailable")
             return response
 
+    async def _write(self, identity: str, path: str, body: dict | None) -> dict:
+        async with self._reads:
+            session = self._current(identity)
+            if session is None:
+                raise ClientError("not_found", "Local session is unavailable")
+            result = await self._request("POST", path, session.token, body=body)
+            if self._current(identity) != session:
+                raise ClientError("not_found", "Local session is unavailable")
+            return result
+
     async def _describe(
         self, session: ConsoleSession
     ) -> tuple[ConsoleSession, dict, list]:
@@ -425,6 +435,22 @@ class ConsoleReader:
             return None
         return None
 
+    async def room_board(
+        self, identity: str, room_id: str, draft: dict | None = None
+    ) -> dict:
+        path = f"/rooms/{room_id}/board"
+        try:
+            if draft is None:
+                session = self._current(identity)
+                if session is None:
+                    return {"state": "not_found"}
+                board = await self._read(session, path + "/view")
+            else:
+                board = await self._write(identity, path, draft)
+        except ClientError as exc:
+            return {"state": exc.code}
+        return {"state": "ready", "board": board}
+
     async def room_members(self, identity: str, room_id: str) -> dict:
         session = self._current(identity)
         if session is None:
@@ -608,19 +634,10 @@ class ConsoleReader:
     async def task_action(
         self, identity: str, room_id: str, task_id: str, action: str, body: dict | None
     ) -> dict:
-        async with self._reads:
-            session = self._current(identity)
-            if session is None:
-                return {"state": "not_found"}
-            try:
-                result = await self._request(
-                    "POST",
-                    f"/rooms/{room_id}/tasks/{task_id}/{action}",
-                    session.token,
-                    body=body,
-                )
-            except ClientError as exc:
-                return {"state": exc.code}
-            if self._current(identity) != session:
-                return {"state": "not_found"}
-            return {"state": "ready", "task": result}
+        try:
+            result = await self._write(
+                identity, f"/rooms/{room_id}/tasks/{task_id}/{action}", body
+            )
+        except ClientError as exc:
+            return {"state": exc.code}
+        return {"state": "ready", "task": result}

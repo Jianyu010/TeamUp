@@ -1282,6 +1282,60 @@
           }
         },
         "summary": "Read Board"
+      },
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "room_id",
+            "required": true,
+            "schema": {
+              "title": "Room Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/_PublishBoard"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Publish Board V1 Rooms  Room Id  Board Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Publish Board"
       }
     },
     "/v1/rooms/{room_id}/board/ack": {
@@ -1338,6 +1392,52 @@
           }
         },
         "summary": "Confirm Board"
+      }
+    },
+    "/v1/rooms/{room_id}/board/view": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "room_id",
+            "required": true,
+            "schema": {
+              "title": "Room Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response View Board V1 Rooms  Room Id  Board View Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "View Board"
       }
     },
     "/v1/rooms/{room_id}/join": {
@@ -2404,6 +2504,33 @@
         "member_id"
       ],
       "title": "_OpenDM",
+      "type": "object"
+    },
+    "_PublishBoard": {
+      "additionalProperties": false,
+      "properties": {
+        "protocol": {
+          "maxLength": 8000,
+          "title": "Protocol",
+          "type": "string"
+        },
+        "rules": {
+          "maxLength": 8000,
+          "title": "Rules",
+          "type": "string"
+        },
+        "version": {
+          "exclusiveMinimum": 0.0,
+          "title": "Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version",
+        "rules",
+        "protocol"
+      ],
+      "title": "_PublishBoard",
       "type": "object"
     },
     "_Room": {

@@ -835,7 +835,7 @@ def _room_member(
     record = connection.execute(
         """
         SELECT r.name, r.version, r.rules, r.protocol, r.history_policy,
-            r.expired_through_message_id, rm.read_board_version,
+            r.creator_member_id, r.expired_through_message_id, rm.read_board_version,
             rm.acked_board_version, rm.joined_after
         FROM room_members AS rm JOIN rooms AS r ON r.room_id = rm.room_id
         WHERE rm.room_id = ? AND rm.member_id = ?
@@ -1370,6 +1370,12 @@ class Collaboration:
             elif version != 7:
                 raise ValueError("Unsupported TeamUp database schema version")
             _migrate_room_tasks(connection)
+            if "creator_member_id" not in {
+                row["name"] for row in connection.execute("PRAGMA table_info(rooms)")
+            }:
+                connection.execute(
+                    "ALTER TABLE rooms ADD COLUMN creator_member_id TEXT REFERENCES members(member_id)"
+                )
             # Keep the schema version so Servers at that version can reopen it.
             for statement in _MAINTENANCE_SCHEMA:
                 connection.execute(statement)
@@ -2229,8 +2235,10 @@ class Collaboration:
             member_id = _member(connection, token)["member_id"]
             connection.execute(
                 """
-                INSERT INTO rooms (room_id, name, version, rules, protocol, history_policy)
-                VALUES (?, ?, 1, ?, ?, ?)
+                INSERT INTO rooms (
+                    room_id, name, version, rules, protocol, history_policy, creator_member_id
+                )
+                VALUES (?, ?, 1, ?, ?, ?, ?)
                 """,
                 (
                     room_id,
@@ -2238,6 +2246,7 @@ class Collaboration:
                     rules if rules is not None else _DEFAULT_RULES,
                     protocol if protocol is not None else _DEFAULT_PROTOCOL,
                     history_policy,
+                    member_id,
                 ),
             )
             connection.execute(
@@ -2334,6 +2343,36 @@ class Collaboration:
                 (room_id,),
             )
             return [dict(row) for row in rows]
+
+    def view_board(self, token: str, room_id: str) -> dict:
+        with self._transaction() as connection:
+            member_id = _member(connection, token)["member_id"]
+            board = _room_member(connection, room_id, member_id)
+            return {
+                "room_id": room_id,
+                **{key: board[key] for key in ("version", "rules", "protocol")},
+                "can_edit": board["creator_member_id"] == member_id,
+            }
+
+    def publish_board(
+        self, token: str, room_id: str, version: int, rules: str, protocol: str
+    ) -> dict:
+        with self._transaction(write=True) as connection:
+            member_id = _member(connection, token)["member_id"]
+            current = _room_member(connection, room_id, member_id)
+            if current["creator_member_id"] != member_id:
+                raise CollaborationError("forbidden")
+            if current["version"] != version:
+                raise CollaborationError("conflict")
+            board = connection.execute(
+                """
+                UPDATE rooms SET version = version + 1, rules = ?, protocol = ?
+                WHERE room_id = ?
+                RETURNING room_id, version, rules, protocol
+                """,
+                (rules, protocol, room_id),
+            ).fetchone()
+            return {**dict(board), "can_edit": True}
 
     def read_board(self, token: str, room_id: str) -> dict:
         with self._transaction(write=True) as connection:
