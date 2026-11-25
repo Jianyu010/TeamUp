@@ -313,6 +313,7 @@ def test_transcript_grant_cli_roundtrip(tmp_path):
     for args in (
         ("grant-transcript", "alice", "not-a-uuid"),
         ("grant-transcript", "alice", "3cb9cbf2-aaf5-459b-a69f-4e256c300454"),
+        ("revoke-transcript", "alice", "3cb9cbf2-aaf5-459b-a69f-4e256c300454"),
         ("grant-transcript", "nobody", room_id),
         ("revoke-transcript", "nobody", room_id),
         ("grant-console", "nobody"),
@@ -1186,7 +1187,9 @@ def test_console_room_detail_latest_activity_per_actor_and_room(tmp_path):
             None,
         )
 
-        # A room without recorded activity reports null latest summaries.
+        # A room without recorded activity reports null latest summaries, in
+        # the roster detail and in the rooms list (whose LEFT JOIN keeps the
+        # room row with null activity columns instead of dropping it).
         with closing(sqlite3.connect(db_path)) as connection, connection:
             connection.execute(
                 "DELETE FROM room_activity WHERE room_id = ?", (room_id,)
@@ -1194,6 +1197,9 @@ def test_console_room_detail_latest_activity_per_actor_and_room(tmp_path):
         payload = console_room_detail(client, console, room_id).json()
         assert payload["room"]["last_activity"] is None
         assert all(entry["last_activity"] is None for entry in payload["members"])
+        rooms = console_rooms(client, console).json()["rooms"]
+        assert [entry["room_id"] for entry in rooms] == [room_id]
+        assert all(entry["last_activity"] is None for entry in rooms)
 
 
 _V3_HISTORY_DATABASE = """

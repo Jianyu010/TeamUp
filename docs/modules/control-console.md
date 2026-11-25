@@ -39,7 +39,7 @@
 | `grant-console` | `USERNAME` | 授予账号级 `console_read`；幂等 |
 | `revoke-console` | `USERNAME` | 撤销账号级 `console_read`（不影响 `transcript_read`）；幂等；账号不存在返回 not_found |
 | `grant-transcript` | `USERNAME ROOM_ID` | 授予该账号在该房间的 `transcript_read`；幂等；账号或房间不存在返回 not_found，房间 ID 非法返回 invalid_request |
-| `revoke-transcript` | `USERNAME ROOM_ID` | 撤销该授权；幂等 |
+| `revoke-transcript` | `USERNAME ROOM_ID` | 撤销该授权；幂等；账号或房间不存在返回 not_found，房间 ID 非法返回 invalid_request |
 
 授权由 Collaboration 单一持有：`operator_grants` 表（`owner_id`、`scope` ∈ {`console_read`,`transcript_read`}、`room_id`：`console_read` 行为 NULL，`transcript_read` 行指向房间）。Server 网络入口不提供任何授权写接口。CLI 输出不含任何凭证。撤销/停用对下一页生效：每次请求都在使用事务内重查会话有效性与所需授权，撤销后携旧游标继续翻页返回 `forbidden`（或会话失效时 401）。
 

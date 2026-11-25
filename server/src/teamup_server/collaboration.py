@@ -398,7 +398,7 @@ def _rfc3339_to_unix(value: str | None) -> int | None:
 
 
 def _activity_summary(row: sqlite3.Row | None, prefix: str = "") -> dict | None:
-    if row is None:
+    if row is None or row[f"{prefix}kind"] is None:
         return None
     return {
         "kind": row[f"{prefix}kind"],
@@ -851,6 +851,13 @@ class Collaboration:
         _validate_username(username)
         with self._transaction(write=True) as connection:
             owner_id = self._account(connection, username)["owner_id"]
+            if (
+                connection.execute(
+                    "SELECT 1 FROM rooms WHERE room_id = ?", (room_id,)
+                ).fetchone()
+                is None
+            ):
+                raise CollaborationError("not_found")
             connection.execute(
                 """
                 DELETE FROM operator_grants
