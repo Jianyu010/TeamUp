@@ -5,6 +5,7 @@ import concurrent.futures
 import hmac
 import json
 import secrets
+import sqlite3
 import threading
 from contextlib import asynccontextmanager
 from functools import partial
@@ -26,6 +27,7 @@ STATIC = {
     "/console-members.js": ("console-members.js", "text/javascript; charset=utf-8"),
     "/console-board.js": ("console-board.js", "text/javascript; charset=utf-8"),
     "/console-tasks.js": ("console-tasks.js", "text/javascript; charset=utf-8"),
+    "/console-sessions.js": ("console-sessions.js", "text/javascript; charset=utf-8"),
     "/jet-pair.png": ("jet-pair.png", "image/png"),
 }
 CSP = (
@@ -129,6 +131,24 @@ class Handler(BaseHTTPRequestHandler):
         self._run(operation, write=True)
 
     def _write_operation(self, path, query):
+        if path in {"/api/sessions/leave", "/api/sessions/retire"}:
+            params = self._params(query)
+            required = {"session", "room"} if path.endswith("/leave") else {"session"}
+            optional = {"membership_id"} if path.endswith("/leave") else set()
+            if not (
+                required <= params.keys() <= required | optional
+                and self._hex_id(params["session"], 64)
+            ):
+                raise ValueError
+            room_id = params.get("room")
+            if room_id is not None and not is_uuid(room_id):
+                raise ValueError
+            membership_id = params.get("membership_id")
+            if membership_id is not None and not self._hex_id(membership_id, 32):
+                raise ValueError
+            self._action_body(required=False)
+            return self._reader.session_action(params["session"], room_id, membership_id)
+
         if path == "/api/room-board":
             params = self._params(query)
             if set(params) != {"room", "session"} or not is_uuid(params["room"]):
@@ -191,6 +211,7 @@ class Handler(BaseHTTPRequestHandler):
             KeyError,
             TypeError,
             ValueError,
+            sqlite3.Error,
             concurrent.futures.CancelledError,
         ):
             self._json(503, {"state": "unavailable"})
@@ -204,6 +225,8 @@ class Handler(BaseHTTPRequestHandler):
                     "not_found": 404,
                     "board_ack_required": 409,
                     "conflict": 409,
+                    "member_retired": 409,
+                    "membership_changed": 409,
                     "invalid_request": 422,
                     "unavailable": 503,
                 }.get(data.get("state"), 503)
@@ -232,6 +255,8 @@ class Handler(BaseHTTPRequestHandler):
                 - WORKSPACE_RESPONSE_RESERVE_SECONDS
             )
             return self._reader.workspace(directory_deadline=directory_deadline)
+        if path == "/api/retired":
+            return self._retired_operation(params)
         if path == "/api/team" and set(params) == {"session"}:
             return self._reader.team(params["session"])
         if path == "/api/room-board":
@@ -283,6 +308,34 @@ class Handler(BaseHTTPRequestHandler):
                 params["session"], params["room"], params["task"], self._after(params)
             )
         return None
+
+    def _retired_operation(self, params):
+        session = params.get("session")
+        if not self._hex_id(session, 64):
+            raise ValueError
+        if set(params) == {"session"}:
+            return self._reader.retired_history(session)
+        if set(params) == {"session", "after"}:
+            return self._reader.retired_history(session, after=self._after(params))
+        if not {"session", "kind", "conversation"} <= params.keys() <= {
+            "session", "kind", "conversation", "before"
+        }:
+            raise ValueError
+        if params["kind"] not in {"room", "dm"} or not is_uuid(params["conversation"]):
+            raise ValueError
+        before = int(params["before"]) if "before" in params else None
+        if before is not None and not 1 <= before <= MAX_BEFORE:
+            raise ValueError
+        return self._reader.retired_history(
+            session, kind=params["kind"], conversation=params["conversation"], before=before
+        )
+
+    @staticmethod
+    def _hex_id(value, length):
+        return bool(
+            isinstance(value, str) and len(value) == length
+            and all(char in "0123456789abcdef" for char in value)
+        )
 
     @staticmethod
     def _after(params):

@@ -58,12 +58,7 @@ def test_room_metadata_shows_current_members_with_pending_ack(tmp_path):
             "board_read_required",
         )
 
-        # Membership removal has no member-facing command yet.
-        with closing(sqlite3.connect(db_path)) as connection, connection:
-            connection.execute(
-                "DELETE FROM room_members WHERE room_id = ? AND member_id = ?",
-                (room_id, target["member_id"]),
-            )
+        assert post(client, "target", f"{path}/leave").json() == {"room_id": room_id}
         for suffix in ("", "/members"):
             error(get(client, "target", path + suffix), 404, "not_found")
             error(get(client, "outsider", path + suffix), 404, "not_found")

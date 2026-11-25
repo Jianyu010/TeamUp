@@ -167,6 +167,8 @@ def test_stdio_passes_approved_binding_and_surfaces_ipc_error():
                 "teamup_list_rooms",
                 "teamup_create_room",
                 "teamup_join_room",
+                "teamup_leave_room",
+                "teamup_retire_identity",
                 "teamup_get_board",
                 "teamup_ack_board",
                 "teamup_send_message",

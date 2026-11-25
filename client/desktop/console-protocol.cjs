@@ -13,13 +13,15 @@ const assets = new Map([
   ["/console-members.js", ["console-members.js", "text/javascript; charset=utf-8"]],
   ["/console-board.js", ["console-board.js", "text/javascript; charset=utf-8"]],
   ["/console-tasks.js", ["console-tasks.js", "text/javascript; charset=utf-8"]],
+  ["/console-sessions.js", ["console-sessions.js", "text/javascript; charset=utf-8"]],
   ["/jet-pair.png", ["jet-pair.png", "image/png"]],
 ]);
 const reads = new Set([
-  "/api/workspace", "/api/versions", "/api/team", "/api/room", "/api/room-members",
+  "/api/workspace", "/api/versions", "/api/retired", "/api/team", "/api/room", "/api/room-members",
   "/api/room-board", "/api/tasks", "/api/task-events",
 ]);
 const taskAction = /^\/api\/tasks\/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\/(?:join|progress|finish)$/i;
+const sessionActions = new Set(["/api/sessions/leave", "/api/sessions/retire"]);
 const requestLimit = 128 * 1024;
 const headers = {
   "Cache-Control": "no-store",
@@ -99,7 +101,8 @@ function createConsoleHandler(directory, getEndpoint, resetEndpoint = () => {}) 
     }
     const isRead = request.method === "GET" && reads.has(target.pathname);
     const isAction = request.method === "POST" &&
-      (target.pathname === "/api/room-board" || taskAction.test(target.pathname));
+      (target.pathname === "/api/room-board" || taskAction.test(target.pathname) ||
+        sessionActions.has(target.pathname));
     if (!isRead && !isAction) return failure(404, "not_found");
     if (request.initiatorOrigin !== CONSOLE_ORIGIN) return failure(403, "forbidden");
 

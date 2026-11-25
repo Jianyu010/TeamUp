@@ -26,6 +26,11 @@
         <div class="scroll-frame" id="session-scroll">
           <div class="nodes" id="sessions"></div>
         </div>
+        <button type="button" id="retire-identity" class="retire-action" hidden>Retire selected identity</button>
+        <details id="retired-sessions">
+          <summary id="retired-summary">Retired sessions (0)</summary>
+          <div id="retired-list"></div>
+        </details>
       </section>
       <section class="room-panel" aria-labelledby="rooms-title">
         <h2 id="rooms-title">Rooms</h2>
@@ -103,6 +108,7 @@
           <h2 id="roster-title">Members</h2>
           <p id="roster-status" class="muted" role="status"></p>
           <div id="roster" class="scroll-frame"></div>
+          <div id="room-session-actions" class="scroll-frame" aria-label="My sessions in this room" hidden></div>
         </aside>
       </section>
       <section class="team-panel scroll-frame" id="team-panel" aria-label="Team" hidden>
@@ -114,8 +120,31 @@
     <footer class="versions" aria-label="TeamUp versions">
       <span>Client <span id="client-version">Unknown</span></span>
       <span>Server <span id="server-version">Unknown</span></span>
+      <p id="session-action-status" role="status"></p>
     </footer>
   </main>
+  <dialog id="retire-dialog" aria-labelledby="retire-title" aria-describedby="retire-description" class="session-dialog">
+    <h2 id="retire-title">Retire this identity?</h2>
+    <p id="retire-description"></p>
+    <div class="session-dialog-actions">
+      <button type="button" id="cancel-retirement" autofocus>Cancel</button>
+      <button type="button" id="confirm-retirement" class="retire-action">Retire identity</button>
+    </div>
+  </dialog>
+  <dialog id="retired-history" aria-labelledby="archive-title" class="session-dialog">
+    <header class="archive-heading">
+      <h2 id="archive-title"></h2>
+      <button type="button" id="close-archive" autofocus>Close</button>
+    </header>
+    <label id="archive-picker" hidden>Conversation <select id="archive-conversation"></select></label>
+    <p id="archive-status" class="muted" role="status"></p>
+    <button type="button" id="archive-older" hidden>Older messages</button>
+    <div id="archive-messages"></div>
+    <details class="archive-notices">
+      <summary>Notifications</summary>
+      <div id="archived-notices"></div>
+    </details>
+  </dialog>
   <section id="member-detail" popover="manual" aria-label="Room member details"></section>
 </body>
 </html>

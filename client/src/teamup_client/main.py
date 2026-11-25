@@ -23,7 +23,7 @@ from ._local import LocalError, listen
 from ._login import login
 from ._notice_output import NoticeOutput
 from ._notices import open_store
-from ._protocol import is_string
+from ._protocol import is_string, is_uuid
 from ._upstream import connect
 from .ipc import ClientError, call
 
@@ -54,7 +54,7 @@ async def _serve(path, *, console=False):
                 on_call = partial(handle, coordinator=coordinator)
                 viewer = (
                     serve_console(
-                        ConsoleReader(coordinator.console_sessions, upstream.request)
+                        ConsoleReader(coordinator.console_sessions, upstream.request, coordinator)
                     )
                     if console
                     else nullcontext()
@@ -90,16 +90,45 @@ async def _owner(args):
         method, params = "sessions", {}
     else:
         if args.session_key is None:
-            raise ConfigError("Name the harness instance and session to decide")
-        method, params = (
-            "decide_session",
-            {
-                "harness_instance_id": args.harness_instance_id,
-                "session_key": args.session_key,
-                "state": {"approve": "approved", "reject": "rejected"}[args.decision],
-            },
-        )
+            raise ConfigError("Name the harness instance and session")
+        params = {
+            "harness_instance_id": args.harness_instance_id,
+            "session_key": args.session_key,
+        }
+        if args.decision == "leave":
+            if not is_uuid(args.room_id):
+                raise ConfigError("Name the room to leave using its UUID")
+            method = "leave_session_room"
+            params["room_id"] = args.room_id
+        elif args.room_id is not None:
+            raise ConfigError("Only the leave command accepts a room ID")
+        elif args.decision == "retire":
+            method = "retire_session"
+        else:
+            method = "decide_session"
+            params["state"] = {"approve": "approved", "reject": "rejected"}[args.decision]
     return await call(config.socket_path, key, method, params)
+
+
+async def _manage_member(args):
+    config = read_config(args.config)
+    if config.account_token is None:
+        raise ConfigError("Run teamup-client login to manage members")
+    if not is_uuid(args.member_id):
+        raise ConfigError("Member ID must be a UUID")
+    path = f"/members/{args.member_id}"
+    async with connect(config) as upstream:
+        if args.action == "retire":
+            return await upstream.request(
+                "POST", f"{path}/retire", config.account_token, member_auth=False
+            )
+        return await upstream.request(
+            "PATCH",
+            path,
+            config.account_token,
+            body={"role_description": args.role_description},
+            member_auth=False,
+        )
 
 
 def main(argv=None):
@@ -113,17 +142,30 @@ def main(argv=None):
     sign_in = commands.add_parser("login")
     sign_in.add_argument("--config", required=True, type=Path)
     sign_in.add_argument("--username", required=True)
+    members = commands.add_parser(
+        "members", help="Manage members owned by your account"
+    )
+    members.add_argument("--config", required=True, type=Path)
+    member_actions = members.add_subparsers(dest="action", required=True)
+    rename = member_actions.add_parser(
+        "rename", help="Update a member's role description"
+    )
+    rename.add_argument("member_id")
+    rename.add_argument("role_description")
+    retire = member_actions.add_parser("retire", help="Permanently retire a member")
+    retire.add_argument("member_id")
     commands.add_parser("init-binding")
     install = commands.add_parser(
         "init-install",
         help="Generate a key that identifies sessions within a harness install",
     )
     install.add_argument("harness_instance_id")
-    sessions = commands.add_parser("sessions", help="List or decide agent sessions")
+    sessions = commands.add_parser("sessions", help="List and manage agent sessions")
     sessions.add_argument("--config", required=True, type=Path)
-    sessions.add_argument("decision", nargs="?", choices=("approve", "reject"))
+    sessions.add_argument("decision", nargs="?", choices=("approve", "reject", "leave", "retire"))
     sessions.add_argument("harness_instance_id", nargs="?")
     sessions.add_argument("session_key", nargs="?")
+    sessions.add_argument("room_id", nargs="?")
     wake = commands.add_parser(
         "wake", help="Allow mentions to start turns in one session"
     )
@@ -166,6 +208,9 @@ def main(argv=None):
             )
         elif args.command in ("sessions", "wake"):
             print(json.dumps(asyncio.run(_owner(args)), ensure_ascii=False, indent=2))
+        elif args.command == "members":
+            updated = asyncio.run(_manage_member(args))
+            print(json.dumps(updated, ensure_ascii=False, indent=2))
         elif args.command == "serve":
             with suppress(KeyboardInterrupt):
                 asyncio.run(_serve(args.config, console=args.console))

@@ -2,6 +2,7 @@ import {readTranscript, sameBoard} from "/console-history.mjs";
 import {roomBoard} from "/console-board.js";
 import {roomMembers, renderTeam} from "/console-members.js";
 import {taskPanel} from "/console-tasks.js";
+import {sessionControls} from "/console-sessions.js";
 
 const get = (id) => document.getElementById(id);
 const svg = (name) => document.createElementNS("http://www.w3.org/2000/svg", name);
@@ -105,6 +106,33 @@ const tasks = taskPanel({
   active: () => state.page === "room" && Boolean(state.reader) && state.roomView === "tasks",
 });
 
+const lifecycle = sessionControls({
+  request: read,
+  changed(session, room, result, membershipId) {
+    const snapshot = state.workspace;
+    const retired = snapshot.retired_sessions ?? [];
+    const sessions = room ? snapshot.sessions : snapshot.sessions.filter((item) => item.id !== session.id);
+    const directory = snapshot.directory_available && sessions.some((item) => item.state === "ready");
+    const rooms = snapshot.rooms.flatMap((item) => {
+      if (room && item.id !== room.id) return [item];
+      const memberships = item.memberships.filter((link) => link.session !== session.id ||
+        (membershipId && link.membership_id !== membershipId));
+      if (memberships.length) return [{...item, memberships}];
+      if (directory && item.history_policy) return [{...item, memberships, latest_message_id: null}];
+      return [];
+    });
+    applyWorkspace({
+      ...snapshot,
+      sessions,
+      rooms,
+      directory_available: directory,
+      retired_sessions: room || retired.some((item) => item.id === session.id) ? retired
+        : [...retired, {...session, role_description: result.role_description}],
+    });
+    return refresh();
+  },
+});
+
 const members = roomMembers({
   read,
   subject: () => state.page === "room" && state.reader ? {room: state.room, session: state.reader} : null,
@@ -155,6 +183,7 @@ function renderWorkspace() {
   }
   get("sessions-title").textContent = "My sessions (" + sessions.length + ")";
   get("rooms-title").textContent = "Rooms (" + rooms.length + ")";
+  lifecycle.workspace(sessionFor(state.focused), state.workspace.retired_sessions ?? []);
   const sessionButtons = sessions.map((session) => {
     const label = session.state === "ready" ? session.harness
       : session.harness + " · " + (session.state === "not_registered" ? "Unregistered" : "Unavailable");
@@ -269,7 +298,7 @@ function show(page) {
   get("workspace-nav").setAttribute("aria-pressed", String(page !== "team"));
   get("team-nav").setAttribute("aria-pressed", String(page === "team"));
   get("detail").inert = page !== "room";
-  get("session-scroll").inert = page !== "workspace";
+  get("sessions-title").closest("section").inert = page !== "workspace";
   get("room-scroll").inert = page === "team";
   get("rooms-title").hidden = page === "room";
   get("back").hidden = page !== "room";
@@ -286,6 +315,7 @@ function renderRoomHeader() {
   get("compact-room").textContent = room.name;
   get("room-id").value = room.id;
   get("detail").setAttribute("aria-label", room.name);
+  lifecycle.room(room, readyMemberships(room).map(({session}) => sessionFor(session)));
   const chooser = get("task-actor");
   const actors = readyMemberships(room).filter(acknowledged).map(({session}) => sessionFor(session));
   chooser.disabled = actors.length === 0;
@@ -337,6 +367,7 @@ const messagesForState = {
   board_ack_required: "This session must read and acknowledge the room board before its chat is available.",
   not_registered: "This session needs to register before it can read chat.",
   not_found: "This room is unavailable to the selected session.",
+  membership_changed: "Room membership changed. Refreshing history…",
   unauthorized: "The selected session no longer has access.",
   unavailable: "Chat is temporarily unavailable.",
 };
@@ -479,50 +510,61 @@ async function refreshVersions() {
   setTimeout(refreshVersions, refreshInterval);
 }
 
+function applyWorkspace(snapshot) {
+  const changed = JSON.stringify(snapshot) !== JSON.stringify(state.workspace);
+  const oldReader = state.reader;
+  const oldMember = sessionFor(oldReader)?.member_id;
+  const oldBoard = activeRoom()?.memberships.find((item) => item.session === oldReader);
+  state.workspace = snapshot;
+  if (!sessionFor(state.focused)) state.focused = null;
+  const active = activeRoom();
+  setConnection(snapshot.sessions.some((session) => session.state === "ready") ? "Live" : "Client ready",
+    snapshot.sessions.some((session) => session.state === "ready"));
+  if (state.page === "room" && !active) {
+    state.chat = null;
+    state.room = null;
+    show("workspace");
+  } else if (state.page === "room") {
+    const oldActor = state.actor;
+    selectRoomSubjects(active);
+    if (oldReader && !state.reader) tasks.reset();
+    else if (state.actor !== oldActor) tasks.changeActor();
+    const board = active.memberships.find((item) => item.session === state.reader);
+    const scopeChanged = state.reader !== oldReader || sessionFor(state.reader)?.member_id !== oldMember ||
+      board?.membership_id !== oldBoard?.membership_id;
+    if (scopeChanged || !sameBoard(board, oldBoard)) {
+      state.requestNumber++;
+      state.chat = null;
+      state.roomRead = null;
+      members.reset({preserveNames: !scopeChanged});
+      renderChat();
+    }
+    if (!state.roomRead) refreshRoom();
+    members.refresh();
+  }
+  if (changed) {
+    renderWorkspace();
+    if (state.page === "room") renderRoomHeader();
+  }
+  if (state.page === "team") refreshTeam();
+  if (state.page === "room") {
+    boardPanel.refresh();
+    if (state.roomView === "tasks") tasks.refresh();
+  }
+}
+
+let workspaceRequest = 0;
+let workspaceTimer;
+
 async function refresh() {
+  clearTimeout(workspaceTimer);
+  const request = ++workspaceRequest;
   let expire = false;
   try {
     const snapshot = await read("/api/workspace");
-    const changed = JSON.stringify(snapshot) !== JSON.stringify(state.workspace);
-    const oldReader = state.reader;
-    const oldMember = sessionFor(oldReader)?.member_id;
-    const oldBoard = activeRoom()?.memberships.find((item) => item.session === oldReader);
-    state.workspace = snapshot;
-    if (!sessionFor(state.focused)) state.focused = null;
-    const active = activeRoom();
-    setConnection(snapshot.sessions.some((session) => session.state === "ready") ? "Live" : "Client ready",
-      snapshot.sessions.some((session) => session.state === "ready"));
-    if (state.page === "room" && !active) {
-      state.chat = null;
-      state.room = null;
-      show("workspace");
-    } else if (state.page === "room") {
-      const oldActor = state.actor;
-      selectRoomSubjects(active);
-      if (oldReader && !state.reader) tasks.reset();
-      else if (state.actor !== oldActor) tasks.changeActor();
-      const board = active.memberships.find((item) => item.session === state.reader);
-      const scopeChanged = state.reader !== oldReader || sessionFor(state.reader)?.member_id !== oldMember;
-      if (scopeChanged || !sameBoard(board, oldBoard)) {
-        state.requestNumber++;
-        state.chat = null;
-        state.roomRead = null;
-        members.reset({preserveNames: !scopeChanged});
-        renderChat();
-      }
-      if (!state.roomRead) refreshRoom();
-      members.refresh();
-    }
-    if (changed) {
-      renderWorkspace();
-      if (state.page === "room") renderRoomHeader();
-    }
-    if (state.page === "team") refreshTeam();
-    if (state.page === "room") {
-      boardPanel.refresh();
-      if (state.roomView === "tasks") tasks.refresh();
-    }
+    if (request === workspaceRequest) applyWorkspace(snapshot);
   } catch (error) {
+    if (request !== workspaceRequest) return;
     expire = error.message === "access";
     setConnection(expire ? "Open a fresh console link" : "Reconnecting…", false);
     state.workspace = {sessions:[], rooms:[]};
@@ -530,7 +572,7 @@ async function refresh() {
     state.room = null;
     show("workspace");
   } finally {
-    if (!expire) setTimeout(refresh, refreshInterval);
+    if (!expire && request === workspaceRequest) workspaceTimer = setTimeout(refresh, refreshInterval);
   }
 }
 
@@ -588,6 +630,7 @@ get("older").addEventListener("click", () => {
 for (const area of ["session-scroll", "room-scroll"]) {
   get(area).addEventListener("scroll", drawWires, {passive:true});
 }
+get("retired-sessions").addEventListener("toggle", drawWires);
 window.addEventListener("resize", drawWires);
 window.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && state.page !== "workspace") show("workspace");

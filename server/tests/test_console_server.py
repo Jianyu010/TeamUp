@@ -452,7 +452,7 @@ def test_v2_sessions_migrate_to_enrollment_purpose(tmp_path):
         assert bind(client, legacy_token, "sender").status_code == 200
         error(console_rooms(client, legacy_token), 401, "unauthorized")
         with closing(sqlite3.connect(db_path)) as connection:
-            assert connection.execute("PRAGMA user_version").fetchone()[0] == 7
+            assert connection.execute("PRAGMA user_version").fetchone()[0] == 9
             purposes = dict(
                 connection.execute("SELECT token_digest, purpose FROM account_sessions")
             )
@@ -990,6 +990,10 @@ def test_console_v5_upgrade_runs_real_room_expiry_and_keeps_dm_and_audit(tmp_pat
             "UPDATE messages SET created_at = ? WHERE room_id IS NOT NULL", (old,)
         )
         connection.execute("DROP TABLE room_message_additional_mentions")
+        connection.execute("DROP TABLE retired_room_access")
+        connection.execute("DROP TABLE room_departures")
+        connection.execute("ALTER TABLE room_members DROP COLUMN membership_id")
+        connection.execute("ALTER TABLE members DROP COLUMN retired")
         connection.execute("ALTER TABLE rooms DROP COLUMN expired_through_message_id")
         connection.execute("ALTER TABLE dms DROP COLUMN expired_through_message_id")
         connection.execute("PRAGMA user_version = 5")
@@ -999,7 +1003,7 @@ def test_console_v5_upgrade_runs_real_room_expiry_and_keeps_dm_and_audit(tmp_pat
 
     with live_server(db_path, extra=("--room-retention-hours", "1")) as (client, _):
         with closing(sqlite3.connect(db_path)) as connection:
-            assert connection.execute("PRAGMA user_version").fetchone()[0] == 7
+            assert connection.execute("PRAGMA user_version").fetchone()[0] == 9
 
         # The startup retention pass commits: the room body is gone and the
         # room's durable watermark reports the cleared range.
@@ -1554,7 +1558,7 @@ def test_v3_history_database_upgrades_to_console_v5(tmp_path):
     with live_server(db_path, legacy=False) as (client, _):
         assert bind(client, legacy_token, "sender").status_code == 200
         with closing(sqlite3.connect(db_path)) as connection:
-            assert connection.execute("PRAGMA user_version").fetchone()[0] == 7
+            assert connection.execute("PRAGMA user_version").fetchone()[0] == 9
             purposes = dict(
                 connection.execute("SELECT token_digest, purpose FROM account_sessions")
             )
@@ -1795,7 +1799,7 @@ def test_v3_auth_preview_database_upgrades_to_console_v5_preserving_grants(tmp_p
         # The preview's enrollment session still binds agents after the merge.
         assert bind(client, preview_enroll_token, "preview-agent").status_code == 200
         with closing(sqlite3.connect(db_path)) as connection:
-            assert connection.execute("PRAGMA user_version").fetchone()[0] == 7
+            assert connection.execute("PRAGMA user_version").fetchone()[0] == 9
             purposes = dict(
                 connection.execute("SELECT token_digest, purpose FROM account_sessions")
             )
@@ -2063,7 +2067,7 @@ def test_v4_dm_database_upgrades_to_console_v5_without_dm_activity(tmp_path):
     with live_server(db_path, legacy=False) as (client, _):
         assert bind(client, legacy_token, "sender").status_code == 200
         with closing(sqlite3.connect(db_path)) as connection:
-            assert connection.execute("PRAGMA user_version").fetchone()[0] == 7
+            assert connection.execute("PRAGMA user_version").fetchone()[0] == 9
             purposes = dict(
                 connection.execute("SELECT token_digest, purpose FROM account_sessions")
             )

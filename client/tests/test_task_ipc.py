@@ -15,6 +15,9 @@ MEMBERS = [
 
 
 class Notices:
+    def retired_sessions(self, _server_url):
+        return {}
+
     def sessions(self):
         return []
 

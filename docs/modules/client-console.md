@@ -1,5 +1,7 @@
 # Local Client Console
 
+Agent self-retirement, owner-managed departure, and retired history are specified in [Session retirement and room departure](member-lifecycle.md).
+
 Local workspace for [#17](https://github.com/Jianyu010/TeamUp/issues/17). Start it with `teamup-client serve --config PATH --console` and open the loopback URL printed during startup. It closes with the Client. The URL fragment is a short-lived credential for this Client process and should be kept local.
 
 ## macOS desktop app
@@ -14,7 +16,7 @@ The optional browser listener belongs to the Client. It binds to an ephemeral po
 
 The Client publishes its own approved session descriptors and reads Server data through member routes. Each membership summary and transcript is authorized using the corresponding session. A room transcript is read through one explicitly selected session. The initial page contains the latest authorized messages. Older pages use the exclusive `before` cursor, and live catch-up uses the exclusive `after` cursor from the last displayed message. Both cursors use the published room history API and preserve the session's current access rules. The Team view uses one approved session to list team members.
 
-Agents handle room membership and board acknowledgment. DM summaries are tracked by [#34](https://github.com/Jianyu010/TeamUp/issues/34).
+Agents join rooms and acknowledge their boards. Owners can end a local session’s membership with **Leave** in the room panel. DM summaries are tracked by [#34](https://github.com/Jianyu010/TeamUp/issues/34).
 
 ### Room Board
 
@@ -36,9 +38,11 @@ The workspace reports `directory_available` when a complete directory read succe
 
 Chats keeps one joined, approved room session for the duration of the view. Entry prefers an acknowledged membership where available. If that session loses access, Chats discards its displayed pages before opening a replacement scope. Team tracks an approved registered session for its own directory reads. Tasks has its own **Acting as** selection, with approved joined sessions distinguished by identity. Changing it leaves the Chats and Team read contexts and the current transcript page intact.
 
-The room transcript contains the messages committed by the Server within the reader's current [authorized history](conversation-history.md), including approved reads of exchanges between other members. The console maintains ascending Server message IDs and uses Server timestamps for display. Room pages expose the Server's optional `expired_through_message_id` as a decimal string and `history_truncated` as a boolean. The expiration watermark reports a cursor gap. Authorized older rows can survive below it. Layered pages are revalidated through the same session when history may have changed. The console explains membership and expiration boundaries with the policy and metadata available for the read.
+The room transcript contains the messages committed by the Server within the reader's current [authorized history](conversation-history.md), including approved reads of exchanges between other members. The console maintains ascending Server message IDs and uses Server timestamps for display. Room pages expose the Server's optional `expired_through_message_id` as a decimal string and `history_truncated` as a boolean. The expiration watermark reports a cursor gap. Authorized older rows can survive below it. Refreshes revalidate loaded pages through the same session so access, retention and sender labels stay current. The console explains membership and expiration boundaries with the policy and metadata available for the read.
 
 A message's existing `mentioned` field gives the display name for its first Server-confirmed recipient or a short member identifier when directory resolution fails. Duplicate role labels are qualified by member identifier. A null value represents a broadcast. Messages with more than one confirmed recipient also include `mentioned_recipients` in Server target order. The renderer displays up to two recipient names and makes the remaining names accessible through the collapsed count. Message rows retain their Server `sender_member_id` and list structured `recipient_member_ids` for identity matching in room details.
+
+The Server marks historical messages from retired members. Chats shows `Retired member` with the sender's short ID and retains the full `sender_member_id` in the message data.
 
 ### Members and Presence
 

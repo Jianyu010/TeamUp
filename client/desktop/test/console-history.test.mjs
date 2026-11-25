@@ -39,6 +39,26 @@ test("older pages and polls preserve survivors under a stable expiration waterma
   assert.deepEqual(calls, [{after: id(0)}, {after: id(30)}, {after: id(61)}, {after: id(90)}]);
 });
 
+test("polling refreshes retired sender labels on all loaded pages", async () => {
+  const messages = Array.from({length: 60}, (_, index) => ({
+    id: String(index + 1),
+    sender: index === 48 ? "Backend" : "Reviewer",
+  }));
+  const board = {current: 1, acknowledged: 1};
+  const previous = {state: "ready", board, messages, older: "1"};
+  const current = messages.map((message) => message.id === "49"
+    ? {...message, sender: "Retired member (93e57f02)"}
+    : message);
+  const {page, reset} = await readTranscript(previous, null, async ({after}) => {
+    const messages = current.filter((message) => Number(message.id) > Number(after)).slice(0, 30);
+    return {state: "ready", board, messages, more_recent: messages.length === 30};
+  });
+
+  assert.equal(reset, false);
+  assert.equal(page.older, "1");
+  assert.deepEqual(page.messages, current);
+});
+
 test("a denied intermediate probe discards the cached transcript", async () => {
   const previous = {
     state: "ready", board: {current: 1, acknowledged: 1},
@@ -68,4 +88,16 @@ test("a nonadvancing intermediate cursor rebases once", async () => {
   assert.deepEqual(calls, [{after: "7"}, {after: "8"}, {}]);
   assert.equal(result.reset, true);
   assert.deepEqual(result.page.messages, previous.messages);
+});
+
+test("a rejoin between transcript pages discards the previous membership's rows", async () => {
+  const board = {current: 1, acknowledged: 1, membership_id: "old"};
+  const previous = {state: "ready", board, messages: [{id: "5"}]};
+  const current = {
+    state: "ready", board: {...board, membership_id: "new"}, messages: [{id: "7"}],
+  };
+  const {page, reset} = await readTranscript(previous, null, async ({after}) =>
+    after === "4" ? previous : current);
+  assert.equal(reset, true);
+  assert.deepEqual(page.messages, [{id: "7"}]);
 });

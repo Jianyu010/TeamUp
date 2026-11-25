@@ -1,5 +1,7 @@
 # TeamUp 账号登录 v1
 
+Agent self-retirement, owner-managed departure, and retired history are specified in [Session retirement and room departure](member-lifecycle.md).
+
 首版面向同一团队的可信试用机。开发者各有一个 TeamUp 账号，可绑定多个 Agent。应用账号与 SSH 系统账号独立。在共享 SSH 账号能取得 root 的测试环境里，所有服务器使用者都必须受信。账号、口令摘要、登录会话及成员停用的写入归 Collaboration。
 
 ## 账号和管理
@@ -15,7 +17,16 @@
 | `POST /v1/auth/login` | `{"username":"alice","password":"…","purpose":"console"}`。`purpose` 可选：省略（或为 `null`）保持既有行为，即登记用途会话；唯一允许的非空值是 `"console"`，其他取值返回 422 `invalid_request` | HTTP 200，`{"access_token":"…","expires_at":1780000000}`。到期为 Unix 秒，寿命 8 小时。新 token 按随机 32 字节生成，服务端持久化摘要。 |
 | `POST /v1/members` | 按现有契约提交绑定。Bearer 可使用有效的人类登录 token（登记用途会话） | 归属由有效登录会话的 `owner_id` 决定。其余请求、响应和幂等规则按 [原契约](client-server-v1.md)。 |
 
-人类登录 token 仅能登记 Agent。成员 token 仅能调用成员 API。两类 token 和旧登记密钥不得相互兼用。已签发的人类 token 摘要在到期或撤销后保留类型记录。旧 `TEAMUP_ENROLLMENT_KEYS` 在已显式配置的 v0 实例上继续可用，省略变量表示不发旧登记密钥。已有 SQLite 数据库自动升级，原 v0 成员身份和历史可读。本次试用使用新数据库和账号登录。
+登记用途的人类登录 token 可登记 Agent，也可更名或退役同一账号拥有的成员。成员 token 仅能调用成员 API。两类 token 和旧登记密钥不得相互兼用。已签发的人类 token 摘要在到期或撤销后保留类型记录。旧 `TEAMUP_ENROLLMENT_KEYS` 在已显式配置的 v0 实例上继续可用于登记，省略变量表示不发旧登记密钥。已有 SQLite 数据库自动升级，原 v0 成员身份和历史可读。本次试用使用新数据库和账号登录。
+
+### 成员档案管理（#47）
+
+| 方法与路径 | 输入 | 结果 |
+| --- | --- | --- |
+| `PATCH /v1/members/{member_id}` | `{"role_description":"…"}`，按登记角色规则校验 | HTTP 200，Member。更新角色并保留成员 ID、凭证和房间资格。重复设置同一角色返回同一档案。 |
+| `POST /v1/members/{member_id}/retire` | 无正文 | HTTP 200，`{"member_id":"…","retired":true}`。仅首次提交修改成员状态，重复请求返回同一结果。 |
+
+两条路由都要求有效的登记用途账号 token。成员 token、控制台 token、旧登记密钥、失效或已撤销的账号 token 返回 401 `unauthorized`。目标不存在或属于另一个账号时返回 404 `not_found`。更名已退役的成员返回 409 `member_retired`。Collaboration 在写入事务中校验账号与归属。退役和离开房间后的授权、历史及重试见 [Client–Server v1](client-server-v1.md#成员退役与离开房间47)。
 
 ### 登录 purpose（控制台会话，随 #5 stage 2 落地）
 

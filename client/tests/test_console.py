@@ -312,6 +312,28 @@ def test_room_projects_all_structured_recipients_in_server_order():
     asyncio.run(scenario())
 
 
+def test_room_labels_messages_from_retired_senders():
+    async def scenario():
+        upstream = Upstream()
+
+        async def request(method, path, token, *, query=None):
+            if path == "/members":
+                return {"members": []}
+            response = await upstream(method, path, token, query=query)
+            if path.endswith("/messages"):
+                response["messages"][0].update(
+                    sender_member_id=REMOTE, sender_retired=True
+                )
+            return response
+
+        result = await ConsoleReader(sessions, request).room("primary", ROOM)
+        message = result["messages"][0]
+        assert message["sender"] == f"Retired member ({REMOTE[:8]})"
+        assert message["sender_member_id"] == REMOTE
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("truncated", [True, False])
 def test_empty_room_page_keeps_server_retention_boundary(truncated):
     async def scenario():

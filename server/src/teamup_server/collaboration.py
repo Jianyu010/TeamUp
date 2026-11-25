@@ -224,6 +224,32 @@ _SCHEMA = (
     "INSERT INTO id_counters (counter, last_id) VALUES ('message_id', 0), ('event_id', 0)",
 )
 
+_LIFECYCLE_SCHEMA = (
+    "ALTER TABLE room_members ADD COLUMN membership_id TEXT NOT NULL DEFAULT ''",
+    "UPDATE room_members SET membership_id = lower(hex(randomblob(16)))",
+    """
+    CREATE TABLE retired_room_access (
+        member_id TEXT NOT NULL REFERENCES members(member_id),
+        room_id TEXT NOT NULL REFERENCES rooms(room_id),
+        after_message_id INTEGER NOT NULL,
+        through_message_id INTEGER NOT NULL,
+        PRIMARY KEY (member_id, room_id)
+    ) WITHOUT ROWID
+    """,
+    """
+    CREATE TABLE room_departures (
+        event_id INTEGER PRIMARY KEY,
+        member_id TEXT NOT NULL REFERENCES members(member_id),
+        room_id TEXT NOT NULL REFERENCES rooms(room_id),
+        acknowledged INTEGER NOT NULL DEFAULT 0 CHECK (acknowledged IN (0, 1))
+    )
+    """,
+    """
+    CREATE INDEX pending_departures ON room_departures (member_id, event_id)
+    WHERE acknowledged = 0
+    """,
+)
+
 _ACCOUNT_SCHEMA = (
     """
     CREATE TABLE accounts (
@@ -770,17 +796,20 @@ def _enrollment_digests(keys: Mapping[str, str]) -> dict[str, bytes]:
     return digests
 
 
-def _member(connection: sqlite3.Connection, token: str) -> sqlite3.Row:
+def _member(
+    connection: sqlite3.Connection, token: str, *, include_retired: bool = False
+) -> sqlite3.Row:
     digest = _credential_digest(token)
+    fields = f"{_MEMBER}, retired" if include_retired else _MEMBER
     record = connection.execute(
         f"""
-        SELECT {_MEMBER} FROM members WHERE token_digest = ?
+        SELECT {fields} FROM members WHERE token_digest = ? AND (retired = 0 OR ?)
             AND NOT EXISTS (
                 SELECT 1 FROM accounts
                 WHERE accounts.owner_id = members.owner_id AND disabled = 1
             )
         """,
-        (digest,),
+        (digest, include_retired),
     ).fetchone()
     if record is None:
         raise CollaborationError("unauthorized")
@@ -794,7 +823,7 @@ def _room_member(
         """
         SELECT r.name, r.version, r.rules, r.protocol, r.history_policy,
             r.creator_member_id, r.expired_through_message_id, rm.read_board_version,
-            rm.acked_board_version, rm.joined_after
+            rm.acked_board_version, rm.joined_after, rm.membership_id
         FROM room_members AS rm JOIN rooms AS r ON r.room_id = rm.room_id
         WHERE rm.room_id = ? AND rm.member_id = ?
         """,
@@ -826,7 +855,7 @@ def _available_member(
     return connection.execute(
         """
         SELECT member_id FROM members
-        WHERE member_id = ? AND NOT EXISTS (
+        WHERE member_id = ? AND retired = 0 AND NOT EXISTS (
             SELECT 1 FROM accounts
             WHERE accounts.owner_id = members.owner_id AND disabled = 1
         )
@@ -882,12 +911,17 @@ def _room_message(row: sqlite3.Row) -> dict:
     return message
 
 
+def _retired_sender(row: sqlite3.Row) -> dict:
+    return {"sender_retired": True} if row["sender_retired"] else {}
+
+
 def _room_transcript(
     connection: sqlite3.Connection,
     room_id: str,
     *,
     after: int = 0,
     before: int | None = None,
+    through: int | None = None,
     limit: int = 50,
     newest_first: bool = False,
 ) -> list[sqlite3.Row]:
@@ -903,10 +937,14 @@ def _room_transcript(
     if before is not None:
         bounds += " AND message_id < ?"
         bound_values.append(before)
+    if through is not None:
+        bounds += " AND message_id <= ?"
+        bound_values.append(through)
     rows = connection.execute(
         f"""
-        SELECT {_MESSAGE}, {_ADDITIONAL_MENTIONS} FROM messages AS m
-        WHERE room_id = ? AND {bounds}
+        SELECT {_MESSAGE}, {_ADDITIONAL_MENTIONS}, sender.retired AS sender_retired
+        FROM messages AS m JOIN members AS sender ON sender.member_id = m.sender_member_id
+        WHERE m.room_id = ? AND {bounds}
         ORDER BY message_id {"DESC" if newest_first else ""}
         LIMIT ?
         """,
@@ -1259,6 +1297,8 @@ class Collaboration:
             connection.execute("PRAGMA journal_mode = WAL")
         with self._transaction(write=True) as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
+            if not 0 <= version <= 9:
+                raise ValueError("Unsupported TeamUp database schema version")
             if version == 0:
                 for statement in _SCHEMA:
                     connection.execute(statement)
@@ -1312,9 +1352,17 @@ class Collaboration:
                     )
                     """
                 )
-                connection.execute("PRAGMA user_version = 7")
-            elif version != 7:
-                raise ValueError("Unsupported TeamUp database schema version")
+            if version < 8:
+                connection.execute(
+                    """
+                    ALTER TABLE members ADD COLUMN retired INTEGER NOT NULL DEFAULT 0
+                        CHECK (retired IN (0, 1))
+                    """
+                )
+            if version < 9:
+                for statement in _LIFECYCLE_SCHEMA:
+                    connection.execute(statement)
+                connection.execute("PRAGMA user_version = 9")
             _migrate_room_tasks(connection)
             if "creator_member_id" not in {
                 row["name"] for row in connection.execute("PRAGMA table_info(rooms)")
@@ -1586,7 +1634,9 @@ class Collaboration:
                     owner = candidate
         return owner
 
-    def _enrollment_owner(self, connection: sqlite3.Connection, token: str) -> str:
+    def _enrollment_owner(
+        self, connection: sqlite3.Connection, token: str, *, allow_legacy: bool = True
+    ) -> str:
         digest = _credential_digest(token)
         session = connection.execute(
             """
@@ -1604,6 +1654,8 @@ class Collaboration:
             ):
                 raise CollaborationError("unauthorized")
             return session["owner_id"]
+        if not allow_legacy:
+            raise CollaborationError("unauthorized")
         owner = self._legacy_owner(digest)
         if (
             owner is None
@@ -1640,12 +1692,14 @@ class Collaboration:
                 raise CollaborationError("invalid_request")
             existing = connection.execute(
                 f"""
-                SELECT {_MEMBER}, token_digest FROM members
+                SELECT {_MEMBER}, token_digest, retired FROM members
                 WHERE owner_id = ? AND harness_instance_id = ? AND session_key = ?
                 """,
                 (owner, harness_instance_id, session_key),
             ).fetchone()
             if existing is not None:
+                if existing["retired"]:
+                    raise CollaborationError("member_retired")
                 if not compare_digest(existing["token_digest"], digest):
                     raise CollaborationError("conflict")
                 return {key: existing[key] for key in ("member_id", "role_description")}
@@ -1671,6 +1725,174 @@ class Collaboration:
                 ),
             )
         return {"member_id": member_id, "role_description": role_description}
+
+    def _owned_member(
+        self, connection: sqlite3.Connection, token: str, member_id: str
+    ) -> sqlite3.Row:
+        owner = self._enrollment_owner(connection, token, allow_legacy=False)
+        member = connection.execute(
+            "SELECT retired FROM members WHERE owner_id = ? AND member_id = ?",
+            (owner, member_id),
+        ).fetchone()
+        if member is None:
+            raise CollaborationError("not_found")
+        return member
+
+    def rename_member(self, token: str, member_id: str, role_description: str) -> dict:
+        with self._transaction(write=True) as connection:
+            if self._owned_member(connection, token, member_id)["retired"]:
+                raise CollaborationError("member_retired")
+            connection.execute(
+                "UPDATE members SET role_description = ? WHERE member_id = ?",
+                (role_description, member_id),
+            )
+        return {"member_id": member_id, "role_description": role_description}
+
+    @staticmethod
+    def _retire(connection: sqlite3.Connection, member_id: str) -> None:
+        connection.execute(
+            """
+            INSERT INTO retired_room_access (
+                member_id, room_id, after_message_id, through_message_id
+            )
+            SELECT rm.member_id, rm.room_id,
+                CASE WHEN r.history_policy = 'retained' THEN 0 ELSE rm.joined_after END,
+                (SELECT last_id FROM id_counters WHERE counter = 'message_id')
+            FROM room_members AS rm JOIN rooms AS r ON r.room_id = rm.room_id
+            WHERE rm.member_id = ? AND rm.acked_board_version = r.version
+            """,
+            (member_id,),
+        )
+        connection.execute(
+            "UPDATE members SET retired = 1 WHERE member_id = ?", (member_id,)
+        )
+        connection.execute("DELETE FROM room_members WHERE member_id = ?", (member_id,))
+        connection.execute(
+            "DELETE FROM inbox_events WHERE member_id = ? AND acknowledged = 0",
+            (member_id,),
+        )
+        connection.execute(
+            "DELETE FROM room_departures WHERE member_id = ? AND acknowledged = 0",
+            (member_id,),
+        )
+        connection.execute(
+            "DELETE FROM task_reminders WHERE member_id = ? AND claimed_at IS NULL",
+            (member_id,),
+        )
+
+    def retire_member(self, token: str, member_id: str) -> dict:
+        with self._transaction(write=True) as connection:
+            if not self._owned_member(connection, token, member_id)["retired"]:
+                self._retire(connection, member_id)
+        self._notify((member_id,))
+        return {"member_id": member_id, "retired": True}
+
+    @staticmethod
+    def _retirement_receipt(member: sqlite3.Row) -> dict:
+        return {
+            "member_id": member["member_id"],
+            "role_description": member["role_description"],
+            "retired": True,
+        }
+
+    def retire_self(self, token: str) -> dict:
+        with self._transaction(write=True) as connection:
+            member = _member(connection, token, include_retired=True)
+            if not member["retired"]:
+                self._retire(connection, member["member_id"])
+        self._notify((member["member_id"],))
+        return self._retirement_receipt(member)
+
+    def member_retirement(self, token: str) -> dict:
+        with self._transaction() as connection:
+            member = _member(connection, token, include_retired=True)
+            if not member["retired"]:
+                raise CollaborationError("not_found")
+        return self._retirement_receipt(member)
+
+    def _authorize_archive(
+        self, connection: sqlite3.Connection, token: str, member_id: str
+    ) -> None:
+        if not self._owned_member(connection, token, member_id)["retired"]:
+            raise CollaborationError("not_found")
+
+    def list_retired_conversations(self, token: str, member_id: str) -> dict:
+        with self._transaction() as connection:
+            self._authorize_archive(connection, token, member_id)
+            conversations = connection.execute(
+                """
+                SELECT 'room' AS kind, r.room_id AS conversation_id, r.name AS label
+                FROM retired_room_access AS a JOIN rooms AS r ON r.room_id = a.room_id
+                WHERE a.member_id = ?
+                UNION ALL
+                SELECT 'dm', d.dm_id, peer.role_description
+                FROM dms AS d JOIN members AS peer ON peer.member_id =
+                    CASE WHEN d.member_low = ? THEN d.member_high ELSE d.member_low END
+                WHERE ? IN (d.member_low, d.member_high)
+                ORDER BY kind DESC, label, conversation_id
+                """,
+                (member_id, member_id, member_id),
+            )
+            return {"conversations": [dict(row) for row in conversations]}
+
+    def retired_history(
+        self,
+        token: str,
+        member_id: str,
+        kind: str,
+        conversation_id: str,
+        before: int | None,
+        limit: int,
+    ) -> dict:
+        upper = None if before is None or before > _SQLITE_MAX_ID else before
+        with self._transaction() as connection:
+            self._authorize_archive(connection, token, member_id)
+            if kind == "room":
+                bounds = connection.execute(
+                    """
+                    SELECT after_message_id, through_message_id
+                    FROM retired_room_access WHERE member_id = ? AND room_id = ?
+                    """,
+                    (member_id, conversation_id),
+                ).fetchone()
+                if bounds is None:
+                    raise CollaborationError("not_found")
+                rows = _room_transcript(
+                    connection,
+                    conversation_id,
+                    after=bounds["after_message_id"],
+                    through=bounds["through_message_id"],
+                    before=upper,
+                    limit=limit,
+                    newest_first=True,
+                )
+                return {
+                    "messages": [
+                        {**_room_message(row), **_retired_sender(row)} for row in rows
+                    ]
+                }
+            if kind != "dm":
+                raise CollaborationError("invalid_request")
+            _dm_participant(connection, conversation_id, member_id)
+            rows = connection.execute(
+                f"""
+                SELECT {_DM_MESSAGE}, sender.retired AS sender_retired
+                FROM messages AS m JOIN members AS sender
+                    ON sender.member_id = m.sender_member_id
+                WHERE m.dm_id = ? AND (m.message_id < ? OR ? IS NULL)
+                ORDER BY m.message_id DESC LIMIT ?
+                """,
+                (conversation_id, upper, upper, limit),
+            ).fetchall()
+            return {
+                "messages": [
+                    {
+                        **{field: row[field] for field in _DM_EVENT_MESSAGE},
+                        **_retired_sender(row),
+                    }
+                    for row in reversed(rows)
+                ]
+            }
 
     def get_member(self, token: str) -> dict:
         with self._transaction() as connection:
@@ -1705,7 +1927,7 @@ class Collaboration:
             rows = connection.execute(
                 f"""
                 SELECT {_MEMBER} FROM members
-                WHERE instr(teamup_casefold(role_description), ?) > 0
+                WHERE retired = 0 AND instr(teamup_casefold(role_description), ?) > 0
                 ORDER BY member_id LIMIT 100
                 """,
                 (query.casefold(),),
@@ -1845,7 +2067,8 @@ class Collaboration:
             parameters = (room_id,) if cursor is None else (room_id, cursor)
             rows = connection.execute(
                 f"""
-                SELECT {_MESSAGE}, mem.role_description AS sender_role_description
+                SELECT {_MESSAGE}, mem.role_description AS sender_role_description,
+                    mem.retired AS sender_retired
                 FROM messages AS m
                 JOIN members AS mem ON mem.member_id = m.sender_member_id
                 WHERE m.room_id = ? {boundary}
@@ -1873,6 +2096,7 @@ class Collaboration:
                         "text": row["text"],
                         "mention_member_id": row["mention_member_id"],
                         "created_at": _rfc3339_to_unix(row["created_at"]),
+                        **_retired_sender(row),
                     }
                     for row in page
                 ],
@@ -1960,8 +2184,11 @@ class Collaboration:
                 ),
             )
             connection.execute(
-                "INSERT INTO room_members (room_id, member_id, joined_after) VALUES (?, ?, 0)",
-                (room_id, member_id),
+                """
+                INSERT INTO room_members (room_id, member_id, joined_after, membership_id)
+                VALUES (?, ?, 0, ?)
+                """,
+                (room_id, member_id, uuid4().hex),
             )
             _record_activity(
                 connection, room_id, "member_joined", member_id, _rfc3339_utc_now()
@@ -1978,11 +2205,11 @@ class Collaboration:
                 raise CollaborationError("not_found")
             joined = connection.execute(
                 """
-                INSERT INTO room_members (room_id, member_id, joined_after)
-                VALUES (?, ?, COALESCE((SELECT MAX(message_id) FROM messages WHERE room_id = ?), 0))
+                INSERT INTO room_members (room_id, member_id, joined_after, membership_id)
+                VALUES (?, ?, COALESCE((SELECT MAX(message_id) FROM messages WHERE room_id = ?), 0), ?)
                 ON CONFLICT (room_id, member_id) DO NOTHING
                 """,
-                (room_id, member_id, room_id),
+                (room_id, member_id, room_id, uuid4().hex),
             )
             if joined.rowcount:
                 _record_activity(
@@ -1990,13 +2217,69 @@ class Collaboration:
                 )
         return dict(room)
 
-    def list_rooms(self, token: str) -> list[dict]:
+    def leave_room(
+        self,
+        token: str,
+        room_id: str,
+        *,
+        notify: bool = False,
+        membership_id: str | None = None,
+    ) -> dict:
+        event_id = None
+        with self._transaction(write=True) as connection:
+            member_id = _member(connection, token)["member_id"]
+            if membership_id is not None:
+                existing = connection.execute(
+                    "SELECT membership_id FROM room_members WHERE room_id = ? AND member_id = ?",
+                    (room_id, member_id),
+                ).fetchone()
+                if existing is not None and existing["membership_id"] != membership_id:
+                    raise CollaborationError("membership_changed")
+            removed = connection.execute(
+                "DELETE FROM room_members WHERE room_id = ? AND member_id = ?",
+                (room_id, member_id),
+            )
+            if removed.rowcount:
+                connection.execute(
+                    """
+                    DELETE FROM inbox_events WHERE member_id = ? AND acknowledged = 0
+                        AND EXISTS (
+                            SELECT 1 FROM messages
+                            WHERE message_id = inbox_events.message_id AND room_id = ?
+                        )
+                    """,
+                    (member_id, room_id),
+                )
+                connection.execute(
+                    """
+                    DELETE FROM task_reminders WHERE member_id = ? AND claimed_at IS NULL
+                        AND task_id IN (SELECT task_id FROM tasks WHERE room_id = ?)
+                    """,
+                    (member_id, room_id),
+                )
+                if notify:
+                    event_id = _next_id(connection, "event_id")
+                    connection.execute(
+                        """
+                        INSERT INTO room_departures (event_id, member_id, room_id)
+                        VALUES (?, ?, ?)
+                        """,
+                        (event_id, member_id, room_id),
+                    )
+        if event_id is not None:
+            self._notify((member_id,))
+        return (
+            {"room_id": room_id, "departure_event_id": event_id}
+            if notify else {"room_id": room_id}
+        )
+
+    def list_rooms(self, token: str, *, include_membership: bool = False) -> list[dict]:
         with self._transaction() as connection:
             member_id = _member(connection, token)["member_id"]
             rows = connection.execute(
                 """
                 SELECT r.room_id, r.name, r.version AS current_board_version,
-                    rm.acked_board_version, (
+                    rm.acked_board_version, rm.membership_id, (
                         SELECT MAX(m.message_id) FROM messages AS m
                         WHERE m.room_id = r.room_id
                     ) AS latest_message_id
@@ -2006,7 +2289,11 @@ class Collaboration:
                 """,
                 (member_id,),
             )
-            return [dict(record) for record in rows]
+            rooms = [dict(record) for record in rows]
+            if not include_membership:
+                for room in rooms:
+                    room.pop("membership_id")
+            return rooms
 
     def room_directory(self, token: str, after: str | None, limit: int) -> dict:
         with self._transaction() as connection:
@@ -2420,10 +2707,16 @@ class Collaboration:
         after: int,
         limit: int,
         before: int | None = None,
+        *,
+        membership_id: str | None = None,
+        delivery: bool = False,
     ) -> dict:
         with self._transaction() as connection:
             membership = _authorized_membership(connection, token, room_id)
-            cursor = min(max(after, _transcript_floor(membership)), _SQLITE_MAX_ID)
+            if membership_id is not None and membership["membership_id"] != membership_id:
+                raise CollaborationError("membership_changed")
+            floor = membership["joined_after"] if delivery else _transcript_floor(membership)
+            cursor = min(max(after, floor), _SQLITE_MAX_ID)
             upper = None if before is None or before > _SQLITE_MAX_ID else before
             rows = _room_transcript(
                 connection,
@@ -2433,12 +2726,23 @@ class Collaboration:
                 limit=limit,
                 newest_first=before is not None,
             )
-            return {
-                "messages": [_room_message(record) for record in rows],
+            result = {
+                "messages": [
+                    {**_room_message(record), **_retired_sender(record)}
+                    for record in rows
+                ],
                 **_expiry_metadata(
                     membership["expired_through_message_id"], cursor, upper
                 ),
             }
+            if delivery:
+                result["delivery_board"] = {
+                    "room_id": room_id,
+                    "version": membership["version"],
+                    "rules": membership["rules"],
+                    "protocol": membership["protocol"],
+                }
+            return result
 
     def search(
         self, token: str, room_id: str, query: str, after: int, limit: int
@@ -3017,7 +3321,18 @@ class Collaboration:
                         "message": message,
                     }
                 )
-            return events
+            if "room_left" in kind_filter:
+                for departure in connection.execute(
+                    """
+                    SELECT event_id, room_id FROM room_departures
+                    WHERE member_id = ? AND event_id > ? AND acknowledged = 0
+                    ORDER BY event_id LIMIT ?
+                    """,
+                    (member_id, min(after, _SQLITE_MAX_ID), limit),
+                ):
+                    events.append({"kind": "room_left", **dict(departure)})
+                events.sort(key=lambda event: event["event_id"])
+            return events[:limit]
 
     def acknowledge_event(self, token: str, event_id: int) -> None:
         with self._transaction(write=True) as connection:
@@ -3034,7 +3349,14 @@ class Collaboration:
                 (event_id, member_id),
             ).fetchone()
             if event is None:
-                raise CollaborationError("not_found")
+                departure = connection.execute(
+                    "UPDATE room_departures SET acknowledged = 1 "
+                    "WHERE event_id = ? AND member_id = ?",
+                    (event_id, member_id),
+                )
+                if not departure.rowcount:
+                    raise CollaborationError("not_found")
+                return
             if event["dm_id"] is None:
                 room = _room_member(connection, event["room_id"], member_id)
                 _require_current_board(room)

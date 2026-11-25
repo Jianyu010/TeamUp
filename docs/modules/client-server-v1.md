@@ -1,5 +1,7 @@
 # Client–Server v1
 
+Agent self-retirement, owner-managed departure, and retired history are specified in [Session retirement and room departure](member-lifecycle.md).
+
 本契约用于 TeamUp 最小闭环。提供方为 Server Gateway，业务状态归 Collaboration，消费方为 Client。本文锁定首轮登记、公共房间、公告确认、历史、定向通知及补收，并增量提供成员本人房间列表。私聊、邀请房间、公告发布、停用、健康和 harness 唤醒仍按 [MVP 设计](../specs/mvp.md) 演进。
 
 私聊（DM）的加法契约另见 [Direct Messages](direct-messages.md)：新增 `/v1/dms` 路由、收件箱 `kinds` 查询参数与 `kind: "dm"` 事件，房间语义不变。
@@ -12,7 +14,7 @@
 
 JSON API 前缀为 `/v1`。请求与响应是 UTF-8 JSON。内网使用 HTTPS。开发环境允许回环地址 HTTP。客户端校验 TLS 证书。
 
-管理员为每位开发者分配登记密钥，Server 将其映射到稳定的 `owner_id`。登记后，其他请求一律使用 `Authorization: Bearer <member_token>`。登记密钥和成员 token 都是各自独立的 32 随机字节经无填充 base64url 编码的 43 字符串。Client 为每个本机绑定生成并保留独立成员 token。Server 只保存成员 token 的摘要。Server 根据凭证决定当前成员，客户端字段不能替换发起方身份。
+管理员为每位开发者分配登记密钥，Server 将其映射到稳定的 `owner_id`。登记后，成员 API 使用 `Authorization: Bearer <member_token>`。账号级操作使用 [账号登录 v1](account-login-v1.md) 声明的凭证。登记密钥和成员 token 都是各自独立的 32 随机字节经无填充 base64url 编码的 43 字符串。Client 为每个本机绑定生成并保留独立成员 token。Server 只保存成员 token 的摘要。Server 根据凭证决定当前成员，客户端字段不能替换发起方身份。
 
 Server 启动读取 `TEAMUP_ENROLLMENT_KEYS` JSON 对象，键为 owner ID，值为登记密钥。支持命令 `teamup-server --db PATH [--host 127.0.0.1] [--port 8765] [--tls-cert PATH --tls-key PATH] [--room-retention-hours HOURS] [--dm-retention-hours HOURS]`。声明非回环监听地址时需要 TLS。反向代理在同主机终止 TLS 时可连回环。`--room-retention-hours` 与 `--dm-retention-hours` 都必须是 1–876000（含）之间的整数小时，各自独立校验并分别作用于房间与私聊；省略的配置不做对应的自动清理，两者都省略时不启动任何清理调度。清理运行节奏见 [会话历史、搜索与保留](conversation-history.md) 与 [Direct Messages](direct-messages.md)。
 
@@ -42,12 +44,13 @@ Client 使用已配置的 Server 地址和 TLS 设置读取版本。此操作只
 
 | 方法和路径 | 请求 | 成功结果 |
 | --- | --- | --- |
-| `POST /v1/members` | Bearer 登记密钥。JSON 含 `harness_instance_id`、`session_key`、`role_description`、`member_token` | Member。重复绑定且 token 相同返回原档案。不同 token 重复绑定，或 token 已绑定其他会话时冲突 |
+| `POST /v1/members` | Bearer 登记用途账号 token 或已配置的旧登记密钥。JSON 含 `harness_instance_id`、`session_key`、`role_description`、`member_token` | Member。未退役的重复绑定在 token 相同时返回该成员当前档案。不同 token 重复绑定，或 token 已绑定其他会话时冲突 |
 | `GET /v1/members/me` | Bearer 成员 token | 当前 Member |
 | `GET /v1/members?q=...` | 可选角色子串，默认空串 | `{"members":[Member]}`，按 ID 稳定排序，最多 100 条，大小写不敏感 |
 | `POST /v1/rooms` | `{"name":"...","rules":"...","protocol":"...","history_policy":"retained 或 since_joining"}` | Room。创建者同时加入。公告初始版本为 1，两段文字可省略，各有默认值。`history_policy` 可省略，默认 `since_joining`，成功结果携带已保存的策略 |
 | `GET /v1/rooms` | 无正文 | `{"rooms":[Room 概要]}`，按 `room_id` 稳定排序。仅含当前成员在 `room_members` 有行的房间，创建者经其既有成员关系包含在内。`acked_board_version` 为该成员已确认的版本，确认前为 null；`current_board_version` 为房间当前版本；`latest_message_id` 为该房间最新消息 ID，空房间为 null。概要属于成员范围数据，不要求当前公告已确认，也不提供按任意房间 ID 的查询、可加入状态或房间发现 |
 | `POST /v1/rooms/{room_id}/join` | 无正文 | Room。当前只提供团队公开房间。重复加入保留原加入位置 |
+| `POST /v1/rooms/{room_id}/leave` | 无正文，Bearer 成员 token | `{"room_id":"…"}`。结束本人在该房间的成员关系。关系已不存在时返回同一结果 |
 | `GET /v1/rooms/{room_id}/board` | 无正文 | Board。加入后即可读取，Server 记录该成员取到的版本 |
 | `POST /v1/rooms/{room_id}/board/ack` | `{"version":1}` | `{"version":1}`。确认限房间成员，要求当前版本，且该成员已先读取该版本 |
 | `POST /v1/rooms/{room_id}/messages` | `client_message_id`、`text`、可选 `mention_member_id` 或 `mention_member_ids` | Message。定向 @ 及幂等规则见下文 |
@@ -56,6 +59,14 @@ Client 使用已配置的 Server 地址和 TLS 设置读取版本。此操作只
 | `GET /v1/inbox` | `after`、`limit` | `{"events":[Event]}`。仅返回本人未确认且当前可读事件 |
 | `POST /v1/inbox/{event_id}/ack` | 无正文 | `{"event_id":42}`。重复确认同一条已授权事件成功 |
 | `GET /v1/events` | Bearer 成员 token，`Accept: text/event-stream` | SSE。就绪和保活可用注释。变更通知为 `event: inbox_changed`，`data: {}` |
+
+## 成员退役与离开房间（#47）
+
+- [账号管理路由](account-login-v1.md#成员档案管理47) 供 Client 主人使用。退役永久保留成员 ID、稳定绑定和 token 摘要，防止再次登记时复用身份或凭证。同一账号重新提交已退役的绑定（含换新 token）得到 409 `member_retired`。不同绑定需使用独立 token。
+- Collaboration 在同一事务中标记退役、删除该成员的房间关系，并丢弃其未确认收件箱事件和未领取的任务提醒。退役后所有成员 API 拒绝该凭证（401 `unauthorized`），已连接的 SSE 在权限复核时关闭。退役成员不会出现在查找、房间名单或 Presence 中。退役和更名均保留房间消息、私聊历史及历史活动中的原 ID。授权的房间历史页面在该成员发送的 Message 上追加 `sender_retired: true`，活跃成员的消息保留既有形状。
+- 新消息若包含已退役成员，按无效房间目标返回 422 `invalid_mention`，整笔请求不写入消息或投递事件。此前已成功提交的完全相同重试仍返回原收据。新私聊和向已退役对端发送的规则见 [私聊契约](direct-messages.md)。
+- 离开房间只删除本人的该房间关系及其未确认房间收件箱事件，其他房间和私聊照常可用。已无关系时成功，包括未知房间 ID。成员可以重新加入，按房间策略建立新的历史起点，并重新读取和确认当前公告。任务入口按当前房间授权判断资格，已记录的参与和进度仍归原成员。
+- Schema v8 在 `members` 增加 `retired` 标记；v9 增加退役房间历史范围和离开房间通知，已有成员默认为未退役。按 Server、Client、MCP 的顺序升级。旧 Client 可继续使用已有路由，旧 Server 通过原错误响应报告缺少新路由。
 
 ## 已加入房间的成员和策略（#34 / #43 / #44）
 
@@ -120,6 +131,7 @@ Client 后台在每个获准且登记的成员绑定处观测自身连接。Gate
 1. 三名同房成员含本机、远端和待确认者，名单含三行且版本正确。房外、已移除、已停用的阅读者无法复读。单纯打开面板后，未曾读取公告的成员仍不能确认。
 2. 用可控时钟覆盖未知、首次心跳、44 秒、恰满 45 秒、重连、两个同时续期的 Client 以及一方退出、另一方继续续期；复核账号停用及最后一个共享房间被移除后的授权范围。对房间外队员、旧 Server、请求失败和过期缓存，两个面板都显示 Unknown 或更新后的已授权状态。
 3. 旧单目标记录可读可重试。至少三个目标和一名普通旁观者共读一条规范消息，每个目标恰有一条 mention，其余人各有一条普通事件。模拟并发同键、丢失回执、顺序改变和一个无效目标；检查消息、事件、历史、重启后记录和本机通知均满足上述事务规则。
+4. 成员生命周期使用 Python 3.12 执行 `uv run --no-sync pytest -q server/tests/test_member_lifecycle.py tests/system/test_shared_binding_retirement.py`。真实本地 Server、Client 与 MCP 覆盖账号授权、两个进程共用绑定、通知待领时退役、重试与重启、离开和复入两个历史策略的房间，以及 v7 存量库升级。
 
 ## 事务与错误
 

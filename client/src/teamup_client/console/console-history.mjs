@@ -4,7 +4,8 @@ function compareIds(left, right) {
 }
 
 export function sameBoard(left, right) {
-  return left?.current === right?.current && left?.acknowledged === right?.acknowledged;
+  return left?.current === right?.current && left?.acknowledged === right?.acknowledged
+    && left?.membership_id === right?.membership_id;
 }
 
 export async function readTranscript(previous, before, fetchPage) {
@@ -19,9 +20,8 @@ export async function readTranscript(previous, before, fetchPage) {
   const cached = previous?.messages;
   if (previous?.state !== "ready" || !cached.length) return latest();
 
-  // A new membership can narrow history between polls with no change in board
-  // version. A fresh prefix also preserves legacy rows that survive below an
-  // expiry watermark, which records the greatest deleted ID, not every deletion.
+  // Refresh loaded pages: a rejoin can narrow access, retention can remove
+  // individual messages, and senders can be renamed or retired between polls.
   const newest = cached.at(-1).id;
   const all = new Map();
   let after = String(BigInt(cached[0].id) - 1n);
@@ -37,12 +37,6 @@ export async function readTranscript(previous, before, fetchPage) {
     const last = probe.messages.at(-1)?.id;
     if (!last || compareIds(last, after) <= 0) return latest();
     if (compareIds(last, newest) >= 0) break;
-    if (!watermark || compareIds(last, watermark) >= 0) {
-      for (const item of cached) {
-        if (compareIds(item.id, last) > 0) all.set(item.id, item);
-      }
-      break;
-    }
     after = last;
     probe = await fetchPage({after});
   }

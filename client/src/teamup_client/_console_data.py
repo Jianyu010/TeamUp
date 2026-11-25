@@ -32,12 +32,15 @@ def _member_labels(members: list[dict]) -> dict[str, str]:
 
 def _message(item: dict, labels: dict[str, str]) -> dict:
     sender = item["sender_member_id"]
+    sender_label = labels.get(sender, sender[:8])
+    if item.get("sender_retired") is True:
+        sender_label = f"Retired member ({sender[:8]})"
     first_target = item["mention_member_id"]
     targets = item.get("mention_member_ids", [first_target] if first_target else [])
     mentioned = [labels.get(target, target[:8]) for target in targets]
     result = {
         "id": str(item["message_id"]),
-        "sender": labels.get(sender, sender[:8]),
+        "sender": sender_label,
         "sender_member_id": sender,
         "text": item["text"],
         "created_at": item.get("created_at"),
@@ -100,12 +103,34 @@ class Request(Protocol):
     ) -> Awaitable[dict]: ...
 
 
+class SessionLifecycle(Protocol):
+    def console_retired_sessions(self) -> list[dict]: ...
+
+    async def console_session_action(
+        self, session_id: str, room_id: str | None, membership_id: str | None
+    ) -> dict: ...
+
+    async def console_retired_history(
+        self,
+        session_id: str,
+        *,
+        after: int | None = None,
+        kind: str | None = None,
+        conversation: str | None = None,
+        before: int | None = None,
+    ) -> dict: ...
+
+
 class ConsoleReader:
     def __init__(
-        self, sessions: Callable[[], tuple[ConsoleSession, ...]], request: Request
+        self,
+        sessions: Callable[[], tuple[ConsoleSession, ...]],
+        request: Request,
+        lifecycle: SessionLifecycle | None = None,
     ):
         self._sessions = sessions
         self._request = request
+        self._lifecycle = lifecycle
         self._reads = asyncio.Semaphore(8)
         try:
             installed_version = version("teamup-client")
@@ -173,7 +198,7 @@ class ConsoleReader:
             member = await self._read(session, "/members/me")
             description["label"] = member["role_description"]
             description["member_id"] = member["member_id"]
-            listing = await self._read(session, "/rooms")
+            listing = await self._read(session, "/rooms", {"include_membership": "true"})
         except ClientError as exc:
             description["state"] = exc.code
             return session, description, []
@@ -263,6 +288,7 @@ class ConsoleReader:
                         "acknowledged": room["acked_board_version"],
                         "current": room["current_board_version"],
                         "active_task": None,
+                        **({"membership_id": room["membership_id"]} if room.get("membership_id") else {}),
                     }
                 )
         if (
@@ -338,11 +364,43 @@ class ConsoleReader:
         for room in ordered:
             message = room["latest_message_id"]
             room["latest_message_id"] = str(message) if message is not None else None
-        return {
+        result = {
             "sessions": sessions,
             "rooms": ordered,
             "directory_available": directory_available,
         }
+        if self._lifecycle is not None:
+            result["retired_sessions"] = self._lifecycle.console_retired_sessions()
+        return result
+
+    async def session_action(
+        self, session_id: str, room_id: str | None, membership_id: str | None
+    ) -> dict:
+        if self._lifecycle is None:
+            return {"state": "not_found"}
+        try:
+            return await self._lifecycle.console_session_action(session_id, room_id, membership_id)
+        except ClientError as exc:
+            return {"state": exc.code}
+
+    async def retired_history(
+        self,
+        session_id: str,
+        *,
+        after: int | None = None,
+        kind: str | None = None,
+        conversation: str | None = None,
+        before: int | None = None,
+    ) -> dict:
+        if self._lifecycle is None:
+            return {"state": "not_found"}
+        async with self._reads:
+            try:
+                return await self._lifecycle.console_retired_history(
+                    session_id, after=after, kind=kind, conversation=conversation, before=before
+                )
+            except ClientError as exc:
+                return {"state": exc.code}
 
     async def _participating(
         self, session: ConsoleSession, member_id: str, room_id: str
@@ -493,7 +551,8 @@ class ConsoleReader:
         if session is None:
             return {"state": "not_found"}
         try:
-            rooms = (await self._read(session, "/rooms"))["rooms"]
+            listing = await self._read(session, "/rooms", {"include_membership": "true"})
+            rooms = listing["rooms"]
         except ClientError as exc:
             return {"state": exc.code}
         selected = next((room for room in rooms if room["room_id"] == room_id), None)
@@ -515,6 +574,9 @@ class ConsoleReader:
             if after is not None
             else {"before": before, "limit": PAGE}
         )
+        if membership_id := selected.get("membership_id"):
+            board["membership_id"] = membership_id
+            query["membership_id"] = membership_id
         try:
             history = await self._read(session, f"/rooms/{room_id}/messages", query)
         except ClientError as exc:

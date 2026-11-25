@@ -37,6 +37,8 @@ _ERRORS = {
     "board_read_required": (409, "Read the current board version first."),
     "board_ack_required": (409, "Confirm the current board version first."),
     "conflict": (409, "The request conflicts with the existing state."),
+    "member_retired": (409, "This member's binding has been retired."),
+    "membership_changed": (409, "The current room membership has changed."),
     "invalid_mention": (422, "Mention another member of this room."),
     "invalid_peer": (422, "The DM peer must be another available member of this team."),
     "rate_limited": (429, "Too many login attempts. Try again later."),
@@ -86,6 +88,7 @@ _MemberToken = Annotated[
 _Identifier = Annotated[str, AfterValidator(_uuid)]
 _After = Annotated[int, Query(ge=0)]
 _Before = Annotated[int, Query(ge=1)]
+_MembershipID = Annotated[str, Query(pattern=r"^[0-9a-f]{32}$")]
 _Limit = Annotated[int, Query(ge=1, le=100)]
 
 
@@ -119,6 +122,10 @@ class _Enrollment(_Body):
     session_key: _ShortText
     role_description: _Name
     member_token: _MemberToken
+
+
+class _MemberRole(_Body):
+    role_description: _Name
 
 
 class _Room(_Body):
@@ -184,7 +191,7 @@ class _DMMessage(_Body):
     text: _LongText
 
 
-_EVENT_KINDS = frozenset(("message", "mention", "dm"))
+_EVENT_KINDS = frozenset(("message", "mention", "dm", "room_left"))
 
 
 def _event_kinds(value: str | None) -> tuple[str, ...]:
@@ -400,6 +407,49 @@ class Gateway:
         def search_members(token: _Bearer, q: str = "") -> dict:
             return {"members": collaboration.search_members(token, q)}
 
+        @app.get("/v1/members/me/retirement")
+        def member_retirement(token: _Bearer, response: Response) -> dict:
+            _no_store(response)
+            return collaboration.member_retirement(token)
+
+        @app.post("/v1/members/me/retire", dependencies=[Depends(_reject_body)])
+        def retire_self(token: _Bearer) -> dict:
+            return collaboration.retire_self(token)
+
+        @app.get("/v1/members/{member_id}/archive")
+        def list_retired_conversations(
+            token: _Bearer, member_id: _Identifier, response: Response
+        ) -> dict:
+            _no_store(response)
+            return collaboration.list_retired_conversations(token, member_id)
+
+        @app.get("/v1/members/{member_id}/archive/{kind}/{conversation_id}/messages")
+        def retired_history(
+            token: _Bearer,
+            member_id: _Identifier,
+            kind: Literal["room", "dm"],
+            conversation_id: _Identifier,
+            response: Response,
+            before: _Before | None = None,
+            limit: _Limit = 50,
+        ) -> dict:
+            _no_store(response)
+            return collaboration.retired_history(
+                token, member_id, kind, conversation_id, before, limit
+            )
+
+        @app.patch("/v1/members/{member_id}", dependencies=[Depends(_require_utf8)])
+        def rename_member(
+            token: _Bearer, member_id: _Identifier, body: _MemberRole
+        ) -> dict:
+            return collaboration.rename_member(token, member_id, body.role_description)
+
+        @app.post(
+            "/v1/members/{member_id}/retire", dependencies=[Depends(_reject_body)]
+        )
+        def retire_member(token: _Bearer, member_id: _Identifier) -> dict:
+            return collaboration.retire_member(token, member_id)
+
         @app.post("/v1/presence/heartbeat", dependencies=[Depends(_reject_body)])
         def heartbeat(token: _Bearer) -> dict:
             return presence.heartbeat(token)
@@ -416,8 +466,10 @@ class Gateway:
             )
 
         @app.get("/v1/rooms")
-        def list_rooms(token: _Bearer) -> dict:
-            return {"rooms": collaboration.list_rooms(token)}
+        def list_rooms(token: _Bearer, include_membership: bool = False) -> dict:
+            return {
+                "rooms": collaboration.list_rooms(token, include_membership=include_membership)
+            }
 
         @app.get("/v1/room-directory", dependencies=[Depends(_reject_body)])
         def room_directory(
@@ -442,6 +494,17 @@ class Gateway:
         @app.post("/v1/rooms/{room_id}/join", dependencies=[Depends(_reject_body)])
         def join_room(token: _Bearer, room_id: _Identifier) -> dict:
             return collaboration.join_room(token, room_id)
+
+        @app.post("/v1/rooms/{room_id}/leave", dependencies=[Depends(_reject_body)])
+        def leave_room(
+            token: _Bearer,
+            room_id: _Identifier,
+            notify: bool = False,
+            membership_id: _MembershipID | None = None,
+        ) -> dict:
+            return collaboration.leave_room(
+                token, room_id, notify=notify, membership_id=membership_id
+            )
 
         @app.get("/v1/rooms/{room_id}/board/view", dependencies=[Depends(_reject_body)])
         def view_board(
@@ -486,8 +549,13 @@ class Gateway:
             after: _After = 0,
             limit: _Limit = 50,
             before: _Before | None = None,
+            membership_id: _MembershipID | None = None,
+            delivery: bool = False,
         ) -> dict:
-            return collaboration.history(token, room_id, after, limit, before)
+            return collaboration.history(
+                token, room_id, after, limit, before,
+                membership_id=membership_id, delivery=delivery,
+            )
 
         @app.get(
             "/v1/rooms/{room_id}/search", dependencies=[Depends(_require_query_utf8)]
