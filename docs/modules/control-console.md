@@ -168,7 +168,7 @@ Server 契约测试（`server/tests/test_console_server.py`；stage 2 项保持�
 
 1. （stage 2）无 `console_read` 的账号以 `purpose:"console"` 登录后访问 `/v1/console/rooms` 返回 403 `forbidden`；无效、过期、被撤销（停用/重置口令）的 console 会话返回 401。
 2. （stage 2）跨用途隔离双向验证：console 会话 token 不能登记（`POST /v1/members` 401）、不能调用普通成员 API（401）、不能作为 `member_token`（422）；登记用途登录 token、成员 token、旧登记密钥调用控制台路由 401；省略 `purpose` 的登录保持既有行为。
-3. （stage 2→本期更新）v2 存量库迁移：升级后旧会话按登记用途继续可用，控制台拒绝之；`user_version` 升至 **6**。
+3. （stage 2→本期更新）v2 存量库迁移：升级后旧会话按登记用途继续可用，控制台拒绝之；`user_version` 升至 **7**。
 4. （stage 2）`grant-console`/`revoke-console` 经 CLI 生效（403↔200 幂等往返）；`grant-transcript`/`revoke-transcript` CLI 幂等、对缺失账号/房间报错。
 5. （本期更新）rooms 载荷：按 `room_id` 稳定排序，字段恰为 `room_id`/`name`/`member_count`/`last_activity`，`last_activity` 为最新活动投影（无活动为 null）；读房间不产生收件事件、SSE 提示或房间写入。
 6. （stage 2）静态托管三路径与安全响应头；其余 `/console/…` 404、方法不符 405。
@@ -176,12 +176,12 @@ Server 契约测试（`server/tests/test_console_server.py`；stage 2 项保持�
 8. （本期）Timeline：四类活动字段精确且不含正文；`after`/`limit` 递增分页、短页即尾；加入/确认/重发/重复确认收件幂等重试不产生重复投影行。
 9. （本期）Transcript：省略 `before` 取最新页（页内递增）、`before` 取更早页、`has_more` 如实；大于 SQLite 整数上界的 `before` 按无上界返回最新一页（非 500），审计 `page_before` 记 null；`sender_role_description` 为读取时登记角色；存量无时间戳消息 `created_at` 为 null；每次成功响应在同一事务写入一条审计（owner、room、action、分页参数、时间），审计行不含正文。
 10. （本期）授权边界：仅元数据授权的操作员读不到消息正文（timeline 无正文、无 transcript 权限 403）；房间级 `transcript_read` 只对授权房间生效，跨房间 403；transcript 对不存在房间的次序为 console_read 之后、房间级授权之前（缺 `console_read` 未知房间 403、持 `console_read` 缺房 404，既有未授权房间仍 403）；撤销后携旧游标翻页 403、停用/过期会话 401；控制台读取不产生收件事件或 SSE 提示。
-11. （本期）迁移：v2 样本与 #6 历史 v3 样本升级到 v6 后回投活动（次序与 null `at` 如契约）；消息 ID 与既有 #6 语义不受影响。
+11. （本期）迁移：v2 样本与 #6 历史 v3 样本在升级过程中回投活动（次序与 null `at` 如契约）；消息 ID 与既有 #6 语义不受影响。
 12. （本期）成功响应统一 `Cache-Control: no-store`。
 13. （#3 并入）迁移：已发布的 #5 鉴权预览 v3（`e495544` 形态：`purpose` 列、`operator_grants`、无历史列）以代表性样本升级——预览的 `console`/`enrollment` purpose、既有会话、`console_read` 与 `transcript_read` 授权与房间数据保留，预置授权无需重授即可登录读房与读 transcript；补入的历史层使既有房间缺省 `since_joining`，DM 重建后即可私聊，ID 播种续旧最大值。#3 DM v4 样本升级：已确认的 DM 投递不回填房间活动，transcript 只含房间行，DM 历史仍仅参与者可读，ID 续旧最大值。
 14. （#3 并入）DM 隔离：即使操作员同时持有 `console_read` 与该房间 `transcript_read`、且 DM 正常启用并交换、收件确认完毕，rooms/roster/Timeline/transcript 任何响应都不含 DM 文本或 DM `message_id`；DM 发送与确认不新增 `room_activity` 行。
 15. （本期，#5/#6 兼容）到期清理兼容：临时库内写入房间消息与活动（含投递确认）后，以测试内直连 SQL（开启外键、先清收件引用，模拟 #6 清理事务）删除消息；删除成功，Timeline 仍呈现该事件的 `kind`、`at` 与 actor 且 `message_id` 为 null，存活消息的链接不受影响；带 `message_id` 的加入/确认活动插入仍被 schema CHECK 拒绝。
-16. （#6 到期运行时并入）真实到期路径 × 已鉴权控制台：把已发布控制台 v5 形态样本（v6 减两列水位）在 `--room-retention-hours` 启动的真实服务器上升级到 v6 并等待到期提交；房间正文与未确认投递被清理，Timeline 的消息与投递活动保留元数据且 `message_id` 为 null，成员读取/确认已到期事件得 404 `not_found`，transcript 读取照常写无正文审计，DM 正文与 DM 读取边界不受房间到期影响（`user_version` 为 6）。
+16. （#6 到期运行时并入）真实到期路径 × 已鉴权控制台：把已发布控制台 v5 形态样本（v6 减两列水位）在 `--room-retention-hours` 启动的真实服务器上升级到当前 schema 并等待到期提交；房间正文与未确认投递被清理，Timeline 的消息与投递活动保留元数据且 `message_id` 为 null，成员读取/确认已到期事件得 404 `not_found`，transcript 读取照常写无正文审计，DM 正文与 DM 读取边界不受房间到期影响（`user_version` 为 7）。
 
 Console UI 回归测试：`server/tests/test_console_ui.py`（stage 2 交付的静态回归；随 #12 F3 追加瞬时失败保留行与同游标重试的静态断言）；`server/tests/test_console_ui_behavior.mjs`（#12 F3 行为回归，`node server/tests/test_console_ui_behavior.mjs` 运行，仅用 Node 内置模块，无新增依赖：在桩 DOM 与受控 fetch 下驱动真实 `console.js`，验证 Timeline 下一页与 Chats 更早页瞬时失败时保留已加载行、重试用同一 `after`/`before` 游标，以及 403 拒绝、切换房间与登出仍清空私有内容）。
 
@@ -198,7 +198,7 @@ Console UI 回归测试：`server/tests/test_console_ui.py`（stage 2 交付的�
 - 控制台在 Timeline 呈现房间活动（body-free），在 Chats 呈现所选房间会话（按授权）。
 - 缺 transcript 授权的操作员读不到消息正文；元数据授权不隐含正文授权；每次正文读取留下无正文审计。
 - 撤销/停用对下一页生效；控制台读取不影响成员收件、SSE 与写路径语义。
-- 迁移覆盖 fresh/v1/v2/两种 v3（#6 历史草稿与已发布的 #5 鉴权预览）/#3 DM v4/已发布控制台 v5；`user_version` 为 6。
+- 迁移覆盖 fresh/v1/v2/两种 v3（#6 历史草稿与已发布的 #5 鉴权预览）/#3 DM v4/已发布控制台 v5/保留水位 v6；当前 `user_version` 为 7。
 - DM 不进入控制台：授权操作员无法经 Timeline/transcript 追溯 DM 文本或 DM `message_id`，DM 发送与确认不产生房间活动（已随 #3 并入交付并测试）。
 - #6 到期清理与控制台共存：房间到期删除正文与未确认投递、Timeline 链接经外键清空且事件行保留、审计与 DM 作用域不受影响（已随 #6 到期运行时并入交付并测试）。
 
