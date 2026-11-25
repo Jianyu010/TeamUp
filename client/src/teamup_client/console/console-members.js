@@ -56,14 +56,14 @@ function scheduleExpiry(list, onExpiry) {
   if (expired) onExpiry?.();
 }
 
-function memberNames(members) {
+export function memberNames(members, nameTag = "span") {
   const names = members.map(({id, name, role}) => ({id, name: name ?? role}));
   const counts = new Map();
   for (const {name} of names) counts.set(name, (counts.get(name) || 0) + 1);
   return names.map(({id, name}) => {
     const view = element("span", "", "member-name");
     let label = name;
-    view.append(element("span", name));
+    view.append(element(nameTag, name));
     if (counts.get(name) > 1) {
       const prefix = id.slice(0, 8);
       const shared = names.some((other) => other.id !== id && other.name === name && other.id.startsWith(prefix));

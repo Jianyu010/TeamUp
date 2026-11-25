@@ -96,8 +96,8 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
 .node strong, .node small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .node small, .muted, #chat-status, #team-status { color: var(--muted); font-size: 12px; }
 #sessions .node:not(:hover,:focus-visible) .member-owner,
-#sessions .session-ready:not(:hover,:focus-visible) small { display: none; }
-#sessions .session-ready small, .member-owner { color: var(--muted); font-size: 11px; }
+#sessions .session-ready:not(:hover,:focus-visible) > span > small { display: none; }
+#sessions .session-ready > span > small, .member-owner { color: var(--muted); font-size: 11px; }
 .empty { color: var(--muted); padding: 12px; text-align: center; }
 .detail {
   left: var(--rail); right: 0; opacity: 0; pointer-events: none; padding: 13px;
@@ -267,8 +267,9 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
   .team-directory thead th:first-child { width: 34%; }
   .team-directory thead th:nth-child(2) { width: 23%; }
   .team-directory :is(th, td) { padding-inline: 4px; }
-  .team-directory .member-name, .team-directory .member-name > * { display: block; }
-  .team-directory .member-name small { max-width: 100%; }
+  :is(.team-directory, #sessions) .member-name,
+  :is(.team-directory, #sessions) .member-name > * { display: block; }
+  :is(.team-directory, #sessions) .member-name small { max-width: 100%; }
   #compact-room { display: inline; color: var(--accent); padding-left: 4px; }
 }
 @media (max-width: 390px) {

@@ -10,7 +10,7 @@
 - New bindings require a structured profile. The v1 role-only input remains valid for retries of a saved binding with the same credential. Upgrade Server, then Client and MCP, before registering new sessions. Existing members can continue using their credentials throughout the upgrade.
 - On member self-read, the team directory, and the room roster, structured members have `name` and `description`; `role_description` carries the same name for older consumers. Legacy members retain their `role_description` and have no default description. `owner_username` is present when the member belongs to a TeamUp account. Enrollment-key identifiers, credentials, and internal owner IDs are never returned. Team discovery matches the name or responsibility, using the existing case-insensitive substring semantics.
 - Server schema v11 adds nullable description and room responsibility fields. An upgrade preserves the existing values and membership credentials.
-- The owner-only member rename API remains available. It enforces the name rules on changes and leaves the responsibility intact. Repeating a legacy member’s saved label is still a valid no-op.
+- The owner-only member rename API remains available. It enforces the name rules on changes and leaves the responsibility intact. Renamed legacy profiles still expose their label through `role_description`. Clients use it as the fallback when `name` is absent. Repeating a legacy member’s saved label is still a valid no-op.
 
 ## Room membership
 
