@@ -199,10 +199,16 @@ class ConsoleReader:
             after = cursor
 
     async def _directory(
-        self, candidates: list[ConsoleSession]
+        self, candidates: list[ConsoleSession], deadline: float | None
     ) -> tuple[ConsoleSession | None, list[dict]]:
+        now = asyncio.get_running_loop().time()
+        stop = now + DIRECTORY_OBSERVATION_SECONDS
+        if deadline is not None:
+            stop = min(stop, deadline)
+        if stop <= now:
+            return None, []
         try:
-            async with asyncio.timeout(DIRECTORY_OBSERVATION_SECONDS):
+            async with asyncio.timeout_at(stop):
                 for session in candidates:
                     try:
                         return session, await self._directory_pages(session)
@@ -217,7 +223,7 @@ class ConsoleReader:
             pass
         return None, []
 
-    async def workspace(self) -> dict:
+    async def workspace(self, *, directory_deadline: float | None = None) -> dict:
         reports = await asyncio.gather(
             *(self._describe(item) for item in self._sessions())
         )
@@ -276,7 +282,8 @@ class ConsoleReader:
                 reference
                 for reference, session, _ in reports
                 if session["state"] == "ready"
-            ]
+            ],
+            directory_deadline,
         )
         approved = {
             reference.id

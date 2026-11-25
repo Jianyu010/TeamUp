@@ -20,7 +20,7 @@ Agents handle room membership and board acknowledgment. The console shows the ac
 
 `GET /api/workspace` groups the current memberships of all approved sessions and adds the team-public rooms from the [Server directory](client-server-v1.md#团队公开房间目录56). Each refresh reads the directory from the first page using one approved, registered session. The Client deduplicates by room ID and exposes the history policy for directory entries. A discoverable room with no joined local session has an empty `memberships` array and a null `latest_message_id`. Opening it shows the history policy and a copyable room ID for the existing agent join workflow.
 
-The workspace reports `directory_available` when a complete directory read succeeds for a session still approved on this Client. On an older Server or a failed read, the workspace still displays authorized joined-room summaries. The console shows directory availability independently of room membership. Chats, Members and Tasks use the existing scoped read paths after a local session joins. Joining and acknowledging the board require the member's explicit operations.
+The workspace reports `directory_available` when a complete directory read succeeds for a session still approved on this Client. The optional directory read stops early enough to return the joined-room summaries already collected within the local workspace request deadline. On an older Server or a failed directory read, the console shows the joined rooms and reports that the directory is unavailable. Chats, Members and Tasks use the existing scoped read paths after a local session joins. Joining and acknowledging the board require the member's explicit operations.
 
 ### Chats and Team read contexts
 

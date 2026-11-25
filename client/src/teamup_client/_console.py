@@ -16,6 +16,8 @@ from ._console_data import MAX_BEFORE, ConsoleReader
 from ._protocol import REQUEST_LIMIT, decode_json, is_string, is_uuid
 from .ipc import ClientError
 
+CONSOLE_REQUEST_SECONDS = 18
+WORKSPACE_RESPONSE_RESERVE_SECONDS = 0.5
 STATIC = {
     "/": ("index.html", "text/html; charset=utf-8"),
     "/console.css": ("console.css", "text/css; charset=utf-8"),
@@ -160,7 +162,7 @@ class Handler(BaseHTTPRequestHandler):
     def _run(self, operation, *, write=False):
         future = asyncio.run_coroutine_threadsafe(operation, self._loop)
         try:
-            data = future.result(timeout=18)
+            data = future.result(timeout=CONSOLE_REQUEST_SECONDS)
         except concurrent.futures.TimeoutError:
             future.cancel()
             self._json(503, {"state": "unavailable"})
@@ -204,7 +206,12 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError
             return self._reader.versions()
         if path == "/api/workspace" and not params:
-            return self._reader.workspace()
+            directory_deadline = (
+                self._loop.time()
+                + CONSOLE_REQUEST_SECONDS
+                - WORKSPACE_RESPONSE_RESERVE_SECONDS
+            )
+            return self._reader.workspace(directory_deadline=directory_deadline)
         if path == "/api/team" and set(params) == {"session"}:
             return self._reader.team(params["session"])
         if path == "/api/room-members":

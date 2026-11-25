@@ -3,7 +3,7 @@ from importlib.metadata import version
 
 import httpx
 import pytest
-from teamup_client import _console_data
+from teamup_client import _console, _console_data
 from teamup_client._console import serve_console
 from teamup_client._console_data import ConsoleReader, ConsoleSession
 from teamup_client._upstream import Upstream as ServerTransport
@@ -188,6 +188,42 @@ def test_directory_discards_pages_when_its_local_session_is_revoked():
 
         result = await ConsoleReader(lambda: tuple(approved), request).workspace()
         assert result == {"sessions": [], "rooms": [], "directory_available": False}
+
+    asyncio.run(scenario())
+
+
+def test_slow_directory_keeps_joined_rooms_within_the_workspace_deadline(monkeypatch):
+    monkeypatch.setattr(_console, "CONSOLE_REQUEST_SECONDS", 1)
+    monkeypatch.setattr(_console, "WORKSPACE_RESPONSE_RESERVE_SECONDS", 0.25)
+
+    async def scenario():
+        upstream = Upstream()
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def request(method, path, token, *, query=None):
+            if path == "/rooms":
+                await asyncio.sleep(0.3)
+            if path == "/room-directory":
+                started.set()
+                await release.wait()
+            return await upstream(method, path, token, query=query)
+
+        async with serve_console(ConsoleReader(sessions, request)) as url:
+            origin, token = url.split("#")
+            async with httpx.AsyncClient(timeout=1.5, trust_env=False) as client:
+                try:
+                    response = await client.get(
+                        origin + "api/workspace",
+                        headers={"Authorization": f"Bearer {token}"},
+                    )
+                finally:
+                    release.set()
+        assert started.is_set()
+        assert response.status_code == 200
+        workspace = response.json()
+        assert workspace["directory_available"] is False
+        assert [room["id"] for room in workspace["rooms"]] == [ROOM]
 
     asyncio.run(scenario())
 
