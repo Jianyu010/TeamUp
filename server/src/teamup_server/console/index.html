@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TeamUp Control Console</title>
+<link rel="stylesheet" href="console.css">
+</head>
+<body>
+<div class="page">
+  <header class="app-header">
+    <div class="app-heading">
+      <h1>Control Console</h1>
+    </div>
+    <div class="app-side">
+      <p class="status" id="statusLine" role="status" aria-live="polite">Signed out</p>
+      <div class="session-actions" id="sessionActions" hidden>
+        <button type="button" id="refreshButton">Refresh</button>
+        <button type="button" id="logoutButton">Sign out</button>
+      </div>
+    </div>
+  </header>
+  <hr class="rule">
+  <main>
+    <section class="login-view" id="loginView" aria-labelledby="loginTitle">
+      <form class="login-card" id="loginForm" novalidate>
+        <h2 id="loginTitle">Sign in</h2>
+        <p class="login-note">Use your TeamUp account. The sign-in token is held in this tab's memory only and cleared on sign-out.</p>
+        <label class="field-label" for="username">Username</label>
+        <input class="field" id="username" name="username" autocomplete="username" spellcheck="false" required>
+        <label class="field-label" for="password">Password</label>
+        <input class="field" id="password" name="password" type="password" autocomplete="current-password" required>
+        <button class="primary wide" type="submit" id="loginSubmit">Sign in</button>
+        <p class="status" id="loginStatus" role="status" aria-live="polite"></p>
+      </form>
+    </section>
+    <section class="main-view" id="mainView" aria-label="Console rooms" hidden>
+      <nav class="rooms" aria-labelledby="roomsTitle">
+        <h2 id="roomsTitle">Rooms</h2>
+        <div class="room-list" id="roomList"></div>
+        <p class="footnote">Rooms update on refresh. Opening the console produces no chat action.</p>
+      </nav>
+      <div class="v-divider" aria-hidden="true"></div>
+      <section class="detail" aria-label="Room detail">
+        <p class="hint" id="roomEmpty">Select a room to view its members, Timeline, and Chats.</p>
+        <article class="room-detail" id="roomDetail" hidden>
+          <header class="detail-head">
+            <div class="detail-title">
+              <h3 id="roomTitle"></h3>
+              <p class="detail-sub" id="roomMeta"></p>
+              <p class="detail-id" id="roomId"></p>
+            </div>
+          </header>
+          <hr class="rule">
+          <h4 class="section-title">Members</h4>
+          <div class="table-wrap">
+            <table class="roster">
+              <thead>
+                <tr>
+                  <th scope="col">Role</th>
+                  <th scope="col">Board ack</th>
+                  <th scope="col">Last TeamUp activity</th>
+                  <th scope="col">Harness</th>
+                </tr>
+              </thead>
+              <tbody id="rosterBody"></tbody>
+            </table>
+          </div>
+          <hr class="rule">
+          <div class="tabs" id="tabBar" role="tablist" aria-label="Room records">
+            <button class="tab" type="button" role="tab" id="tabTimeline" aria-selected="true" aria-controls="panelTimeline">Timeline</button>
+            <button class="tab" type="button" role="tab" id="tabChats" aria-selected="false" aria-controls="panelChats">Chats</button>
+          </div>
+          <section class="panel" id="panelTimeline" role="tabpanel" aria-labelledby="tabTimeline">
+            <p class="pane-status" id="timelineStatus" role="status" aria-live="polite"></p>
+            <ol class="record-list" id="timelineList"></ol>
+            <button class="more" type="button" id="timelineMore" hidden>Load more activity</button>
+          </section>
+          <section class="panel" id="panelChats" role="tabpanel" aria-labelledby="tabChats" hidden>
+            <p class="denied" id="chatsDenied" hidden></p>
+            <p class="pane-status" id="chatsStatus" role="status" aria-live="polite"></p>
+            <ol class="record-list" id="chatsList"></ol>
+            <button class="more" type="button" id="chatsMore" hidden>Load older messages</button>
+          </section>
+        </article>
+      </section>
+    </section>
+  </main>
+</div>
+<script src="console.js" defer></script>
+</body>
+</html>

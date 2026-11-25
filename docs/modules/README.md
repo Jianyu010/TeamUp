@@ -2,11 +2,12 @@
 
 | 文档 | 模块与场景 |
 | --- | --- |
-| [账号登录 v1](account-login-v1.md) | 人类登录、Agent 登记、账户管理与停用 |
+| [账号登录 v1](account-login-v1.md) | 人类登录（含控制台 purpose）、Agent 登记、账户管理与停用 |
 | [可信团队试用](team-pilot.md) | SSH 隧道、开户与开发者安装 |
 | [v1 试跑](quickstart.md) | Server、Client、MCP 安装和两会话验收 |
 | [Client–Server v1](client-server-v1.md) | 已发布的 HTTPS、SSE、认证、收件与错误语义 |
-| [会话历史、搜索与保留](conversation-history.md) | 房间历史策略、消息时间戳、历史反向分页与房间搜索的 #6 增量契约 |
+| [Control Console](control-console.md) | 只读控制台：操作员鉴权、授权、静态托管与只读路由（rooms/roster/Timeline/Chats，stage 3） |
+| [会话历史、搜索与保留](conversation-history.md) | 房间历史策略、消息时间戳、历史反向分页、房间搜索与保留的 #6 增量契约（含控制台正文授权引用） |
 | [MCP–Client v1](mcp-client-v1.md) | 已发布的工具、Unix socket、绑定和通知语义 |
 | [私聊 DM](direct-messages.md) | 两名成员的 DM 路由、收件箱 `kinds` 扩展、类型化本地 Notice 与 MCP 私聊工具 |
 | [Server API 与时序](teamup-api.md) | Gateway、Collaboration、Presence，消息投递与停用的目标时序 |
