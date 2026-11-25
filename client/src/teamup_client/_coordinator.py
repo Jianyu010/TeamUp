@@ -1,4 +1,6 @@
 import asyncio
+import hashlib
+import json
 import secrets
 import sqlite3
 from contextlib import asynccontextmanager
@@ -6,6 +8,7 @@ from dataclasses import dataclass, field
 from functools import partial
 
 from ._config import Binding, owner_key
+from ._console_data import ConsoleSession
 from ._desktop import PREVIEW_LIMIT, TITLE_LIMIT, clean
 from ._harness import owned_socket, wake_prompt
 from ._notices import binding_scope
@@ -368,6 +371,18 @@ class Coordinator:
         self._notices.set_wake(*identity, params["rooms"], params["senders"])
         self._sessions[identity].harness_changed.set()
         return {"rooms": sorted(params["rooms"]), "senders": sorted(params["senders"])}
+
+    def console_sessions(self) -> tuple[ConsoleSession, ...]:
+        """Expose approved sessions to the Client-owned read projection."""
+        return tuple(
+            ConsoleSession(
+                hashlib.sha256(json.dumps(identity).encode()).hexdigest(),
+                self._leases[identity].kind if identity in self._leases else identity[0],
+                identity[1],
+                session.binding.member_token,
+            )
+            for identity, session in sorted(self._sessions.items())
+        )
 
     def _session_report(self):
         identities = {identity: "approved" for identity in self._static.values()} | {
