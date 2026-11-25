@@ -167,7 +167,8 @@ async function removeRoomMember(room, session, member) {
       {body: {membership_id: member.membership_id}},
     );
     if (result.state === "ready") {
-      status.textContent = member.role + " was removed from the room.";
+      status.textContent = member.role + (result.departure_event_id === null
+        ? " had already left the room." : " was removed from the room.");
       if (state.page === "room" && state.room === room.id) {
         members.reset({preserveNames: true});
         members.refresh();
