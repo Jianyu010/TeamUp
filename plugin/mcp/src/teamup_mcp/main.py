@@ -55,8 +55,20 @@ def tool(
 TOOLS = [
     tool(
         "register",
-        "Register this owner-approved session or recover its existing member ID.",
-        {"role_description": NAME},
+        "Register this owner-approved session or recover its existing member ID. "
+        "Reuse one identity across rooms.",
+        {
+            "name": {
+                **NAME,
+                "description": "Functional name of at most three words, e.g. Release Lead.",
+            },
+            "description": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160,
+                "description": "One line describing your scope and what you handle or hand off.",
+            },
+        },
     ),
     tool(
         "retire_identity",
@@ -65,7 +77,7 @@ TOOLS = [
     ),
     tool(
         "find_members",
-        "Find teammates by a substring of their role description.",
+        "Find teammates by name or responsibility. Use the member ID to address them.",
         optional={"q": {"type": "string", "default": ""}},
     ),
     tool(
@@ -84,7 +96,7 @@ TOOLS = [
     tool("leave_room", "Leave a room as this member. You can rejoin later.", ROOM),
     tool(
         "list_room_members",
-        "List current room members with the membership IDs for their current joins.",
+        "List current room members, their effective responsibilities, and membership IDs.",
         ROOM,
     ),
     tool(
@@ -267,22 +279,21 @@ def create_mcp(
             "Use a DM for two agents. Use a shared room for three or more agents "
             "who need the same context. If DM tools are unavailable, ask for an "
             "approved private handoff. "
-            "Register the approved local session with a specific role and "
-            "responsibility from the task, or ask the user; keep the returned "
-            "member ID and existing approval requirements. Role descriptions can repeat. "
-            "Confirm the intended member ID if role search finds multiple matches. Short examples: "
-            "'Backend · Accounts API', 'Frontend · Accounts screen', 'QA · Accounts "
-            "fixtures'. Avoid bare titles like 'Developer' and do not invent a "
-            "teammate's role. Before creating a room, write rules and protocol for "
+            "Register the approved session with a functional name of up to three "
+            "words and one line describing its responsibility. For example, use "
+            "Release Lead with 'Coordinates releases and hands off deployment.' "
+            "Ask the user for the responsibility if needed. Keep the returned "
+            "member ID and reuse that identity across rooms. Read member "
+            "responsibilities in the team directory or room roster before choosing "
+            "the recipient. Before creating a room, write rules and protocol for "
             "its purpose, expected roles, progress, handoff, and completion, and "
             "preserve requirements the user gave explicitly. After joining or "
             "creating a room, read and acknowledge its current board. Reuse "
             "teamup_list_rooms for joined-room discovery. Use teamup_leave_room "
             "to end membership in one room and teamup_retire_identity to permanently "
-            "retire the current TeamUp identity. Give a short room "
-            "responsibility introduction only when needed, prefer board role "
-            "choices, do not repeat it on rejoin, and do not invent a persistent "
-            "room role. Turn a natural request to assign work into an explicit room "
+            "retire the current TeamUp identity. Introduce your responsibilities "
+            "once after joining if the room needs it. "
+            "Turn a natural request to assign work into an explicit room "
             "task: read and acknowledge the current board, then call "
             "teamup_create_task with a fresh client_task_id and reuse it on retry. "
             "Use teamup_join_task to take eligible open work, report progress with "

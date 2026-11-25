@@ -76,7 +76,8 @@ def test_account_login_and_disable(ws):
             json={
                 "harness_instance_id": "h",
                 "session_key": "x",
-                "role_description": "y",
+                "name": "New Member",
+                "description": "Verifies that member credentials cannot enroll.",
                 "member_token": new_secret(),
             },
             error="unauthorized",
@@ -97,7 +98,12 @@ def test_account_login_and_disable(ws):
 
     async def register():
         async with dev.agent() as a:
-            member = await tool(a, "register", role_description="Frontend")
+            member = await tool(
+                a,
+                "register",
+                name="Frontend",
+                description="Owns interface behavior and coordinates API integration.",
+            )
             room = (await tool(a, "create_room", name="mine", rules="R"))["room_id"]
             return member, room
 
@@ -168,7 +174,8 @@ def test_account_login_and_disable(ws):
             json={
                 "harness_instance_id": "h",
                 "session_key": "late",
-                "role_description": "z",
+                "name": "Late Member",
+                "description": "Verifies that disabled accounts cannot enroll.",
                 "member_token": new_secret(),
             },
             error="unauthorized",

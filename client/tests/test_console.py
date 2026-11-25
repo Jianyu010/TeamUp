@@ -512,6 +512,52 @@ def test_room_members_route_keeps_scope_and_projects_complete_active_task_pages(
     asyncio.run(scenario())
 
 
+def test_member_profiles_project_owner_and_contextual_description():
+    async def scenario():
+        upstream = RosterUpstream()
+        profile = {
+            "name": "Backend",
+            "description": "Maintains the release pipeline.",
+            "owner_username": "alex",
+        }
+        override = "Coordinates this release's dependency upgrades."
+
+        async def request(method, path, token, *, query=None):
+            if path.endswith("/tasks"):
+                return {"tasks": [], "next_after": None}
+            result = await upstream(method, path, token, query=query)
+            if path == "/members/me" and result["member_id"] == BACKEND:
+                return result | profile
+            if path == "/members" or path.endswith("/members"):
+                for member in result["members"]:
+                    if member["member_id"] == BACKEND:
+                        member.update(profile)
+                        if path != "/members":
+                            member["description"] = override
+            return result
+
+        reader = ConsoleReader(sessions, request)
+        workspace = await reader.workspace()
+        local = next(item for item in workspace["sessions"] if item["id"] == "primary")
+        assert local["label"] == profile["name"]
+        assert {field: local[field] for field in profile} == profile
+
+        team = await reader.team("primary")
+        teammate = next(member for member in team["members"] if member["id"] == BACKEND)
+        assert {field: teammate[field] for field in profile} == profile
+        legacy = next(member for member in team["members"] if member["id"] == OUTSIDER)
+        assert legacy["role"] == "Outside the room"
+        assert not legacy.keys() & profile.keys()
+
+        roster = await reader.room_members("primary", ROOM)
+        room_member = next(member for member in roster["members"] if member["id"] == BACKEND)
+        assert {field: room_member[field] for field in profile} == profile | {
+            "description": override,
+        }
+
+    asyncio.run(scenario())
+
+
 def test_team_uses_same_scoped_presence_for_local_remote_and_other_members():
     async def scenario():
         upstream = RosterUpstream()

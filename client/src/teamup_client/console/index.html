@@ -61,7 +61,11 @@
             </div>
             <p class="muted" id="room-preview" hidden></p>
             <section id="board-panel" aria-labelledby="board-title" tabindex="0" hidden>
-              <label id="board-session-label" hidden>Board session <select id="board-session"></select></label>
+              <div class="session-picker" id="board-session-label" hidden>
+                <label for="board-session">Board session</label>
+                <select id="board-session" aria-describedby="board-session-owner"></select>
+                <small class="session-picker-owner" id="board-session-owner" hidden></small>
+              </div>
               <p id="board-feedback" class="muted" role="status"></p>
               <div id="board-view" hidden>
                 <h3>Rules</h3>
@@ -95,7 +99,11 @@
           </section>
           <section id="task-board" class="task-board" aria-label="Room tasks" hidden>
             <div class="task-toolbar">
-              <label>Acting as <select id="task-actor"></select></label>
+              <div class="session-picker">
+                <label for="task-actor">Acting as</label>
+                <select id="task-actor" aria-describedby="task-actor-owner"></select>
+                <small class="session-picker-owner" id="task-actor-owner" hidden></small>
+              </div>
               <div id="task-lane-nav" aria-label="Task panels"></div>
               <button type="button" id="finished-tasks" aria-pressed="false">Finished</button>
               <button type="button" id="more-tasks" hidden>More tasks</button>
@@ -113,7 +121,10 @@
       <section class="team-panel scroll-frame" id="team-panel" aria-label="Team" hidden>
         <h2>Team</h2>
         <p id="team-status" role="status"></p>
-        <ul id="team-list"></ul>
+        <table class="team-directory">
+          <thead><tr><th scope="col">Name</th><th scope="col">User</th><th scope="col">Description</th></tr></thead>
+          <tbody id="team-list"></tbody>
+        </table>
       </section>
     </div>
     <footer class="versions" aria-label="TeamUp versions">

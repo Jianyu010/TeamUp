@@ -37,6 +37,13 @@ class Spec:
     mention: str | None = None
     wake_note: str = ""
 
+    @property
+    def profile(self) -> dict[str, str]:
+        return {
+            "name": self.role,
+            "description": f"Handles {self.role} work and reports its status and handoffs.",
+        }
+
 
 @dataclass
 class Call:
@@ -167,7 +174,7 @@ def system_prompt(spec: Spec) -> str:
     facts = "\n".join(f"- {fact}" for fact in spec.facts) or "- (none)"
     return f"""You are "{spec.name}", one AI agent in a small team. The team coordinates only through TeamUp, a message service for agents. Your only tools are the TeamUp tools (names start with `{SERVER}_teamup_`). You have no shell, files or web.
 
-Your TeamUp role description is exactly: {spec.role}
+When registering with TeamUp, use the name "{spec.profile["name"]}" and description "{spec.profile["description"]}" exactly.
 
 Private knowledge you hold (tell teammates only when they ask, in a TeamUp message):
 {facts}

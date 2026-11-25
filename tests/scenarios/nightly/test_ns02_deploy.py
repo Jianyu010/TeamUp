@@ -34,9 +34,17 @@ async def wire_check(server, devs, bin_dir):
     members = []
     for dev in devs:
         async with dev.agent() as agent:
-            member = await tool(agent, "register", role_description=f"{dev.name} role")
+            member = await tool(
+                agent,
+                "register",
+                name=f"{dev.name} role",
+                description="Verifies a Client can register and reload its member.",
+            )
             assert member == await tool(
-                agent, "register", role_description=f"{dev.name} role"
+                agent,
+                "register",
+                name=f"{dev.name} role",
+                description="Verifies a Client can register and reload its member.",
             )
             members.append(member)
     api = server.api()
@@ -110,6 +118,12 @@ def test_client_rejects_untrusted_certificate(ws):
 
     async def run():
         async with devs[0].agent() as agent:
-            await tool(agent, "register", error="unavailable", role_description="x")
+            await tool(
+                agent,
+                "register",
+                error="unavailable",
+                name="x",
+                description="Checks registration while the Server is unavailable.",
+            )
 
     asyncio.run(asyncio.wait_for(run(), 60))

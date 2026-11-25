@@ -53,6 +53,10 @@ _PASSWORD_HASHER = PasswordHasher(
     time_cost=2, memory_cost=19 * 1024, parallelism=1, type=Type.ID
 )
 _MEMBER = "member_id, role_description"
+_MEMBER_PROFILE = """
+    m.member_id, m.role_description, m.description, a.username AS owner_username
+"""
+_PROFILE_TABLES = "members AS m LEFT JOIN accounts AS a ON a.owner_id = m.owner_id"
 _MESSAGE = """
     m.message_id, m.room_id, m.sender_member_id, m.client_message_id, m.text, m.mention_member_id, m.created_at
 """
@@ -796,6 +800,37 @@ def _enrollment_digests(keys: Mapping[str, str]) -> dict[str, bytes]:
     return digests
 
 
+def _profile_text(value: str | None, limit: int) -> bool:
+    return (
+        isinstance(value, str)
+        and 0 < len(value) <= limit
+        and value == value.strip()
+        and value.isprintable()
+    )
+
+
+def _profile_name(value: str | None) -> bool:
+    return value is not None and _profile_text(value, 200) and len(value.split()) <= 3
+
+
+def _member_profile(row: sqlite3.Row) -> dict:
+    profile = {field: row[field] for field in ("member_id", "role_description")}
+    if row["description"] is not None:
+        profile["name"] = row["role_description"]
+        profile["description"] = row["description"]
+    if row["owner_username"] is not None:
+        profile["owner_username"] = row["owner_username"]
+    return profile
+
+
+def _read_member_profile(connection: sqlite3.Connection, member_id: str) -> dict:
+    row = connection.execute(
+        f"SELECT {_MEMBER_PROFILE} FROM {_PROFILE_TABLES} WHERE m.member_id = ?",
+        (member_id,),
+    ).fetchone()
+    return _member_profile(row)
+
+
 def _member(
     connection: sqlite3.Connection, token: str, *, include_retired: bool = False
 ) -> sqlite3.Row:
@@ -1297,7 +1332,7 @@ class Collaboration:
             connection.execute("PRAGMA journal_mode = WAL")
         with self._transaction(write=True) as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
-            if not 0 <= version <= 10:
+            if not 0 <= version <= 11:
                 raise ValueError("Unsupported TeamUp database schema version")
             if version == 0:
                 for statement in _SCHEMA:
@@ -1384,7 +1419,19 @@ class Collaboration:
                     WHERE creator_member_id IS NULL
                     """
                 )
-                connection.execute("PRAGMA user_version = 10")
+            if version < 11:
+                for table, column in (
+                    ("members", "description"),
+                    ("room_members", "responsibility"),
+                ):
+                    if column not in {
+                        row["name"]
+                        for row in connection.execute(f"PRAGMA table_info({table})")
+                    }:
+                        connection.execute(
+                            f"ALTER TABLE {table} ADD COLUMN {column} TEXT"
+                        )
+                connection.execute("PRAGMA user_version = 11")
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self._db_path, isolation_level=None)
@@ -1691,9 +1738,20 @@ class Collaboration:
         *,
         harness_instance_id: str,
         session_key: str,
-        role_description: str,
         member_token: str,
+        role_description: str | None = None,
+        name: str | None = None,
+        description: str | None = None,
     ) -> dict:
+        if name is not None or description is not None:
+            if (
+                role_description is not None
+                or not _profile_name(name)
+                or not _profile_text(description, 160)
+            ):
+                raise CollaborationError("invalid_request")
+        elif role_description is None:
+            raise CollaborationError("invalid_request")
         digest = _credential_digest(member_token)
         with self._transaction(write=True) as connection:
             owner = self._enrollment_owner(connection, enrollment_key)
@@ -1706,8 +1764,8 @@ class Collaboration:
             ):
                 raise CollaborationError("invalid_request")
             existing = connection.execute(
-                f"""
-                SELECT {_MEMBER}, token_digest, retired FROM members
+                """
+                SELECT member_id, token_digest, retired FROM members
                 WHERE owner_id = ? AND harness_instance_id = ? AND session_key = ?
                 """,
                 (owner, harness_instance_id, session_key),
@@ -1717,36 +1775,40 @@ class Collaboration:
                     raise CollaborationError("member_retired")
                 if not compare_digest(existing["token_digest"], digest):
                     raise CollaborationError("conflict")
-                return {key: existing[key] for key in ("member_id", "role_description")}
+                return _read_member_profile(connection, existing["member_id"])
             if connection.execute(
                 "SELECT 1 FROM members WHERE token_digest = ?", (digest,)
             ).fetchone():
                 raise CollaborationError("conflict")
+            if name is None:
+                raise CollaborationError("invalid_request")
+
             member_id = str(uuid4())
             connection.execute(
                 """
                 INSERT INTO members (
                     member_id, owner_id, harness_instance_id, session_key,
-                    role_description, token_digest
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    role_description, token_digest, description
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     member_id,
                     owner,
                     harness_instance_id,
                     session_key,
-                    role_description,
+                    name,
                     digest,
+                    description,
                 ),
             )
-        return {"member_id": member_id, "role_description": role_description}
+            return _read_member_profile(connection, member_id)
 
     def _owned_member(
         self, connection: sqlite3.Connection, token: str, member_id: str
     ) -> sqlite3.Row:
         owner = self._enrollment_owner(connection, token, allow_legacy=False)
         member = connection.execute(
-            "SELECT retired FROM members WHERE owner_id = ? AND member_id = ?",
+            "SELECT retired, role_description FROM members WHERE owner_id = ? AND member_id = ?",
             (owner, member_id),
         ).fetchone()
         if member is None:
@@ -1755,13 +1817,45 @@ class Collaboration:
 
     def rename_member(self, token: str, member_id: str, role_description: str) -> dict:
         with self._transaction(write=True) as connection:
-            if self._owned_member(connection, token, member_id)["retired"]:
+            member = self._owned_member(connection, token, member_id)
+            if member["retired"]:
                 raise CollaborationError("member_retired")
+            if role_description == member["role_description"]:
+                return _read_member_profile(connection, member_id)
+            if not _profile_name(role_description):
+                raise CollaborationError("invalid_request")
             connection.execute(
                 "UPDATE members SET role_description = ? WHERE member_id = ?",
                 (role_description, member_id),
             )
-        return {"member_id": member_id, "role_description": role_description}
+            return _read_member_profile(connection, member_id)
+
+    def set_room_responsibility(
+        self,
+        token: str,
+        room_id: str,
+        member_id: str,
+        membership_id: str,
+        description: str | None,
+    ) -> dict:
+        if description is not None and not _profile_text(description, 160):
+            raise CollaborationError("invalid_request")
+        with self._transaction(write=True) as connection:
+            if self._owned_member(connection, token, member_id)["retired"]:
+                raise CollaborationError("member_retired")
+            current = connection.execute(
+                "SELECT membership_id FROM room_members WHERE room_id = ? AND member_id = ?",
+                (room_id, member_id),
+            ).fetchone()
+            if current is None:
+                raise CollaborationError("not_found")
+            if current["membership_id"] != membership_id:
+                raise CollaborationError("membership_changed")
+            connection.execute(
+                "UPDATE room_members SET responsibility = ? WHERE room_id = ? AND member_id = ?",
+                (description, room_id, member_id),
+            )
+        return {"description": description}
 
     @staticmethod
     def _retire(connection: sqlite3.Connection, member_id: str) -> None:
@@ -1911,7 +2005,9 @@ class Collaboration:
 
     def get_member(self, token: str) -> dict:
         with self._transaction() as connection:
-            return dict(_member(connection, token))
+            return _read_member_profile(
+                connection, _member(connection, token)["member_id"]
+            )
 
     def authorized_presence_members(self, token: str) -> list[str]:
         with self._transaction() as connection:
@@ -1941,13 +2037,16 @@ class Collaboration:
             )
             rows = connection.execute(
                 f"""
-                SELECT {_MEMBER} FROM members
-                WHERE retired = 0 AND instr(teamup_casefold(role_description), ?) > 0
-                ORDER BY member_id LIMIT 100
+                SELECT {_MEMBER_PROFILE} FROM {_PROFILE_TABLES}
+                WHERE m.retired = 0 AND (
+                    instr(teamup_casefold(m.role_description), :query) > 0
+                    OR instr(teamup_casefold(COALESCE(m.description, '')), :query) > 0
+                )
+                ORDER BY m.member_id LIMIT 100
                 """,
-                (query.casefold(),),
+                {"query": query.casefold()},
             )
-            return [dict(record) for record in rows]
+            return [_member_profile(row) for row in rows]
 
     def list_console_rooms(self, token: str) -> dict:
         with self._transaction() as connection:
@@ -2381,17 +2480,22 @@ class Collaboration:
             member_id = _member(connection, token)["member_id"]
             _room_member(connection, room_id, member_id)
             rows = connection.execute(
-                """
-                SELECT m.member_id, m.role_description, rm.acked_board_version, rm.membership_id
-                FROM room_members AS rm JOIN members AS m ON m.member_id = rm.member_id
+                f"""
+                SELECT {_MEMBER_PROFILE}, rm.acked_board_version, rm.membership_id, rm.responsibility
+                FROM {_PROFILE_TABLES} JOIN room_members AS rm ON m.member_id = rm.member_id
                 WHERE rm.room_id = ? ORDER BY m.member_id
                 """,
                 (room_id,),
             )
-            members = [dict(row) for row in rows]
-            if not include_membership:
-                for row in members:
-                    row.pop("membership_id")
+            members = []
+            for row in rows:
+                profile = _member_profile(row)
+                profile["acked_board_version"] = row["acked_board_version"]
+                if row["responsibility"] is not None:
+                    profile["description"] = row["responsibility"]
+                if include_membership:
+                    profile["membership_id"] = row["membership_id"]
+                members.append(profile)
             return members
 
     def view_board(self, token: str, room_id: str) -> dict:

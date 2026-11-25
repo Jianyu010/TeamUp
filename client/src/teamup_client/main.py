@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import secrets
 import signal
 import sqlite3
@@ -122,6 +123,16 @@ async def _manage_member(args):
             return await upstream.request(
                 "POST", f"{path}/retire", config.account_token, member_auth=False
             )
+        if args.action == "room-responsibility":
+            if not is_uuid(args.room_id) or not re.fullmatch(r"[0-9a-f]{32}", args.membership_id):
+                raise ConfigError("Provide the room UUID and its current membership ID")
+            return await upstream.request(
+                "PATCH",
+                f"/rooms/{args.room_id}/members/{args.member_id}/responsibility",
+                config.account_token,
+                body={"membership_id": args.membership_id, "description": args.description},
+                member_auth=False,
+            )
         return await upstream.request(
             "PATCH",
             path,
@@ -152,6 +163,15 @@ def main(argv=None):
     )
     rename.add_argument("member_id")
     rename.add_argument("role_description")
+    responsibility = member_actions.add_parser(
+        "room-responsibility", help="Set a member's responsibility for one room"
+    )
+    responsibility.add_argument("member_id")
+    responsibility.add_argument("room_id")
+    responsibility.add_argument("membership_id")
+    setting = responsibility.add_mutually_exclusive_group(required=True)
+    setting.add_argument("--description")
+    setting.add_argument("--clear", dest="description", action="store_const", const=None)
     retire = member_actions.add_parser("retire", help="Permanently retire a member")
     retire.add_argument("member_id")
     commands.add_parser("init-binding")

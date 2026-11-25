@@ -1,6 +1,6 @@
 import {readTranscript, sameBoard} from "/console-history.mjs";
 import {roomBoard} from "/console-board.js";
-import {roomMembers, renderTeam} from "/console-members.js";
+import {roomMembers, renderSessionChoices, renderTeam} from "/console-members.js";
 import {taskPanel} from "/console-tasks.js";
 import {sessionControls} from "/console-sessions.js";
 
@@ -231,6 +231,14 @@ function renderWorkspace() {
     const label = session.state === "ready" ? session.harness
       : session.harness + " · " + (session.state === "not_registered" ? "Unregistered" : "Unavailable");
     const button = card(session.label, label);
+    button.classList.toggle("session-ready", session.state === "ready");
+    button.querySelector("strong").title = session.label;
+    if (session.owner_username) {
+      const owner = "by " + session.owner_username;
+      const detail = button.querySelector("small");
+      if (session.state === "ready") detail.textContent = owner + " · " + label;
+      else button.firstElementChild.insertBefore(node("small", owner, "member-owner"), detail);
+    }
     button.dataset.session = session.id;
     button.setAttribute("aria-pressed", String(state.focused === session.id));
     button.classList.toggle("dimmed", Boolean(state.focused && state.focused !== session.id));
@@ -361,14 +369,7 @@ function renderRoomHeader() {
   const chooser = get("task-actor");
   const actors = readyMemberships(room).filter(acknowledged).map(({session}) => sessionFor(session));
   chooser.disabled = actors.length === 0;
-  chooser.replaceChildren(...actors.map((session) => {
-    const duplicate = actors.some((other) => other.id !== session.id && other.label === session.label);
-    const option = node("option", duplicate ? session.label + " · " + session.id : session.label);
-    option.value = session.id;
-    option.selected = state.actor === session.id;
-    return option;
-  }));
-  if (!actors.length) chooser.append(node("option", "No acknowledged session"));
+  renderSessionChoices(chooser, actors, state.actor, "No acknowledged session");
   const membership = room.memberships.find((item) => item.session === state.reader);
   get("room-heading").textContent = room.name;
   get("room-heading").hidden = Boolean(membership);

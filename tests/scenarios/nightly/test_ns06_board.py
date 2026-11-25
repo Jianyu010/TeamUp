@@ -98,8 +98,18 @@ def test_board_gate_mcp(ws):
 
     async def run():
         async with alice.agent() as a, bob.agent() as b:
-            await tool(a, "register", role_description="Backend")
-            await tool(b, "register", role_description="Frontend")
+            await tool(
+                a,
+                "register",
+                name="Backend",
+                description="Owns backend API behavior and service handoffs.",
+            )
+            await tool(
+                b,
+                "register",
+                name="Frontend",
+                description="Owns interface behavior and coordinates API integration.",
+            )
             room = (await tool(a, "create_room", name="Gate", rules="Share test data"))[
                 "room_id"
             ]

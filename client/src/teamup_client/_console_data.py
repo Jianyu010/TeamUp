@@ -52,11 +52,20 @@ def _message(item: dict, labels: dict[str, str]) -> dict:
     return result
 
 
+def _profile_fields(member: dict) -> dict:
+    return {
+        field: value
+        for field in ("name", "owner_username", "description")
+        if is_string(value := member.get(field))
+    }
+
+
 def _member_with_presence(member: dict, presence: dict[str, dict]) -> dict:
     identifier = member["member_id"]
     return {
         "id": identifier,
         "role": member["role_description"],
+        **_profile_fields(member),
         "presence": presence.get(
             identifier, {"state": "unknown", "observed_at": None, "age_ms": None}
         ),
@@ -196,7 +205,8 @@ class ConsoleReader:
         }
         try:
             member = await self._read(session, "/members/me")
-            description["label"] = member["role_description"]
+            description.update(_profile_fields(member))
+            description["label"] = description.get("name", member["role_description"])
             description["member_id"] = member["member_id"]
             listing = await self._read(session, "/rooms", {"include_membership": "true"})
         except ClientError as exc:

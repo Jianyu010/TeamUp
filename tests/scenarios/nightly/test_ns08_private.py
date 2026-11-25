@@ -16,9 +16,24 @@ async def run(alice, bob, carol, record):
             "detail",
             "DM is not merged on this branch: ran as a two-member room",
         )
-        a_member = await tool(a, "register", role_description="Backend")
-        b_member = await tool(b, "register", role_description="Frontend")
-        c_member = await tool(c, "register", role_description="Bystander")
+        a_member = await tool(
+            a,
+            "register",
+            name="Backend",
+            description="Owns backend API behavior and service handoffs.",
+        )
+        b_member = await tool(
+            b,
+            "register",
+            name="Frontend",
+            description="Owns interface behavior and coordinates API integration.",
+        )
+        c_member = await tool(
+            c,
+            "register",
+            name="Bystander",
+            description="Verifies that private conversations remain out of scope.",
+        )
 
         room = (await tool(a, "create_room", name="alice+bob", rules="Private pair"))[
             "room_id"

@@ -29,6 +29,7 @@
   "GET /v1/task-reminders",
   "GET /v1/version",
   "PATCH /v1/members/{member_id}",
+  "PATCH /v1/rooms/{room_id}/members/{member_id}/responsibility",
   "POST /v1/auth/login",
   "POST /v1/dms",
   "POST /v1/dms/{dm_id}/messages",

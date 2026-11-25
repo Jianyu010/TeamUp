@@ -79,6 +79,9 @@ _ShortText = Annotated[
 _Name = Annotated[
     str, StringConstraints(strict=True, max_length=200), AfterValidator(_nonblank)
 ]
+_Responsibility = Annotated[
+    str, StringConstraints(strict=True, min_length=1, max_length=160)
+]
 _LongText = Annotated[
     str, StringConstraints(strict=True, max_length=8000), AfterValidator(_nonblank)
 ]
@@ -121,8 +124,24 @@ class _Login(_Body):
 class _Enrollment(_Body):
     harness_instance_id: _ShortText
     session_key: _ShortText
-    role_description: _Name
     member_token: _MemberToken
+    role_description: _Name | None = None
+    name: _Name | None = None
+    description: _Responsibility | None = None
+
+    @field_validator("role_description", "name", "description")
+    @classmethod
+    def profile_text(cls, value: str | None) -> str:
+        if value is None:
+            raise ValueError("Profile fields must be strings when supplied")
+        return value
+
+
+class _RoomResponsibility(_Body):
+    membership_id: Annotated[
+        str, StringConstraints(strict=True, pattern=_MEMBERSHIP_PATTERN)
+    ]
+    description: _Responsibility | None
 
 
 class _MemberRole(_Body):
@@ -519,6 +538,20 @@ class Gateway:
         ) -> dict:
             return collaboration.remove_room_member(
                 token, room_id, member_id, body.membership_id
+            )
+
+        @app.patch(
+            "/v1/rooms/{room_id}/members/{member_id}/responsibility",
+            dependencies=[Depends(_require_utf8)],
+        )
+        def set_room_responsibility(
+            token: _Bearer,
+            room_id: _Identifier,
+            member_id: _Identifier,
+            body: _RoomResponsibility,
+        ) -> dict:
+            return collaboration.set_room_responsibility(
+                token, room_id, member_id, body.membership_id, body.description
             )
 
         @app.post("/v1/rooms/{room_id}/join", dependencies=[Depends(_reject_body)])

@@ -1804,6 +1804,71 @@
         "summary": "Remove Room Member"
       }
     },
+    "/v1/rooms/{room_id}/members/{member_id}/responsibility": {
+      "patch": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "room_id",
+            "required": true,
+            "schema": {
+              "title": "Room Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "member_id",
+            "required": true,
+            "schema": {
+              "title": "Member Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/_RoomResponsibility"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Set Room Responsibility V1 Rooms  Room Id  Members  Member Id  Responsibility Patch",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Set Room Responsibility"
+      }
+    },
     "/v1/rooms/{room_id}/messages": {
       "get": {
         "parameters": [
@@ -2687,6 +2752,19 @@
     "_Enrollment": {
       "additionalProperties": false,
       "properties": {
+        "description": {
+          "anyOf": [
+            {
+              "maxLength": 160,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Description"
+        },
         "harness_instance_id": {
           "maxLength": 128,
           "title": "Harness Instance Id",
@@ -2698,10 +2776,29 @@
           "title": "Member Token",
           "type": "string"
         },
+        "name": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Name"
+        },
         "role_description": {
-          "maxLength": 200,
-          "title": "Role Description",
-          "type": "string"
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Role Description"
         },
         "session_key": {
           "maxLength": 128,
@@ -2712,7 +2809,6 @@
       "required": [
         "harness_instance_id",
         "session_key",
-        "role_description",
         "member_token"
       ],
       "title": "_Enrollment",
@@ -2908,6 +3004,35 @@
         "name"
       ],
       "title": "_Room",
+      "type": "object"
+    },
+    "_RoomResponsibility": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "anyOf": [
+            {
+              "maxLength": 160,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Description"
+        },
+        "membership_id": {
+          "pattern": "^[0-9a-f]{32}$",
+          "title": "Membership Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "membership_id",
+        "description"
+      ],
+      "title": "_RoomResponsibility",
       "type": "object"
     },
     "_TaskCreate": {

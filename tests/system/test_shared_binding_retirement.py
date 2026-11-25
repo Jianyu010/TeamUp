@@ -39,7 +39,12 @@ async def walk(developer):
         developer.agent() as shared,
         developer.agent(index=1) as successor,
     ):
-        member = await tool(old, "register", role_description="Developer")
+        member = await tool(
+            old,
+            "register",
+            name="Developer",
+            description="Implements changes and coordinates handoffs with its peer.",
+        )
         assert (
             await tool(shared, "register", role_description="Still the old member")
             == member
@@ -49,12 +54,16 @@ async def walk(developer):
             manage_member, developer, "rename", member_id, "Backend · Accounts"
         )
         assert renamed == {
-            "member_id": member_id,
+            **member,
+            "name": "Backend · Accounts",
             "role_description": "Backend · Accounts",
         }
         assert await tool(shared, "register", role_description="Ignored") == renamed
         replacement = await tool(
-            successor, "register", role_description="QA · Accounts"
+            successor,
+            "register",
+            name="QA · Accounts",
+            description="Verifies account behavior and coordinates handoffs.",
         )
         assert replacement["member_id"] != member_id
 
@@ -62,6 +71,40 @@ async def walk(developer):
             "room_id"
         ]
         await tool(old, "join_room", room_id=room_id)
+        room_members = await tool(successor, "list_room_members", room_id=room_id)
+        original = next(
+            row for row in room_members["members"] if row["member_id"] == member_id
+        )
+        room_description = "Coordinates the account handoff in this room."
+        override = await asyncio.to_thread(
+            manage_member,
+            developer,
+            "room-responsibility",
+            member_id,
+            room_id,
+            original["membership_id"],
+            "--description",
+            room_description,
+        )
+        assert override == {"description": room_description}
+        room_members = await tool(successor, "list_room_members", room_id=room_id)
+        assert {row["member_id"]: row["description"] for row in room_members["members"]} == {
+            member_id: room_description,
+            replacement["member_id"]: replacement["description"],
+        }
+        assert await tool(shared, "register", role_description="Ignored") == renamed
+        cleared = await asyncio.to_thread(
+            manage_member,
+            developer,
+            "room-responsibility",
+            member_id,
+            room_id,
+            original["membership_id"],
+            "--clear",
+        )
+        assert cleared == {"description": None}
+        room_members = await tool(successor, "list_room_members", room_id=room_id)
+        assert original in room_members["members"]
         for agent in (successor, old):
             board = await tool(agent, "get_board", room_id=room_id)
             await tool(agent, "ack_board", room_id=room_id, version=board["version"])
@@ -167,8 +210,18 @@ def test_console_departure_and_retirement_reach_mcp_and_persist_history(develope
             developer.agent() as target,
             developer.agent(index=1) as peer,
         ):
-            target_profile = await tool(target, "register", role_description="Target")
-            peer_profile = await tool(peer, "register", role_description="Peer")
+            target_profile = await tool(
+                target,
+                "register",
+                name="Target",
+                description="Receives departure and retirement updates.",
+            )
+            peer_profile = await tool(
+                peer,
+                "register",
+                name="Peer",
+                description="Maintains shared room access during the handoff.",
+            )
             target_id = target_profile["member_id"]
             paths = {
                 name: (await tool(peer, "create_room", name=name))["room_id"]
@@ -278,7 +331,11 @@ def test_console_departure_and_retirement_reach_mcp_and_persist_history(develope
             )
             assert await tool(peer, "find_members") == {"members": [peer_profile]}
             result = await tool(peer, "retire_identity")
-            assert result == {**peer_profile, "retired": True}
+            assert result == {
+                "member_id": peer_profile["member_id"],
+                "role_description": peer_profile["role_description"],
+                "retired": True,
+            }
             assert await tool(peer, "retire_identity") == result
 
         async with console_client(developer) as restarted:
@@ -331,8 +388,18 @@ def test_creator_removes_using_console_and_mcp_without_sharing_permissions(devel
             developer.agent() as creator,
             developer.agent(index=1) as sibling,
         ):
-            owner = await tool(creator, "register", role_description="Creator")
-            guest = await tool(sibling, "register", role_description="Sibling")
+            owner = await tool(
+                creator,
+                "register",
+                name="Creator",
+                description="Creates the room and manages its membership.",
+            )
+            guest = await tool(
+                sibling,
+                "register",
+                name="Sibling",
+                description="Joins the room and verifies membership controls.",
+            )
             room = (await tool(creator, "create_room", name="Moderation"))["room_id"]
             await tool(sibling, "join_room", room_id=room)
             snapshot = (await console.get("/api/workspace")).json()

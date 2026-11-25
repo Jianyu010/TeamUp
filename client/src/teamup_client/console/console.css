@@ -95,6 +95,9 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
 .node.dimmed:hover, .node.dimmed:focus-visible { opacity: 1; }
 .node strong, .node small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .node small, .muted, #chat-status, #team-status { color: var(--muted); font-size: 12px; }
+#sessions .node:not(:hover,:focus-visible) .member-owner,
+#sessions .session-ready:not(:hover,:focus-visible) small { display: none; }
+#sessions .session-ready small, .member-owner { color: var(--muted); font-size: 11px; }
 .empty { color: var(--muted); padding: 12px; text-align: center; }
 .detail {
   left: var(--rail); right: 0; opacity: 0; pointer-events: none; padding: 13px;
@@ -128,9 +131,9 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
 @media (hover: hover) and (pointer: fine) {
   .member-row:not(:hover):not(:focus-within) .member-action { opacity: 0; pointer-events: none; }
 }
-.member-name { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 4px; min-width: 0; }
-.member-name > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.member-name small { color: var(--muted); font: 10px/1.3 ui-monospace, monospace; overflow-wrap: anywhere; }
+.member-name { display: flex; align-items: baseline; gap: 4px; min-width: 0; }
+.member-name > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.member-name small { max-width: 50%; color: var(--muted); font: 10px/1.3 ui-monospace, monospace; }
 .presence { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-size: 11px; }
 .presence::before { content: ""; width: 7px; height: 7px; border-radius: 50%; border: 1px solid currentColor; }
 .presence[data-presence="online"]::before { background: var(--active); border-color: var(--active); }
@@ -146,6 +149,8 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
 #member-detail p, #member-detail ul, #member-detail small { color: var(--muted); font-size: 12px; }
 #member-detail ul { padding-inline-start: 16px; margin: 0; }
 #member-detail small { display: block; }
+#member-detail .member-owner { font-size: 11px; }
+#member-detail .member-responsibility { color: inherit; margin-block: 5px; }
 .mention-overflow { display: inline; padding-left: 5px; color: var(--muted); font-size: 12px; }
 .mention-overflow summary { display: inline; cursor: pointer; text-decoration: underline; }
 .mention-overflow span { display: block; overflow-wrap: anywhere; }
@@ -184,7 +189,7 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
 #board-panel button:disabled { cursor: default; opacity: .55; }
 .room-id { display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: 6px; }
 .room-id label { color: var(--muted); font-size: 12px; }
-.room-id input, #task-actor {
+.room-id input, .session-picker select {
   border: 1px solid var(--edge); border-radius: 5px; background: #192224; min-width: 0; padding: 4px;
 }
 .room-id input { width: 100%; font: 12px/1.25 ui-monospace, monospace; }
@@ -209,7 +214,27 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
 .task-toolbar label { min-width: 0; color: var(--muted); font-size: 12px; }
 #chat-status, #history-boundary { padding: 5px; }
 #history-boundary:empty { display: none; }
-#task-actor { max-width: 100%; }
+.session-picker { display: flex; align-items: baseline; flex-wrap: wrap; gap: 3px 6px; min-width: 0; max-width: 100%; }
+.session-picker select { max-width: min(100%, 16rem); font-size: 12px; }
+.session-picker-owner { flex-basis: 100%; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.session-picker:not(:hover,:focus-within) .session-picker-owner { display: none; }
+@supports (appearance: base-select) {
+  .session-picker select, .session-picker select::picker(select) { appearance: base-select; }
+  .session-picker select::picker(select) {
+    background: var(--panel); color: inherit; padding: 3px; border: 1px solid var(--edge); border-radius: 6px;
+    max-width: min(20rem, calc(100vw - 16px)); max-height: 50dvh;
+  }
+  .session-picker :is(option, selectedcontent) { min-width: 0; white-space: nowrap; }
+  .session-picker option { position: relative; display: block; padding: 4px 22px 4px 8px; border-radius: 3px; }
+  .session-picker option:is(:hover,:focus) { background: var(--raised); }
+  .session-picker option::checkmark { position: absolute; right: 6px; color: var(--accent); }
+  .session-option-name, .session-picker .member-owner {
+    display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .session-picker .member-owner { display: none; }
+  .session-picker option:is(:hover,:focus) .member-owner,
+  .session-picker select:is(:hover,:focus-visible):not(:open) selectedcontent .member-owner { display: block; }
+}
 #chat-status:empty { display: none; }
 #older { color: var(--accent); }
 .message {
@@ -220,8 +245,16 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
 .message p { white-space: pre-wrap; overflow-wrap: anywhere; }
 .message strong { color: var(--accent); }
 .team-panel { left: 0; right: 0; padding: 16px; }
-.team-panel ul { list-style: none; padding: 0; }
-.team-panel li { display: flex; gap: 10px; align-items: baseline; padding: 6px 0; }
+.team-directory { width: 100%; margin-top: 10px; table-layout: fixed; border-collapse: collapse; }
+.team-directory:not(:has(tbody tr)) { display: none; }
+.team-directory thead th { padding: 4px 8px 7px; color: var(--muted); font-size: 11px; font-weight: 550; }
+.team-directory thead th:first-child { width: 28%; }
+.team-directory thead th:nth-child(2) { width: 20%; }
+.team-directory :is(th, td) { text-align: left; vertical-align: top; }
+.team-directory tbody :is(th, td) { padding: 8px; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
+.team-directory tbody th { font-weight: 600; }
+.team-directory .presence { font-weight: 400; }
+.team-directory .team-user { color: var(--muted); }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 @media (max-width: 650px) {
   .stage { --rail: 0%; }
@@ -231,6 +264,11 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
   .stage[data-page="room"] .room-panel .scroll-frame { display: none; }
   .stage[data-page="room"] .detail { top: 43px; grid-template-columns: minmax(0,1fr) minmax(75px, 23%); gap: 5px; }
   #roster .member-details { padding-inline: 4px; }
+  .team-directory thead th:first-child { width: 34%; }
+  .team-directory thead th:nth-child(2) { width: 23%; }
+  .team-directory :is(th, td) { padding-inline: 4px; }
+  .team-directory .member-name, .team-directory .member-name > * { display: block; }
+  .team-directory .member-name small { max-width: 100%; }
   #compact-room { display: inline; color: var(--accent); padding-left: 4px; }
 }
 @media (max-width: 390px) {

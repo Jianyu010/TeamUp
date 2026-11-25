@@ -138,7 +138,8 @@ def enroll(client, label, *, owner="alice", session=None, role=None):
         json={
             "harness_instance_id": "shared-harness",
             "session_key": label if session is None else session,
-            "role_description": label if role is None else role,
+            "name": label if role is None else role,
+            "description": "Coordinates assigned work.",
             "member_token": credential(label),
         },
     )

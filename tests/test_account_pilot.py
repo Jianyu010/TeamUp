@@ -105,10 +105,16 @@ async def account_exchange(root, port, admin, prefix="test"):
     with a.daemon(), b.daemon() as b_daemon:
         async with a.agent() as agent_a, b.agent() as agent_b:
             alice = await tool(
-                agent_a, "register", role_description="Account smoke backend"
+                agent_a,
+                "register",
+                name="Account smoke backend",
+                description="Verifies account authorization on the API.",
             )
             bob = await tool(
-                agent_b, "register", role_description="Account smoke frontend"
+                agent_b,
+                "register",
+                name="Account smoke frontend",
+                description="Verifies the Client workflow for account-based sessions.",
             )
             assert alice["member_id"] != bob["member_id"]
             room = await tool(agent_a, "create_room", name="Account login smoke")
@@ -169,7 +175,8 @@ async def account_exchange(root, port, admin, prefix="test"):
                             "harness_instance_id": bind["harness_instance_id"],
                             "session_key": bind["session_key"],
                             "member_token": bind["member_token"],
-                            "role_description": "Denied",
+                            "name": "Denied",
+                            "description": "Verifies that revoked owners cannot enroll.",
                         },
                     )
                 ).status_code == 401

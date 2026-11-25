@@ -52,6 +52,8 @@ Room Members and Team both project Presence through their own read session. Each
 
 The room Members rail lists Online members first. Within the Online group and among the remaining members, the latest sent or addressed message in the loaded, authorized room transcript determines order, newest first. The rail uses the Server's message order, keeps roster order for ties, and places members without visible communication last in their group. It reorders when the transcript changes, presence refreshes, or an Online badge expires.
 
+Team and compact session labels follow the [member profile contract](member-profiles.md#local-console).
+
 ## Build versions
 
 The main window shows **Client** and **Server** at the bottom left. Client identifies the running `teamup-client` process. Server identifies the build reported by the Server configured for that Client. The window refreshes both values when it opens and every five seconds after each read completes, including with no registered sessions.

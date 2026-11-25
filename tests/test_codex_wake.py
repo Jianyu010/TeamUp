@@ -130,7 +130,13 @@ async def run_codex_wake(root, port):
     ):
         wait_for(lambda: tcp_is_ready(port), server)
         async with a.agent() as agent_a, b.codex_process() as codex_mcp:
-            alice = await call(agent_a, None, "register", role_description="Backend")
+            alice = await call(
+                agent_a,
+                None,
+                "register",
+                name="Backend",
+                description="Owns backend API behavior and service handoffs.",
+            )
             room = await call(agent_a, None, "create_room", name="Dev Collaboration")
             room_id = room["room_id"]
             board = await call(agent_a, None, "get_board", room_id=room_id)
@@ -144,15 +150,24 @@ async def run_codex_wake(root, port):
                     thread,
                     "register",
                     "session_pending",
-                    role_description="QA",
+                    name="QA",
+                    description="Checks scenario outcomes and reports regressions.",
                 )
                 assert b.sessions()[thread]["attached"] == "codex"
                 b.approve(thread)
             reviewer = await call(
-                codex_mcp, first, "register", role_description="Codex reviewer"
+                codex_mcp,
+                first,
+                "register",
+                name="Codex reviewer",
+                description="Reviews changes and reports actionable findings.",
             )
             tester = await call(
-                codex_mcp, second, "register", role_description="Codex tester"
+                codex_mcp,
+                second,
+                "register",
+                name="Codex tester",
+                description="Runs scenario tests and reports failures.",
             )
             assert reviewer["member_id"] != tester["member_id"]
             for thread in (first, second):
