@@ -25,7 +25,8 @@ export async function readTranscript(previous, before, fetchPage) {
   const newest = cached.at(-1).id;
   const all = new Map();
   const first = String(BigInt(cached[0].id) - 1n);
-  let after = before ? first : previous.recheck_after ?? first;
+  const cycleEnd = previous.recheck?.through ?? newest;
+  let after = before ? first : previous.recheck?.after ?? first;
   let probe = await fetchPage({after});
   const watermark = probe.expired_through_message_id;
   const rotate = !before && (!watermark || compareIds(cached[0].id, watermark) > 0);
@@ -33,7 +34,7 @@ export async function readTranscript(previous, before, fetchPage) {
     after = first;
     probe = await fetchPage({after});
   }
-  let recheckAfter;
+  let recheck;
   while (true) {
     if (probe.state !== "ready") return {page: probe, reset: true};
     if (!sameBoard(previous.board, probe.board) || probe.expired_through_message_id !== watermark) return latest();
@@ -48,7 +49,7 @@ export async function readTranscript(previous, before, fetchPage) {
           all.set(item.id, item);
         }
       }
-      if (compareIds(through, newest) < 0) recheckAfter = through;
+      if (compareIds(through, cycleEnd) < 0) recheck = {after: through, through: cycleEnd};
       break;
     }
     if (!probe.more_recent || compareIds(last, newest) >= 0) break;
@@ -63,7 +64,8 @@ export async function readTranscript(previous, before, fetchPage) {
   for (const item of page.messages) all.set(item.id, item);
   page.messages = [...all.values()].sort((a, b) => compareIds(a.id, b.id));
   if (!before) page.older = previous.older;
-  if (recheckAfter) page.recheck_after = recheckAfter;
+  // Console page comparisons should only see data that affects the rendered chat.
+  if (recheck) Object.defineProperty(page, "recheck", {value: recheck});
   page.history_truncated ||= truncated;
   return {page, reset: false};
 }

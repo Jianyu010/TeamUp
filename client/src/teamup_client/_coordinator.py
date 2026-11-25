@@ -249,6 +249,7 @@ class Coordinator:
         self._watching = False
         self._sessions = {}
         self._retired = notices.retired_sessions(self._server_url)
+        self._pending_retirements: dict[tuple[str, str], dict] = {}
         for binding in config.bindings:
             if (binding.harness_instance_id, binding.session_key) not in self._retired:
                 self._add_session(binding)
@@ -360,7 +361,7 @@ class Coordinator:
         ):
             raise ClientError("invalid_request", "Invalid session attachment")
         identity, _ = self._identity(key, session_ref)
-        if identity in self._retired:
+        if identity in self._retired or identity in self._pending_retirements:
             raise self._retired_error()
         lease = self._set_lease(
             identity, Lease("claude-code", params["address"], params["token"])
@@ -387,6 +388,9 @@ class Coordinator:
         if retired := self._retired.get(identity):
             if method == "retire_identity":
                 return self._retirement_receipt(retired)
+            raise self._retired_error()
+        if identity in self._pending_retirements and method != "retire_identity":
+            await self._sync_retirement(self._sessions[identity])
             raise self._retired_error()
         session = await self._resolve(identity, install, session_ref)
         binding = session.binding
@@ -439,7 +443,7 @@ class Coordinator:
             if exc.code == "not_registered" and await self._sync_retirement(session):
                 raise self._retired_error() from None
             raise
-        if identity in self._retired:
+        if identity in self._retired or identity in self._pending_retirements:
             raise self._retired_error()
         if method == "ack_board":
             session.inbox_changed.set()
@@ -459,6 +463,8 @@ class Coordinator:
         if retired := self._retired.get(identity):
             if method == "retire_session":
                 return self._retirement_receipt(retired)
+            raise self._retired_error()
+        if identity in self._pending_retirements and method != "retire_session":
             raise self._retired_error()
         if method in {"leave_session_room", "retire_session"}:
             return await self._session_action(identity, params.get("room_id"))
@@ -503,9 +509,11 @@ class Coordinator:
         if identity not in self._retired:
             lease = self._leases.get(identity)
             harness = lease.kind if lease else identity[0]
+            self._pending_retirements[identity] = receipt
             self._notices.retire_session(
                 self._server_url, identity, session.scope, harness, receipt
             )
+            del self._pending_retirements[identity]
             self._leases.pop(identity, None)
             self._retired[identity] = {
                 **self._retirement_receipt(receipt),
@@ -520,9 +528,11 @@ class Coordinator:
         if session.identity in self._retired:
             return True
         try:
-            receipt = await self._upstream.request(
-                "GET", "/members/me/retirement", session.binding.member_token
-            )
+            receipt = self._pending_retirements.get(session.identity)
+            if receipt is None:
+                receipt = await self._upstream.request(
+                    "GET", "/members/me/retirement", session.binding.member_token
+                )
             self._archive_session(session, receipt)
         except ClientError:
             return False
@@ -532,10 +542,15 @@ class Coordinator:
         return True
 
     async def _retire(self, session):
-        receipt = await self._upstream.request(
-            "POST", "/members/me/retire", session.binding.member_token
-        )
-        return self._archive_session(session, receipt)
+        receipt = self._pending_retirements.get(session.identity)
+        if receipt is None:
+            receipt = await self._upstream.request(
+                "POST", "/members/me/retire", session.binding.member_token
+            )
+        try:
+            return self._archive_session(session, receipt)
+        except sqlite3.Error:
+            raise unavailable() from None
 
     async def _session_action(self, identity, room_id, membership_id=None):
         session = self._sessions.get(identity)
@@ -543,6 +558,8 @@ class Coordinator:
             raise ClientError("not_found", "Unknown or unapproved session")
         if room_id is None:
             return await self._retire(session)
+        if identity in self._pending_retirements:
+            raise self._retired_error()
         if membership_id is None:
             listing = await self._upstream.request(
                 "GET", "/rooms", session.binding.member_token,
@@ -666,6 +683,7 @@ class Coordinator:
                 session.binding.member_token,
             )
             for identity, session in sorted(self._sessions.items())
+            if identity not in self._pending_retirements
         )
 
     def _session_report(self):
@@ -676,6 +694,7 @@ class Coordinator:
         }
         report = []
         identities.update(dict.fromkeys(self._retired, "retired"))
+        identities.update(dict.fromkeys(self._pending_retirements, "retired"))
         for identity, state in sorted(identities.items()):
             lease = self._leases.get(identity)
             report.append(
