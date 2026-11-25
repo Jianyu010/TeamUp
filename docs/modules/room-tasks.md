@@ -4,17 +4,17 @@ Contract for [#33](https://github.com/Jianyu010/TeamUp/issues/33) and [#30](http
 
 ## Member operations
 
-All paths below use the established member Bearer token and `/v1` prefix. `{room_id}` and `{task_id}` are normal UUIDs.
+All paths below use the established member Bearer token. `{room_id}` and `{task_id}` are normal UUIDs.
 
 | Method and path | Input | 200 result |
 | --- | --- | --- |
-| `POST /rooms/{room_id}/tasks` | `client_task_id`, `title`, optional `description` and `addressed_member_ids` | Task |
-| `GET /rooms/{room_id}/tasks` | optional `status`, `after`, `limit` | `{"tasks":[Task], "next_after":number or null}` |
-| `GET /rooms/{room_id}/tasks/{task_id}` | none | Task |
-| `POST /rooms/{room_id}/tasks/{task_id}/join` | empty | Task |
-| `POST /rooms/{room_id}/tasks/{task_id}/progress` | `client_progress_id`, `note` | Task |
-| `POST /rooms/{room_id}/tasks/{task_id}/finish` | empty | Task |
-| `GET /rooms/{room_id}/tasks/{task_id}/events` | optional `after`, `limit` | `{"events":[TaskEvent], "next_after":number or null}` |
+| `POST /v1/rooms/{room_id}/tasks` | `client_task_id`, `title`, optional `description` and `addressed_member_ids` | Task |
+| `GET /v1/rooms/{room_id}/tasks` | optional `status`, `after`, `limit` | `{"tasks":[Task], "next_after":number or null}` |
+| `GET /v1/rooms/{room_id}/tasks/{task_id}` | none | Task |
+| `POST /v1/rooms/{room_id}/tasks/{task_id}/join` | empty | Task |
+| `POST /v1/rooms/{room_id}/tasks/{task_id}/progress` | `client_progress_id`, `note` | Task |
+| `POST /v1/rooms/{room_id}/tasks/{task_id}/finish` | empty | Task |
+| `GET /v1/rooms/{room_id}/tasks/{task_id}/events` | optional `after`, `limit` | `{"events":[TaskEvent], "next_after":number or null}` |
 
 Task fields are `task_id`, `task_number`, `room_id`, `creator_member_id`, `title`, `description`, `addressed_member_ids`, `participant_member_ids`, `status` (`open` or `finished`), `version`, `created_at`, `updated_at`, `started_at`, `last_progress_at`, `finished_at`, and `stalled_since`. Optional description and unset timestamps are null. IDs in the two sets are sorted. `task_number`, `version` and event IDs are positive integers. Timestamps are Server-recorded RFC 3339 UTC. The initial version is 1 and each committed mutation increments it once.
 
@@ -48,8 +48,8 @@ The Collaboration owner can evaluate a bounded set of eligible recipients in a w
 
 | Method and path | Input | 200 result |
 | --- | --- | --- |
-| `GET /task-reminders` | optional `after`, `limit` | `{"reminders":[TaskReminder]}` |
-| `POST /task-reminders/{reminder_id}/claim` | empty | TaskReminder |
+| `GET /v1/task-reminders` | optional `after`, `limit` | `{"reminders":[TaskReminder]}` |
+| `POST /v1/task-reminders/{reminder_id}/claim` | empty | TaskReminder |
 
 TaskReminder fields are `reminder_id`, `room_id`, `task_id`, `title`, and `stalled_since`. Eligible pending reminders are ordered by stable numeric ID. A claim is conditional and atomic. An inaccessible, invalidated or already-claimed reminder uses 404 `not_found`. A successful claim consumes the pending entry and is the only authorization to attempt one desktop notice. This is at-most-once notice delivery. A Client crash or lost response after a claim may suppress that attempt. The room still shows the stalled task.
 

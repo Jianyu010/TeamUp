@@ -7,7 +7,11 @@ from teamup_server.main import create_app
 
 ROOT = Path(__file__).resolve().parents[2]
 
-DOCS = ("docs/modules/client-server-v1.md", "docs/modules/account-login-v1.md")
+DOCS = (
+    "docs/modules/client-server-v1.md",
+    "docs/modules/account-login-v1.md",
+    "docs/modules/room-tasks.md",
+)
 METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
 # FastAPI's generic 422 body model is framework output, not a TeamUp contract.
 FRAMEWORK_SCHEMAS = {"HTTPValidationError", "ValidationError"}
@@ -42,7 +46,7 @@ def test_every_route_is_documented_and_every_documented_route_exists(tmp_path):
     assert served == documented, (
         f"Served but undocumented: {sorted(served - documented)}; "
         f"documented but not served: {sorted(documented - served)}. "
-        "Update docs/modules/client-server-v1.md (or account-login-v1.md) first."
+        "Update the applicable module contract before changing routes."
     )
 
 
