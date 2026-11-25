@@ -23,6 +23,7 @@ const state = {
   connected: false,
 };
 const wireLimit = 20;
+const refreshInterval = 5000;
 const desktop = location.protocol === "teamup:";
 let key;
 if (!desktop) {
@@ -428,6 +429,21 @@ function setConnection(message, live) {
   get("connection").dataset.live = String(live);
 }
 
+async function refreshVersions() {
+  try {
+    const result = await read("/api/versions");
+    get("client-version").textContent = result.client_version ?? "Unknown";
+    get("server-version").textContent = result.server_version ?? (
+      result.server_state === "unavailable" ? "Unavailable" : "Unknown"
+    );
+  } catch (error) {
+    get("client-version").textContent = "Unknown";
+    get("server-version").textContent = "Unavailable";
+    if (error.message === "access") return;
+  }
+  setTimeout(refreshVersions, refreshInterval);
+}
+
 async function refresh() {
   let expire = false;
   try {
@@ -476,7 +492,7 @@ async function refresh() {
     state.room = null;
     show("workspace");
   } finally {
-    if (!expire) setTimeout(refresh, 5000);
+    if (!expire) setTimeout(refresh, refreshInterval);
   }
 }
 
@@ -538,8 +554,10 @@ window.addEventListener("resize", drawWires);
 window.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && state.page !== "workspace") show("workspace");
 });
-if (desktop || key) refresh();
-else {
+if (desktop || key) {
+  refresh();
+  refreshVersions();
+} else {
   setConnection("Open the URL printed by TeamUp Client", false);
   renderWorkspace();
 }

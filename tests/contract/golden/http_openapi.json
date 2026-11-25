@@ -1939,9 +1939,46 @@
         },
         "summary": "Claim Task Reminder"
       }
+    },
+    "/v1/version": {
+      "get": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/_BuildVersion"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Server Version"
+      }
     }
   },
   "schemas": {
+    "_BuildVersion": {
+      "properties": {
+        "version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Version"
+        }
+      },
+      "required": [
+        "version"
+      ],
+      "title": "_BuildVersion",
+      "type": "object"
+    },
     "_ConfirmBoard": {
       "additionalProperties": false,
       "properties": {

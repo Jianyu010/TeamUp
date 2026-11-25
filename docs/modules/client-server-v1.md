@@ -16,6 +16,12 @@ JSON API 前缀为 `/v1`。请求与响应是 UTF-8 JSON。内网使用 HTTPS。
 
 Server 启动读取 `TEAMUP_ENROLLMENT_KEYS` JSON 对象，键为 owner ID，值为登记密钥。支持命令 `teamup-server --db PATH [--host 127.0.0.1] [--port 8765] [--tls-cert PATH --tls-key PATH] [--room-retention-hours HOURS] [--dm-retention-hours HOURS]`。声明非回环监听地址时需要 TLS。反向代理在同主机终止 TLS 时可连回环。`--room-retention-hours` 与 `--dm-retention-hours` 都必须是 1–876000（含）之间的整数小时，各自独立校验并分别作用于房间与私聊；省略的配置不做对应的自动清理，两者都省略时不启动任何清理调度。清理运行节奏见 [会话历史、搜索与保留](conversation-history.md) 与 [Direct Messages](direct-messages.md)。
 
+### 构建版本（[#54](https://github.com/Jianyu010/TeamUp/issues/54)）
+
+Server Gateway 提供 `GET /v1/version`。返回 HTTP 200、`Cache-Control: no-store` 和 `{"version":"X.Y.Z"}`，开发版本遵循 [构建版本规则](../ci/contract.md#版本)。版本来自运行中的 Server 安装包。无法确定构建版本时 `version` 为 null。
+
+Client 使用已配置的 Server 地址和 TLS 设置读取版本。此操作只公开软件构建版本，无需账号或成员凭证，也不读取协作数据。旧 Server 可能返回 404。版本读取不参与登录、登记、成员授权或连接状态判定。
+
 ## 数据形状
 
 | 名称 | JSON 字段 |

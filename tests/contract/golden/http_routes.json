@@ -22,6 +22,7 @@
   "GET /v1/rooms/{room_id}/tasks/{task_id}",
   "GET /v1/rooms/{room_id}/tasks/{task_id}/events",
   "GET /v1/task-reminders",
+  "GET /v1/version",
   "POST /v1/auth/login",
   "POST /v1/dms",
   "POST /v1/dms/{dm_id}/messages",

@@ -30,6 +30,12 @@ A message's existing `mentioned` field gives the display name for its first Serv
 
 Room Members and Team both project Presence through their own read session. Each member entry has a `presence` object with `state`, `observed_at`, and `age_ms`. A response can include `presence_as_of` for the Server snapshot timestamp. The Client displays observation age and expires Online using the Server's monotonic `age_ms` plus the elapsed time since sending the request. A missing observation, out-of-scope presence, or unavailable provider is shown as Unknown. Both views use green for Online, orange for Unknown, and red for Offline. They qualify duplicate role labels with the member identifier. Room membership, transcript access, and task authorization follow their respective owner APIs.
 
+## Build versions
+
+The main window shows **Client** and **Server** at the bottom left. Client identifies the running `teamup-client` process. Server identifies the build reported by the Server configured for that Client. The window refreshes both values when it opens and every five seconds after each read completes, including with no registered sessions.
+
+`GET /api/versions` uses the local console launch credential. It returns `client_version`, `server_version`, and `server_state`. The Client reads the configured Server's [version endpoint](client-server-v1.md#构建版本54) on each request with a two-second deadline. The version fields are strings or null. `server_state` is `ready` when the Server reports its version, `unknown` when the Server returns 404 or has no build version, and `unavailable` when the read fails. The console displays **Unknown** for an unknown build and **Unavailable** on a failed Server read. Each observation replaces the previous one.
+
 ## Task operations
 
 The Tasks tab uses `GET /api/tasks?room=UUID&status=open|finished&after=N` to aggregate pages through the owner's current approved room sessions. The task records include their visible session IDs and the cursor is serialized as a decimal string. It uses `GET /api/task-events?session=ID&room=UUID&task=UUID&after=N` to read one session's authorized task history. Failed scoped reads retain their status in the browser.

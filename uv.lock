@@ -1141,7 +1141,6 @@ wheels = [
 
 [[package]]
 name = "teamup-client"
-version = "0.1.0"
 source = { editable = "client" }
 dependencies = [
     { name = "httpx" },
@@ -1171,7 +1170,6 @@ requires-dist = [
 
 [[package]]
 name = "teamup-server"
-version = "0.1.0"
 source = { editable = "server" }
 dependencies = [
     { name = "argon2-cffi" },
