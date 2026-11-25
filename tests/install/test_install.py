@@ -19,6 +19,7 @@ from _stack import (
     create_venv,
     pip_install,
     run_process,
+    uv,
 )
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -83,6 +84,35 @@ def test_wheels_are_built(wheels):
         "teamup_client",
         "teamup_mcp",
     }
+
+
+@pytest.mark.parametrize("project", ("client", "server"))
+def test_stamped_source_build_preserves_version_in_sdist_and_wheel(tmp_path, project):
+    source = tmp_path / "source"
+    package = source / project
+    shutil.copytree(ROOT / project / "src", package / "src")
+    shutil.copyfile(ROOT / project / "pyproject.toml", package / "pyproject.toml")
+    shutil.copytree(ROOT / "scripts", source / "scripts")
+    (source / "TEAMUP-VERSION").write_text("0.3.5.dev4\n", encoding="utf-8")
+    env = clean_env() | {"TEAMUP_VERSION": "0.4.0"}
+    dist = tmp_path / "dist"
+    archives = [uv(), "build", "--out-dir", str(dist)]
+    sdist = dist / f"teamup_{project}-0.3.5.dev4.tar.gz"
+    wheel = dist / f"teamup_{project}-0.3.5.dev4-py3-none-any.whl"
+    for source_path, kind, artifact in (
+        (package, "--sdist", sdist),
+        (sdist, "--wheel", wheel),
+    ):
+        result = run_process(
+            [*archives, kind, str(source_path)],
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=tmp_path,
+            timeout=120,
+        )
+        assert result.returncode == 0, result.stderr
+        assert artifact.is_file(), result.stderr
 
 
 @pytest.mark.parametrize(

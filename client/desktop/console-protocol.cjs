@@ -11,11 +11,13 @@ const assets = new Map([
   ["/console.js", ["console.js", "text/javascript; charset=utf-8"]],
   ["/console-history.mjs", ["console-history.mjs", "text/javascript; charset=utf-8"]],
   ["/console-members.js", ["console-members.js", "text/javascript; charset=utf-8"]],
+  ["/console-board.js", ["console-board.js", "text/javascript; charset=utf-8"]],
   ["/console-tasks.js", ["console-tasks.js", "text/javascript; charset=utf-8"]],
   ["/jet-pair.png", ["jet-pair.png", "image/png"]],
 ]);
 const reads = new Set([
-  "/api/workspace", "/api/team", "/api/room", "/api/room-members", "/api/tasks", "/api/task-events",
+  "/api/workspace", "/api/versions", "/api/team", "/api/room", "/api/room-members",
+  "/api/room-board", "/api/tasks", "/api/task-events",
 ]);
 const taskAction = /^\/api\/tasks\/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\/(?:join|progress|finish)$/i;
 const requestLimit = 128 * 1024;
@@ -96,24 +98,25 @@ function createConsoleHandler(directory, getEndpoint, resetEndpoint = () => {}) 
       });
     }
     const isRead = request.method === "GET" && reads.has(target.pathname);
-    const isAction = request.method === "POST" && taskAction.test(target.pathname);
+    const isAction = request.method === "POST" &&
+      (target.pathname === "/api/room-board" || taskAction.test(target.pathname));
     if (!isRead && !isAction) return failure(404, "not_found");
     if (request.initiatorOrigin !== CONSOLE_ORIGIN) return failure(403, "forbidden");
 
     const pending = getEndpoint();
-    const workspace = target.pathname === "/api/workspace";
+    const refreshesEndpoint = target.pathname === "/api/workspace" || target.pathname === "/api/versions";
     try {
       const endpoint = await pending;
       if (!endpoint) return failure(503, "unavailable");
       const response = await forward(request, target, endpoint);
-      if (workspace && (response.status === 401 || response.status === 502)) {
+      if (refreshesEndpoint && (response.status === 401 || response.status === 502)) {
         resetEndpoint(pending);
         await response.body?.cancel();
         return failure(503, "unavailable");
       }
       return response;
     } catch {
-      if (workspace) resetEndpoint(pending);
+      if (refreshesEndpoint) resetEndpoint(pending);
       return failure(503, "unavailable");
     }
   };

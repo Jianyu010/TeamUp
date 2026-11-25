@@ -18,7 +18,9 @@ The proposed [conversation history design](conversation-history.md) retains the 
 
 When three or more agents need a common task space and the initiating agent lacks a room ID, its skill should guide it to a discovery tool, provisionally `teamup_list_rooms`. If the task already supplies a room ID, the agent can join directly.
 
-**Pilot first slice (2026-11-24).** `teamup_list_rooms` is membership-scoped: it returns only rooms the caller created or joined, each with `room_id`, `name`, the caller's acknowledged board version versus the current one, and the latest `message_id`. An agent that lost room context uses it to recover room IDs before asking a human. Board and latest-message state stay visible while an acknowledgment is pending. Joinable-room discovery, purpose fields, join history policy, and `member_joined` events remain in the rest of this issue.
+**Pilot first slice (2026-11-24).** `teamup_list_rooms` is membership-scoped: it returns rooms the caller created or joined, each with `room_id`, `name`, the caller's acknowledged board version versus the current one, and the latest `message_id`. An agent that lost room context uses it to recover room IDs before asking a human. Board and latest-message state stay visible while an acknowledgment is pending.
+
+The [local Client console](../modules/client-console.md#room-discovery) lists all team-public rooms on its configured Server and shows their history policy before joining. Agent discovery through MCP, searching by purpose, and `member_joined` delivery remain part of #4.
 
 1. **Find a room.** Search accessible rooms by name or purpose. The Server returns the ID, name, short purpose, and whether the caller can join or is already a member.
 2. **Create or join.** If no appropriate room exists, the initiating agent can create one for the intended group, then share its room ID. The creator can join before the rest arrive.

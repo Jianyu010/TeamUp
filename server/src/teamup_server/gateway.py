@@ -6,6 +6,7 @@ import pathlib
 import re
 from collections.abc import AsyncGenerator
 from contextlib import aclosing, asynccontextmanager
+from importlib.metadata import PackageNotFoundError, version
 from typing import Annotated, Literal
 from urllib.parse import unquote_to_bytes
 from uuid import UUID
@@ -99,6 +100,10 @@ _SearchText = Annotated[
 ]
 
 
+class _BuildVersion(BaseModel):
+    version: str | None
+
+
 class _Body(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -132,6 +137,11 @@ class _Room(_Body):
 
 class _ConfirmBoard(_Body):
     version: Annotated[int, Field(strict=True, gt=0)]
+
+
+class _PublishBoard(_ConfirmBoard):
+    rules: _LongText
+    protocol: _LongText
 
 
 class _Message(_Body):
@@ -313,6 +323,19 @@ class Gateway:
                 "invalid_request", status_code=405 if exc.status_code == 405 else None
             )
 
+        try:
+            installed_version = version("teamup-server")
+        except PackageNotFoundError:
+            installed_version = None
+        build_version = (
+            None if installed_version == "0.0.0+unknown" else installed_version
+        )
+
+        @app.get("/v1/version")
+        def server_version(response: Response) -> _BuildVersion:
+            _no_store(response)
+            return _BuildVersion(version=build_version)
+
         @app.post("/v1/auth/login", dependencies=[Depends(_require_utf8)])
         def login(body: _Login) -> dict:
             return collaboration.login(
@@ -396,6 +419,16 @@ class Gateway:
         def list_rooms(token: _Bearer) -> dict:
             return {"rooms": collaboration.list_rooms(token)}
 
+        @app.get("/v1/room-directory", dependencies=[Depends(_reject_body)])
+        def room_directory(
+            token: _Bearer,
+            response: Response,
+            after: _Identifier | None = None,
+            limit: _Limit = 50,
+        ) -> dict:
+            _no_store(response)
+            return collaboration.room_directory(token, after, limit)
+
         @app.get("/v1/rooms/{room_id}", dependencies=[Depends(_reject_body)])
         def room_detail(token: _Bearer, room_id: _Identifier, response: Response) -> dict:
             _no_store(response)
@@ -409,6 +442,23 @@ class Gateway:
         @app.post("/v1/rooms/{room_id}/join", dependencies=[Depends(_reject_body)])
         def join_room(token: _Bearer, room_id: _Identifier) -> dict:
             return collaboration.join_room(token, room_id)
+
+        @app.get("/v1/rooms/{room_id}/board/view", dependencies=[Depends(_reject_body)])
+        def view_board(
+            token: _Bearer, room_id: _Identifier, response: Response
+        ) -> dict:
+            _no_store(response)
+            return collaboration.view_board(token, room_id)
+
+        @app.post("/v1/rooms/{room_id}/board", dependencies=[Depends(_require_utf8)])
+        def publish_board(
+            token: _Bearer,
+            room_id: _Identifier,
+            body: _PublishBoard,
+            response: Response,
+        ) -> dict:
+            _no_store(response)
+            return collaboration.publish_board(token, room_id, **body.model_dump())
 
         @app.get("/v1/rooms/{room_id}/board", dependencies=[Depends(_reject_body)])
         def read_board(token: _Bearer, room_id: _Identifier) -> dict:

@@ -17,9 +17,13 @@ test("serves the bundled console without a running Client", async () => {
   const handle = createConsoleHandler(assets, () => null);
   const response = await handle(new Request(CONSOLE_URL));
   assert.equal(response.status, 200);
-  assert.match(await response.text(), /<title>TeamUp/);
+  const html = await response.text();
+  assert.match(html, /<title>TeamUp/);
+  assert.match(html, /<footer[^>]*>[\s\S]*id="client-version"[\s\S]*id="server-version"[\s\S]*<\/footer>/);
   assert.match(response.headers.get("Content-Security-Policy"), /connect-src 'self'/);
-  for (const asset of ["/console-members.js", "/console-history.mjs"]) {
+  assert.match(html, /id="board-toggle"[^>]*aria-controls="board-panel"[^>]*aria-expanded="false"/);
+  assert.match(html, /id="room-id"[\s\S]*id="board-panel"[^>]*hidden/);
+  for (const asset of ["/console-members.js", "/console-history.mjs", "/console-board.js"]) {
     const script = await handle(new Request(origin + asset));
     assert.equal(script.status, 200);
     assert.equal(script.headers.get("Content-Type"), "text/javascript; charset=utf-8");
@@ -88,6 +92,21 @@ test("relays named reads and task actions with the main process credential", asy
   assert.equal((await handle(consoleRequest(roomMembers, { method: "POST" }))).status, 404);
   assert.equal((await handle(consoleRequest(roomMembers, {}, "https://example.com"))).status, 403);
 
+  const versions = await handle(consoleRequest("/api/versions"));
+  assert.equal(versions.status, 200);
+  assert.deepEqual(await versions.json(), { state: "ready" });
+  assert.equal((await handle(consoleRequest("/api/versions", {}, "https://example.com"))).status, 403);
+
+  const board = "/api/room-board?room=01234567-89ab-4cde-8123-456789abcdef&session=local";
+  const boardBody = JSON.stringify({ version: 1, rules: "Rules", protocol: "Protocol" });
+  assert.equal((await handle(consoleRequest(board))).status, 200);
+  const publish = { method: "POST", headers: { "Content-Type": "application/json" }, body: boardBody };
+  const conflict = await handle(consoleRequest(board, publish));
+  assert.equal(conflict.status, 409);
+  assert.deepEqual(await conflict.json(), { state: "conflict" });
+  assert.equal((await handle(consoleRequest(board, publish, "https://example.com"))).status, 403);
+  assert.equal((await handle(consoleRequest(board, { method: "DELETE" }))).status, 404);
+
   const task = "/api/tasks/01234567-89ab-4cde-8123-456789abcdef/progress?room=room&session=local";
   const body = JSON.stringify({ client_progress_id: "progress-1", note: "In review" });
   const write = await handle(consoleRequest(task, {
@@ -108,6 +127,9 @@ test("relays named reads and task actions with the main process credential", asy
   assert.deepEqual(received, [
     ["/api/team?session=local", "GET", ""],
     [roomMembers, "GET", ""],
+    ["/api/versions", "GET", ""],
+    [board, "GET", ""],
+    [board, "POST", boardBody],
     [task, "POST", body],
     ["/api/team?session=redirect", "GET", ""],
   ].map(([url, method, body]) => ({
@@ -120,23 +142,25 @@ test("relays named reads and task actions with the main process credential", asy
   })));
 });
 
-test("reacquires the console endpoint after a stale launch credential", async (t) => {
-  let accepted = false;
-  const server = http.createServer((_request, response) => {
-    response.writeHead(accepted ? 200 : 401, { "Content-Type": "application/json" });
-    response.end("{}");
-  });
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  t.after(() => server.close());
-  const first = Promise.resolve({ port: server.address().port, token });
-  let endpoint = first;
-  const handle = createConsoleHandler(assets, () => endpoint, (stale) => {
-    assert.equal(stale, first);
-    accepted = true;
-    endpoint = Promise.resolve({ port: server.address().port, token: "b".repeat(43) });
-  });
+for (const route of ["/api/workspace", "/api/versions"]) {
+  test(`reacquires the console endpoint for ${route} after a stale launch credential`, async (t) => {
+    let accepted = false;
+    const server = http.createServer((_request, response) => {
+      response.writeHead(accepted ? 200 : 401, { "Content-Type": "application/json" });
+      response.end("{}");
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    t.after(() => server.close());
+    const first = Promise.resolve({ port: server.address().port, token });
+    let endpoint = first;
+    const handle = createConsoleHandler(assets, () => endpoint, (stale) => {
+      assert.equal(stale, first);
+      accepted = true;
+      endpoint = Promise.resolve({ port: server.address().port, token: "b".repeat(43) });
+    });
 
-  assert.equal((await handle(consoleRequest("/api/workspace"))).status, 503);
-  assert.equal((await handle(consoleRequest("/api/workspace"))).status, 200);
-});
+    assert.equal((await handle(consoleRequest(route))).status, 503);
+    assert.equal((await handle(consoleRequest(route))).status, 200);
+  });
+}

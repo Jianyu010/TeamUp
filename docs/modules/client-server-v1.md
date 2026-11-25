@@ -16,6 +16,12 @@ JSON API 前缀为 `/v1`。请求与响应是 UTF-8 JSON。内网使用 HTTPS。
 
 Server 启动读取 `TEAMUP_ENROLLMENT_KEYS` JSON 对象，键为 owner ID，值为登记密钥。支持命令 `teamup-server --db PATH [--host 127.0.0.1] [--port 8765] [--tls-cert PATH --tls-key PATH] [--room-retention-hours HOURS] [--dm-retention-hours HOURS]`。声明非回环监听地址时需要 TLS。反向代理在同主机终止 TLS 时可连回环。`--room-retention-hours` 与 `--dm-retention-hours` 都必须是 1–876000（含）之间的整数小时，各自独立校验并分别作用于房间与私聊；省略的配置不做对应的自动清理，两者都省略时不启动任何清理调度。清理运行节奏见 [会话历史、搜索与保留](conversation-history.md) 与 [Direct Messages](direct-messages.md)。
 
+### 构建版本（[#54](https://github.com/Jianyu010/TeamUp/issues/54)）
+
+Server Gateway 提供 `GET /v1/version`。返回 HTTP 200、`Cache-Control: no-store` 和 `{"version":"X.Y.Z"}`，开发版本遵循 [构建版本规则](../ci/contract.md#版本)。版本来自运行中的 Server 安装包。无法确定构建版本时 `version` 为 null。
+
+Client 使用已配置的 Server 地址和 TLS 设置读取版本。此操作只公开软件构建版本，无需账号或成员凭证，也不读取协作数据。旧 Server 可能返回 404。版本读取不参与登录、登记、成员授权或连接状态判定。
+
 ## 数据形状
 
 | 名称 | JSON 字段 |
@@ -61,6 +67,32 @@ Server 启动读取 `TEAMUP_ENROLLMENT_KEYS` JSON 对象，键为 owner ID，值
 | `GET /v1/rooms/{room_id}/members` | `{"members":[{"member_id":"…","role_description":"…","acked_board_version":null}]}`。返回所有当前成员，按 ID 排序，每人一行。已确认的版本为正整数，未确认时为 null。 |
 
 本地会话、远端会话采用相同的房间成员规则。Client 将各成员的确认版本与房间当前版本比较。最近发言仅来自同一阅读会话在当前房间有权读取的消息，任务及队友仅来自该会话可读的房间任务。详情缺失时可以继续展示名单。Server 的正文、任务和在线状态分别执行各自的权限检查。
+
+## 房间公告板（#64）
+
+本机 Client 通过 Gateway 访问 Collaboration 持有的公告状态。两条入口均使用当前会话的成员 token，公告待确认时也可调用。成功响应设置 `Cache-Control: no-store`。
+
+| 方法和路径 | 请求 | 成功结果 |
+| --- | --- | --- |
+| `GET /v1/rooms/{room_id}/board/view` | 无正文 | Board 加布尔字段 `can_edit`。只读事务返回当前正文和版本，成员的取阅记录与确认状态保持原值。 |
+| `POST /v1/rooms/{room_id}/board` | `version` 为编辑所基于的正整数版本，`rules` 和 `protocol` 为完整正文，沿用创建房间时的文本限制 | 更新后的 Board 加 `can_edit: true`。两段正文和递增版本在同一写事务内提交。 |
+
+- 创建房间时保存经成员 token 认证的创建者，与初始正文、版本和成员关系一起提交。Collaboration 在同一个边界内检查账号、当前成员关系、创建者身份及编辑基准版本。只有当前仍在房间中的创建者会得到 `can_edit: true`。
+- 失效凭证或停用账号返回 401 `unauthorized`。房间不存在或调用者无成员关系返回 404 `not_found`。非创建者提交发布返回 403 `forbidden`。创建者提交旧版本返回 409 `conflict`。同一版本并发发布只接受一次。冲突后重新读取并核对当前正文，再基于当前版本编辑。
+- 发布保留各成员原有的取阅与确认版本。下一次普通消息、历史和收件箱的授权检查以新版本为准。成员通过原有取阅和确认入口取得新版本资格。
+- 升级时给房间添加可空的创建者成员 ID。原有房间可继续读取，缺少创建者记录的房间只读。原有 Board 取阅、确认及房间概要的形状保持兼容。旧 Server 缺少查看入口时，Client 保留房间 ID 和概要并提示公告暂不可读。
+
+## 团队公开房间目录（#56）
+
+| 路由 | 响应 |
+| --- | --- |
+| `GET /v1/room-directory` | `{"rooms":[{"room_id":"…","name":"…","history_policy":"since_joining"}],"next_after":null}`，带 `Cache-Control: no-store`。 |
+
+本机 Client 通过 Gateway 读取 Collaboration 拥有的房间目录。凭证为当前有效的成员 token。Collaboration 在同一个只读事务内验证凭证和账号状态，并返回该 Server 上允许成员自行加入的团队公开房间。当前支持的房间都是团队公开房间，因此同一 Server 上的有效成员可以发现同一批房间。缺少凭证、凭证失效或账号停用返回 401 `unauthorized`。
+
+目录按 `room_id` 升序排列。`after` 是可省略的排他 UUID 游标，`limit` 默认 50，取值为 1–100。参数无效或请求含正文返回 422 `invalid_request`。有下一页时 `next_after` 是本页最后一个 ID，否则为 null。每页独立鉴权。刷新时从首页重读以发现排序位置在上次游标之前的新房间。
+
+目录仅含房间 ID、名称和加入后的历史策略。私聊、公告与确认状态、成员名单、任务和消息均在各自的授权入口读取。查看目录不加入房间，也不记录公告回执。成员加入后，详情和历史依上节及各自的公告确认规则授权。旧客户端和 MCP 继续使用成员范围的 `GET /v1/rooms`。
 
 ## 成员在线状态（#31 / #43）
 

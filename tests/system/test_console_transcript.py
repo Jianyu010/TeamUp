@@ -94,6 +94,46 @@ def assert_same_page(console_result, server_result, expected):
     ]
 
 
+def test_workspace_discovers_a_teammates_room_before_joining(transcript):
+    owner, api, (alice, _, carol), console, session = transcript
+    assert console.get("/api/workspace").json()["rooms"] == []
+    room = api.create_room(alice, "Teammate review", history_policy="retained")
+    api.read_and_ack_board(alice, room)
+    first = api.send(alice, room, "Only room members can read this")
+
+    response = console.get("/api/workspace")
+    response.raise_for_status()
+    workspace = response.json()
+    assert workspace["rooms"] == [
+        {
+            "id": room,
+            "name": "Teammate review",
+            "history_policy": "retained",
+            "latest_message_id": None,
+            "memberships": [],
+        }
+    ]
+    assert workspace["directory_available"] is True
+    assert console_page(console, session, room) == {"state": "not_found"}
+    assert api.call("GET", "/v1/rooms", carol.token) == {"rooms": []}
+
+    api.join(carol, room)
+    (joined,) = console.get("/api/workspace").json()["rooms"]
+    assert joined["id"] == room
+    assert [item["session"] for item in joined["memberships"]] == [session]
+    assert console_page(console, session, room)["state"] == "board_ack_required"
+    api.read_and_ack_board(carol, room)
+    assert console_page(console, session, room)["messages"][0]["id"] == str(
+        first["message_id"]
+    )
+
+    owner.disable_account("carol")
+    assert (
+        api.call("GET", "/v1/room-directory", carol.token, error="unauthorized") == 401
+    )
+    assert console.get("/api/workspace").json()["rooms"] == []
+
+
 def test_bystander_reads_the_canonical_room_transcript_across_pages(transcript):
     owner, api, (alice, bob, carol), console, session = transcript
     room = api.create_room(alice, "Review", history_policy="retained")
@@ -231,3 +271,57 @@ def test_expired_transcript_reports_the_server_resume_boundary(transcript):
     assert server_result["history_truncated"] is False
     assert still_covered.get("expired_through_message_id") == str(watermark)
     assert still_covered.get("history_truncated") is False
+
+
+def test_console_board_view_and_publish_use_the_local_member(transcript):
+    _, api, (alice, _, carol), console, session = transcript
+    room = api.create_room(carol, "Review Board", rules="Share the diff.")
+    api.join(alice, room)
+    api.read_and_ack_board(alice, room)
+    board_path = f"/v1/rooms/{room}/board"
+    params = {"session": session, "room": room}
+    result = console.get("/api/room-board", params=params)
+    assert result.status_code == 200
+    original = result.json()["board"]
+    assert original["rules"] == "Share the diff."
+    assert original["can_edit"] is True
+    api.call(
+        "POST",
+        f"{board_path}/ack",
+        carol.token,
+        error="board_read_required",
+        json={"version": original["version"]},
+    )
+
+    update = {
+        "version": original["version"],
+        "rules": "Post the diff.",
+        "protocol": "Summarize tests.",
+    }
+    origin = str(console.base_url).rstrip("/")
+    assert (
+        console.post("/api/room-board", params=params, json=update).status_code == 403
+    )
+    rejected = console.post(
+        "/api/room-board",
+        params={**params, "session": "unapproved"},
+        json=update,
+        headers={"Origin": origin},
+    )
+    assert rejected.status_code == 404
+    response = console.post(
+        "/api/room-board", params=params, json=update, headers={"Origin": origin}
+    )
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "state": "ready",
+        "board": {**update, "version": 2, "room_id": room, "can_edit": True},
+    }
+    stale = console.post(
+        "/api/room-board", params=params, json=update, headers={"Origin": origin}
+    )
+    assert stale.status_code == 409
+    assert stale.json() == {"state": "conflict"}
+    api.call(
+        "GET", f"/v1/rooms/{room}/messages", alice.token, error="board_ack_required"
+    )

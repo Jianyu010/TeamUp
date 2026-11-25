@@ -1,4 +1,5 @@
 import {readTranscript, sameBoard} from "/console-history.mjs";
+import {roomBoard} from "/console-board.js";
 import {roomMembers, renderTeam} from "/console-members.js";
 import {taskPanel} from "/console-tasks.js";
 
@@ -23,6 +24,7 @@ const state = {
   connected: false,
 };
 const wireLimit = 20;
+const refreshInterval = 5000;
 const desktop = location.protocol === "teamup:";
 let key;
 if (!desktop) {
@@ -93,12 +95,14 @@ function selectRoomSubjects(room) {
   if (!eligible.some((item) => item.session === state.actor)) state.actor = preferredSession(eligible);
 }
 
+const boardPanel = roomBoard({get, request: read});
+
 const tasks = taskPanel({
   request: read,
   room: () => state.room,
   actor: () => sessionFor(state.actor),
   sessions: () => state.workspace.sessions,
-  active: () => state.page === "room" && state.roomView === "tasks",
+  active: () => state.page === "room" && Boolean(state.reader) && state.roomView === "tasks",
 });
 
 const members = roomMembers({
@@ -108,14 +112,23 @@ const members = roomMembers({
   policyChanged: renderHistoryBoundary,
 });
 
-function setRoomView(view) {
-  state.roomView = view;
-  const isTasks = view === "tasks";
+function renderRoomView() {
+  const joined = Boolean(state.reader);
+  const isTasks = state.roomView === "tasks";
+  get("detail").toggleAttribute("data-preview", !joined);
+  get("room-preview").hidden = joined;
+  get("chat-heading").hidden = !joined;
+  get("member-rail").hidden = !joined;
   get("tasks-tab").setAttribute("aria-pressed", String(isTasks));
   get("chats-tab").setAttribute("aria-pressed", String(!isTasks));
-  get("task-board").hidden = !isTasks;
-  get("chat-scroll").hidden = isTasks;
-  if (isTasks) tasks.refresh();
+  get("task-board").hidden = !joined || !isTasks;
+  get("chat-scroll").hidden = !joined || isTasks;
+}
+
+function setRoomView(view) {
+  state.roomView = view;
+  renderRoomView();
+  if (view === "tasks") tasks.refresh();
 }
 
 function card(label, description) {
@@ -152,7 +165,9 @@ function renderWorkspace() {
   });
   const roomButtons = rooms.map((room) => {
     const noun = room.memberships.length === 1 ? "session" : "sessions";
-    const button = card(room.name, room.memberships.length + " of your " + noun);
+    const description = room.memberships.length
+      ? room.memberships.length + " of your " + noun : "No local sessions joined";
+    const button = card(room.name, description);
     button.dataset.room = room.id;
     if (state.page === "room" && state.room === room.id) button.setAttribute("aria-current", "page");
     button.classList.toggle("related", Boolean(state.focused && state.page === "workspace" && related(room)));
@@ -160,7 +175,16 @@ function renderWorkspace() {
     return button;
   });
   get("sessions").replaceChildren(...(sessionButtons.length ? sessionButtons : [node("p", "No approved sessions", "empty")]));
-  get("rooms").replaceChildren(...(roomButtons.length ? roomButtons : [node("p", "Your joined rooms appear here", "empty")]));
+  const roomRows = [...roomButtons];
+  if (!state.workspace.directory_available && sessions.some((session) => session.state === "ready")) {
+    const status = node("p", "Room directory unavailable", "empty");
+    status.setAttribute("role", "status");
+    roomRows.unshift(status);
+  }
+  if (!roomRows.length) {
+    roomRows.push(node("p", state.workspace.directory_available ? "No team rooms" : "No rooms available", "empty"));
+  }
+  get("rooms").replaceChildren(...roomRows);
   const focus = sessionButtons.find((button) => button.dataset.session === oldSession) ||
     roomButtons.find((button) => button.dataset.room === oldRoom);
   focus?.focus({preventScroll:true});
@@ -230,6 +254,7 @@ function show(page) {
     state.chat = null;
     state.reader = null;
     state.room = null;
+    boardPanel.setRoom(null, [], null);
     members.reset();
     renderChat();
   }
@@ -272,9 +297,19 @@ function renderRoomHeader() {
   }));
   if (!actors.length) chooser.append(node("option", "No acknowledged session"));
   const membership = room.memberships.find((item) => item.session === state.reader);
-  get("board-status").textContent = membership
-    ? "Version " + membership.current + " · " + (membership.acknowledged === membership.current ? "Acknowledged" : "Acknowledgment needed")
-    : "";
+  get("room-heading").textContent = room.name;
+  get("room-heading").hidden = Boolean(membership);
+  const boardSessions = readyMemberships(room).map((entry) => ({
+    ...sessionFor(entry.session),
+    current: entry.current,
+    acknowledged: entry.acknowledged,
+  }));
+  boardPanel.setRoom(room.id, boardSessions, state.reader);
+  const history = room.history_policy === "retained"
+    ? "Retained messages can be read after joining and acknowledging the board."
+    : "Room history starts when you join.";
+  get("room-preview").textContent = membership ? "" : "Copy the room ID to join through your agent. " + history;
+  renderRoomView();
 }
 
 function openRoom(id) {
@@ -291,7 +326,7 @@ function openRoom(id) {
   show("room");
   renderRoomHeader();
   renderChat();
-  setRoomView(state.roomView);
+  if (state.roomView === "tasks") tasks.refresh();
   get("back").focus({preventScroll:true});
   refreshRoom();
   members.refresh();
@@ -325,7 +360,7 @@ function renderChat(options = {}) {
   get("chat-status").textContent = !chat ? "Reading room messages…"
     : messagesForState[chat.state] || (chat.messages?.length ? "" : "No messages in this session’s history.");
   renderHistoryBoundary();
-  members.details();
+  members.chatChanged();
   const expanded = new Set(Array.from(get("messages").querySelectorAll("details[open]"), (item) => item.dataset.id));
   const rows = (chat?.messages || []).map((message) => {
     const date = message.created_at ? new Date(message.created_at) : null;
@@ -428,6 +463,21 @@ function setConnection(message, live) {
   get("connection").dataset.live = String(live);
 }
 
+async function refreshVersions() {
+  try {
+    const result = await read("/api/versions");
+    get("client-version").textContent = result.client_version ?? "Unknown";
+    get("server-version").textContent = result.server_version ?? (
+      result.server_state === "unavailable" ? "Unavailable" : "Unknown"
+    );
+  } catch (error) {
+    get("client-version").textContent = "Unknown";
+    get("server-version").textContent = "Unavailable";
+    if (error.message === "access") return;
+  }
+  setTimeout(refreshVersions, refreshInterval);
+}
+
 async function refresh() {
   let expire = false;
   try {
@@ -448,7 +498,8 @@ async function refresh() {
     } else if (state.page === "room") {
       const oldActor = state.actor;
       selectRoomSubjects(active);
-      if (state.actor !== oldActor) tasks.changeActor();
+      if (oldReader && !state.reader) tasks.reset();
+      else if (state.actor !== oldActor) tasks.changeActor();
       const board = active.memberships.find((item) => item.session === state.reader);
       const contextChanged = state.reader !== oldReader || sessionFor(state.reader)?.member_id !== oldMember ||
         !sameBoard(board, oldBoard);
@@ -467,7 +518,10 @@ async function refresh() {
       if (state.page === "room") renderRoomHeader();
     }
     if (state.page === "team") refreshTeam();
-    if (state.page === "room" && state.roomView === "tasks") tasks.refresh();
+    if (state.page === "room") {
+      boardPanel.refresh();
+      if (state.roomView === "tasks") tasks.refresh();
+    }
   } catch (error) {
     expire = error.message === "access";
     setConnection(expire ? "Open a fresh console link" : "Reconnecting…", false);
@@ -476,7 +530,7 @@ async function refresh() {
     state.room = null;
     show("workspace");
   } finally {
-    if (!expire) setTimeout(refresh, 5000);
+    if (!expire) setTimeout(refresh, refreshInterval);
   }
 }
 
@@ -538,8 +592,10 @@ window.addEventListener("resize", drawWires);
 window.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && state.page !== "workspace") show("workspace");
 });
-if (desktop || key) refresh();
-else {
+if (desktop || key) {
+  refresh();
+  refreshVersions();
+} else {
   setConnection("Open the URL printed by TeamUp Client", false);
   renderWorkspace();
 }

@@ -1,13 +1,16 @@
 import asyncio
+from importlib.metadata import version
 
 import httpx
 import pytest
-from teamup_client import _console_data
+from teamup_client import _console, _console_data
 from teamup_client._console import serve_console
 from teamup_client._console_data import ConsoleReader, ConsoleSession
+from teamup_client._upstream import Upstream as ServerTransport
 from teamup_client.ipc import ClientError
 
 ROOM = "247629c4-8e54-4d0e-8b25-7a8c43bf85b2"
+DISCOVERABLE_ROOM = "847629c4-8e54-4d0e-8b25-7a8c43bf85b2"
 BACKEND = "93e57f02-b2d7-4145-a968-9f0b60319c71"
 REVIEWER = "a4a4610b-42b2-45d3-9002-c4ee89fe3427"
 REMOTE = "1fb1fae4-88ac-4bb8-aec1-be36cb403825"
@@ -38,6 +41,8 @@ class Upstream:
                     }
                 ],
             }
+        if path == "/room-directory":
+            raise ClientError("not_found", "Directory is unavailable on this Server")
         if path == f"/rooms/{ROOM}/tasks":
             if token == "reviewer-secret":
                 raise ClientError("board_ack_required", "Current board needed")
@@ -79,6 +84,7 @@ def test_workspace_and_room_reads_keep_session_scope_and_board_ack():
         reader = ConsoleReader(sessions, request)
         workspace = await reader.workspace()
         assert [room["id"] for room in workspace["rooms"]] == [ROOM]
+        assert workspace["directory_available"] is False
         assert {item["id"] for item in workspace["sessions"]} == {"primary", "review"}
         assert {item["session"] for item in workspace["rooms"][0]["memberships"]} == {
             "primary",
@@ -106,6 +112,118 @@ def test_workspace_and_room_reads_keep_session_scope_and_board_ack():
         assert reviewer["messages"] == []
         assert all(not path.endswith("/board") for _, path, _, _ in request.calls)
         assert all(path != "/presence" for _, path, _, _ in request.calls)
+
+    asyncio.run(scenario())
+
+
+def test_workspace_combines_all_directory_pages_with_joined_rooms():
+    async def scenario():
+        upstream = Upstream()
+        cursors = []
+
+        async def request(method, path, token, *, query=None):
+            if path == "/room-directory":
+                assert token == "backend-secret"
+                cursor = query.get("after")
+                cursors.append(cursor)
+                if cursor is None:
+                    return {
+                        "rooms": [
+                            {
+                                "room_id": ROOM,
+                                "name": "Compatibility",
+                                "history_policy": "since_joining",
+                            }
+                        ],
+                        "next_after": ROOM,
+                    }
+                assert cursor == ROOM
+                return {
+                    "rooms": [
+                        {
+                            "room_id": DISCOVERABLE_ROOM,
+                            "name": "Teammate room",
+                            "history_policy": "retained",
+                        }
+                    ],
+                    "next_after": None,
+                }
+            return await upstream(method, path, token, query=query)
+
+        result = await ConsoleReader(sessions, request).workspace()
+        assert cursors == [None, ROOM]
+        assert result["directory_available"] is True
+        joined, discoverable = result["rooms"]
+        assert joined["id"] == ROOM
+        assert [item["session"] for item in joined["memberships"]] == [
+            "primary",
+            "review",
+        ]
+        assert discoverable == {
+            "id": DISCOVERABLE_ROOM,
+            "name": "Teammate room",
+            "history_policy": "retained",
+            "latest_message_id": None,
+            "memberships": [],
+        }
+
+    asyncio.run(scenario())
+
+
+def test_directory_discards_pages_when_its_local_session_is_revoked():
+    async def scenario():
+        upstream = Upstream()
+        approved = list(sessions())[:1]
+
+        async def request(method, path, token, *, query=None):
+            if path == "/room-directory":
+                approved.clear()
+                return {
+                    "rooms": [
+                        {"room_id": ROOM, "name": "Build", "history_policy": "retained"}
+                    ],
+                    "next_after": None,
+                }
+            return await upstream(method, path, token, query=query)
+
+        result = await ConsoleReader(lambda: tuple(approved), request).workspace()
+        assert result == {"sessions": [], "rooms": [], "directory_available": False}
+
+    asyncio.run(scenario())
+
+
+def test_slow_directory_keeps_joined_rooms_within_the_workspace_deadline(monkeypatch):
+    monkeypatch.setattr(_console, "CONSOLE_REQUEST_SECONDS", 1)
+    monkeypatch.setattr(_console, "WORKSPACE_RESPONSE_RESERVE_SECONDS", 0.25)
+
+    async def scenario():
+        upstream = Upstream()
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def request(method, path, token, *, query=None):
+            if path == "/rooms":
+                await asyncio.sleep(0.3)
+            if path == "/room-directory":
+                started.set()
+                await release.wait()
+            return await upstream(method, path, token, query=query)
+
+        async with serve_console(ConsoleReader(sessions, request)) as url:
+            origin, token = url.split("#")
+            async with httpx.AsyncClient(timeout=1.5, trust_env=False) as client:
+                try:
+                    response = await client.get(
+                        origin + "api/workspace",
+                        headers={"Authorization": f"Bearer {token}"},
+                    )
+                finally:
+                    release.set()
+        assert started.is_set()
+        assert response.status_code == 200
+        workspace = response.json()
+        assert workspace["directory_available"] is False
+        assert [room["id"] for room in workspace["rooms"]] == [ROOM]
 
     asyncio.run(scenario())
 
@@ -535,6 +653,71 @@ def test_in_flight_history_is_discarded_when_local_approval_is_removed():
     asyncio.run(scenario())
 
 
+def test_console_versions_follow_the_configured_server_without_member_credentials():
+    async def scenario():
+        replies = iter(
+            [
+                httpx.Response(200, json={"version": "0.0.1"}),
+                httpx.Response(404),
+                httpx.ConnectError("Server restarting"),
+                httpx.Response(200, json={"version": "0.0.2.dev3"}),
+                httpx.Response(200, json={"version": None}),
+            ]
+        )
+
+        def upstream(request):
+            assert request.method == "GET"
+            assert str(request.url) == "https://teamup.example.test/v1/version"
+            assert "authorization" not in request.headers
+            reply = next(replies)
+            if isinstance(reply, Exception):
+                raise reply
+            return reply
+
+        installed = version("teamup-client")
+        async with (
+            httpx.AsyncClient(
+                base_url="https://teamup.example.test",
+                transport=httpx.MockTransport(upstream),
+            ) as server,
+            serve_console(
+                ConsoleReader(lambda: (), ServerTransport(server).request)
+            ) as url,
+            httpx.AsyncClient(trust_env=False) as client,
+        ):
+            origin, token = url.split("#")
+            endpoint = origin + "api/versions"
+            auth = {"Authorization": "Bearer " + token}
+            assert (await client.get(endpoint)).status_code == 401
+            assert (
+                await client.get(endpoint + "?server=other", headers=auth)
+            ).status_code == 400
+            assert (
+                await client.get(
+                    endpoint, headers={**auth, "Origin": "http://other.test"}
+                )
+            ).status_code == 403
+            for server_version, state in (
+                ("0.0.1", "ready"),
+                (None, "unknown"),
+                (None, "unavailable"),
+                ("0.0.2.dev3", "ready"),
+                (None, "unknown"),
+            ):
+                snapshot = await client.get(endpoint, headers=auth)
+                assert snapshot.status_code == 200
+                assert snapshot.headers["cache-control"] == "no-store"
+                assert snapshot.json() == {
+                    "client_version": None
+                    if installed == "0.0.0+unknown"
+                    else installed,
+                    "server_version": server_version,
+                    "server_state": state,
+                }
+
+    asyncio.run(scenario())
+
+
 def test_loopback_listener_requires_its_credential_and_serves_bundled_assets():
     async def scenario():
         async with serve_console(ConsoleReader(sessions, Upstream())) as url:
@@ -551,7 +734,8 @@ def test_loopback_listener_requires_its_credential_and_serves_bundled_assets():
                     script = await client.get(origin + asset)
                     assert script.status_code == 200
                     assert (
-                        script.headers["content-type"] == "text/javascript; charset=utf-8"
+                        script.headers["content-type"]
+                        == "text/javascript; charset=utf-8"
                     )
                 logo = await client.get(origin + "jet-pair.png")
                 assert logo.headers["content-type"] == "image/png"
