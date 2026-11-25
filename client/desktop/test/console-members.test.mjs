@@ -6,6 +6,11 @@ class Element {
   dataset = {};
   children = [];
 
+  get nextElementSibling() {
+    const siblings = this.parentElement?.children;
+    return siblings?.[siblings.indexOf(this) + 1] ?? null;
+  }
+
   addEventListener() {}
   setAttribute() {}
 
@@ -14,12 +19,16 @@ class Element {
   }
 
   replaceChildren(...items) {
+    for (const child of this.children) child.parentElement = null;
+    for (const child of items) child.parentElement = this;
     this.children = items;
   }
 
   insertBefore(item, next) {
-    this.children = this.children.filter((child) => child !== item);
-    this.children.splice(next ? this.children.indexOf(next) : this.children.length, 0, item);
+    if (document.activeElement === item) document.activeElement = null;
+    const siblings = this.children.filter((child) => child !== item);
+    siblings.splice(next ? siblings.indexOf(next) : siblings.length, 0, item);
+    this.replaceChildren(...siblings);
   }
 
   querySelectorAll(selector) {
@@ -48,7 +57,6 @@ function room(t, members, messages) {
   globalThis.document = {
     getElementById: (id) => elements.get(id),
     createElement: () => new Element(),
-    querySelectorAll: (selector) => rail.querySelectorAll(selector),
     addEventListener() {},
   };
   globalThis.window = {addEventListener() {}};
@@ -70,6 +78,10 @@ function room(t, members, messages) {
   return {
     refresh: roster.refresh,
     orderedIds: () => rail.children.map((row) => row.dataset.member),
+    focus(id) {
+      document.activeElement = rail.children.find((row) => row.dataset.member === id);
+    },
+    focusedId: () => document.activeElement?.dataset.member,
     setTranscript(result) {
       transcript = result;
       roster.chatChanged();
@@ -103,10 +115,15 @@ test("room roster updates as the authorized transcript changes", async (t) => {
   await roster.refresh();
   assert.deepEqual(roster.orderedIds(), ["a", "b"]);
 
+  roster.focus("b");
   roster.setTranscript({state: "ready", messages: [...messages, message("2", "b")]});
   assert.deepEqual(roster.orderedIds(), ["b", "a"]);
+  assert.equal(roster.focusedId(), "b");
 
   roster.setTranscript({state: "board_ack_required", messages: []});
+  assert.deepEqual(roster.orderedIds(), ["a", "b"]);
+
+  roster.setTranscript({state: "ready"});
   assert.deepEqual(roster.orderedIds(), ["a", "b"]);
 });
 

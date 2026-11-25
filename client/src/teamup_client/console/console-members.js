@@ -108,18 +108,23 @@ export function roomMembers({read, subject, chat, policyChanged}) {
     panel.replaceChildren();
   }
 
-  function position() {
+  function position(keepPinnedVisible = false) {
     if (!selected) return;
-    const anchor = selected.getBoundingClientRect();
+    let anchor = selected.getBoundingClientRect();
     const viewport = rail.getBoundingClientRect();
-    if (anchor.bottom <= viewport.top || anchor.top >= viewport.bottom) return close();
+    if (anchor.bottom <= viewport.top || anchor.top >= viewport.bottom) {
+      if (!keepPinnedVisible || !pinned) return close();
+      rail.scrollTop += anchor.bottom <= viewport.top
+        ? anchor.top - viewport.top : anchor.bottom - viewport.bottom;
+      anchor = selected.getBoundingClientRect();
+    }
     const left = Math.max(6, anchor.left - panel.offsetWidth - 6);
     const top = Math.max(6, Math.min(anchor.top, window.innerHeight - panel.offsetHeight - 6));
     panel.style.left = left + "px";
     panel.style.top = top + "px";
   }
 
-  function details() {
+  function details(keepPinnedVisible = false) {
     if (!selected) return;
     const member = page?.members?.find((item) => item.id === selected.dataset.member);
     if (!member) return close();
@@ -149,7 +154,7 @@ export function roomMembers({read, subject, chat, policyChanged}) {
     } else content.push(element("p", Array.isArray(member.tasks) ? "No active tasks." : "Task details unavailable."));
     panel.replaceChildren(...content);
     if (!panel.matches(":popover-open")) panel.showPopover();
-    position();
+    position(keepPinnedVisible);
   }
 
   function open(button, pin = false) {
@@ -177,7 +182,7 @@ export function roomMembers({read, subject, chat, policyChanged}) {
     recentCommunication.clear();
     const transcript = chat();
     if (transcript?.state === "ready") {
-      for (const [index, message] of transcript.messages.entries()) {
+      for (const [index, message] of (transcript.messages ?? []).entries()) {
         const activity = {message, index};
         recentCommunication.set(message.sender_member_id, activity);
         for (const id of message.recipient_member_ids ?? []) recentCommunication.set(id, activity);
@@ -191,13 +196,17 @@ export function roomMembers({read, subject, chat, policyChanged}) {
     }));
     ordered.sort((a, b) => b.online - a.online || b.activity - a.activity);
     const focused = document.activeElement;
-    for (const [index, {button}] of ordered.entries()) {
-      if (rail.children[index] !== button) rail.insertBefore(button, rail.children[index] || null);
+    let next = null;
+    let moved = false;
+    // Place rows from the end so siblings can move around the focused button.
+    for (const {button} of ordered.reverse()) {
+      if (button !== focused && (button.parentElement !== rail || button.nextElementSibling !== next)) {
+        rail.insertBefore(button, next);
+        moved = true;
+      }
+      next = button;
     }
-    if (focused && document.activeElement !== focused && rail.contains(focused)) {
-      focused.focus({preventScroll: true});
-    }
-    details();
+    details(moved);
   }
 
   function reset() {
@@ -287,7 +296,7 @@ export function roomMembers({read, subject, chat, policyChanged}) {
       close();
     }
   });
-  rail.addEventListener("scroll", position, {passive: true});
-  window.addEventListener("resize", position);
+  rail.addEventListener("scroll", () => position(), {passive: true});
+  window.addEventListener("resize", () => position());
   return {refresh, reset, chatChanged: reorder, historyPolicy: () => page?.history_policy};
 }
