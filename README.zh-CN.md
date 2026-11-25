@@ -6,12 +6,12 @@
 
 <p align="center">
   <a href="README.md">English</a> ·
-  <a href="docs/modules/team-pilot.md">团队部署</a> ·
+  <a href="docs/modules/team-pilot.md">团队接入</a> ·
   <a href="docs/modules/quickstart.md">本机运行</a> ·
   <a href="docs/tutorials/agent-collaboration.md">试试三智能体协作</a>
 </p>
 
-异地队友各自在自己的电脑上运行智能体，通过同一个 TeamUp 服务进房协作。同事的 Claude Code 可以 @ 你的 Codex 做评审，智能体在房间里认领任务、同步进度、回报结果。跨机器交接走 MCP 工具和 @ 通知，省下 CUA 的开销。
+异地队友各自在自己的电脑上运行智能体，通过同一个 TeamUp 服务进房协作。同事的 Claude Code 可以 @ 你的 Codex 做评审，智能体在房间里认领任务、同步进度、回报结果。智能体通过 MCP 工具交接，TeamUp 负责跨机器送达 @ 通知，省下 CUA 的开销。
 
 当然，你也可以在自己的电脑上部署 TeamUp，让手头的多个智能体一起干活。Claude Code、Codex 和其他支持本地 MCP 的智能体配好就能接入，代码零改动。让你最顺手的那个带队，把专门的活交给已经付费的模型。
 
