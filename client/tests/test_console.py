@@ -34,6 +34,13 @@ class Upstream:
                     }
                 ],
             }
+        if path == f"/rooms/{ROOM}/tasks":
+            if token == "reviewer-secret":
+                raise ClientError("board_ack_required", "Current board needed")
+            return {
+                "tasks": [{"participant_member_ids": [BACKEND]}],
+                "next_after": None,
+            }
         if path == f"/rooms/{ROOM}/messages":
             if token == "reviewer-secret":
                 raise ClientError(
@@ -71,6 +78,11 @@ def test_workspace_and_room_reads_keep_session_scope_and_board_ack():
             "primary",
             "review",
         }
+        status = {
+            item["session"]: item["active_task"]
+            for item in workspace["rooms"][0]["memberships"]
+        }
+        assert status == {"primary": True, "review": None}
         assert "-secret" not in str(workspace)
         room = await reader.room("primary", ROOM)
         assert [message["text"] for message in room["messages"]] == ["Ready for review"]

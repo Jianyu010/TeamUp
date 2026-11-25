@@ -8,6 +8,7 @@ from typing import Protocol
 from .ipc import ClientError
 
 PAGE = 30
+VISIBLE_WIRE_LIMIT = 20
 MAX_BEFORE = 1 << 63
 
 
@@ -102,10 +103,43 @@ class ConsoleReader:
                         "session": session["id"],
                         "acknowledged": room["acked_board_version"],
                         "current": room["current_board_version"],
+                        "active_task": None,
                     }
                 )
+        if (
+            sum(len(room["memberships"]) for room in rooms.values())
+            <= VISIBLE_WIRE_LIMIT
+        ):
+            by_session = {
+                reference.id: (reference, session["member_id"])
+                for reference, session, _ in reports
+            }
+            work = [
+                (membership, room["id"])
+                for room in rooms.values()
+                for membership in room["memberships"]
+                if membership["acknowledged"] == membership["current"]
+            ]
+            observations = await asyncio.gather(
+                *(
+                    self._participating(*by_session[membership["session"]], room_id)
+                    for membership, room_id in work
+                )
+            )
+            for (membership, _), active in zip(work, observations, strict=True):
+                membership["active_task"] = active
+        approved = {
+            reference.id
+            for reference, _, _ in reports
+            if self._current(reference.id) == reference
+        }
+        sessions = [session for session in sessions if session["id"] in approved]
+        for room in rooms.values():
+            room["memberships"] = [
+                item for item in room["memberships"] if item["session"] in approved
+            ]
         ordered = sorted(
-            rooms.values(),
+            (room for room in rooms.values() if room["memberships"]),
             key=lambda entry: (
                 -int(entry["latest_message_id"] or 0),
                 entry["name"].casefold(),
@@ -116,6 +150,30 @@ class ConsoleReader:
             message = room["latest_message_id"]
             room["latest_message_id"] = str(message) if message is not None else None
         return {"sessions": sessions, "rooms": ordered}
+
+    async def _participating(
+        self, session: ConsoleSession, member_id: str, room_id: str
+    ) -> bool | None:
+        after = 0
+        while True:
+            try:
+                page = await self._read(
+                    session,
+                    f"/rooms/{room_id}/tasks",
+                    {"status": "open", "after": after, "limit": 100},
+                )
+            except ClientError:
+                return None
+            if any(
+                member_id in task["participant_member_ids"] for task in page["tasks"]
+            ):
+                return True
+            cursor = page["next_after"]
+            if cursor is None:
+                return False
+            if cursor <= after:
+                return None
+            after = cursor
 
     async def team(self, identity: str) -> dict:
         session = self._current(identity)

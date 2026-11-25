@@ -177,6 +177,7 @@ function drawWires() {
       const bend = Math.max(6, (x2 - x1) * .46);
       const path = svg("path");
       path.dataset.focused = String(Boolean(state.focused));
+      path.dataset.active = String(membership.active_task === true);
       path.setAttribute("d", "M " + x1 + " " + y1 + " C " + (x1 + bend) + " " + y1 +
         " " + (x2 - bend) + " " + y2 + " " + x2 + " " + y2);
       layer.append(path);
