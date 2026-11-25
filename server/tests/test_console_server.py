@@ -1098,6 +1098,42 @@ def test_console_transcript_before_above_sqlite_max_is_an_unbounded_upper_edge(
         assert all("edge" not in str(value) for row in rows for value in row.values())
 
 
+def test_console_transcript_missing_room_resolves_after_console_read(tmp_path):
+    """Room existence is resolved after console_read, before transcript_read.
+
+    An operator holding console_read already sees the full room list, so an
+    absent room answers 404 not_found on the transcript route like roster
+    and timeline, instead of the room-scoped transcript_read 403 answering
+    first. Accounts without console_read still get 403 for an unknown room
+    (no existence leak), invalid credentials still get 401, an existing
+    room without the room-scoped grant stays 403, and only the successful
+    read writes an audit row.
+    """
+    db_path = tmp_path / "team.sqlite3"
+    enter_password(db_path, "create", "alice", PASSWORD)
+    with live_server(db_path) as (client, _):
+        room_id = console_team_room(client, messages=("kept one",), prefix="kept")
+        console = console_token(client, "alice", PASSWORD)
+        missing = str(uuid4())
+
+        # Without console_read the account-level check answers first, even
+        # for a room that does not exist.
+        error(console_transcript(client, console, missing), 403, "forbidden")
+        error(console_transcript(client, "x" * 43, missing), 401, "unauthorized")
+        assert audit_rows(db_path) == []
+
+        admin(db_path, "grant-console", "alice")
+        error(console_transcript(client, console, missing), 404, "not_found")
+        error(console_transcript(client, console, room_id), 403, "forbidden")
+        assert audit_rows(db_path) == []
+
+        admin(db_path, "grant-transcript", "alice", room_id)
+        page = console_transcript(client, console, room_id).json()
+        assert [message["text"] for message in page["messages"]] == ["kept one"]
+        rows = audit_rows(db_path)
+        assert [row["room_id"] for row in rows] == [room_id]
+
+
 def test_console_room_detail_latest_activity_per_actor_and_room(tmp_path):
     """Roster detail derives the room's and each member's latest activity.
 

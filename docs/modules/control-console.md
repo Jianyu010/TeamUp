@@ -58,7 +58,7 @@
 
 ## 操作
 
-成功返回 HTTP 200。分页沿用已发布约定：`after` 从 0 开始，排除小于或等于该 ID 的记录，`limit` 默认 50、最大 100，按 ID 递增。所有控制台路由要求 Bearer 操作员凭证（`purpose:"console"` 会话、账号未停用、会话未到期未撤销）且账号持有 `console_read`；凭证缺一格（非 console 会话、成员 token、登记密钥、无效或过期）一律 401 `unauthorized`，凭证有效但缺 `console_read` 为 403 `forbidden`。目标房间不存在一律 404 `not_found`（在鉴权之后返回）。
+成功返回 HTTP 200。分页沿用已发布约定：`after` 从 0 开始，排除小于或等于该 ID 的记录，`limit` 默认 50、最大 100，按 ID 递增。所有控制台路由要求 Bearer 操作员凭证（`purpose:"console"` 会话、账号未停用、会话未到期未撤销）且账号持有 `console_read`；凭证缺一格（非 console 会话、成员 token、登记密钥、无效或过期）一律 401 `unauthorized`，凭证有效但缺 `console_read` 为 403 `forbidden`。目标房间不存在一律 404 `not_found`，判定次序固定为：凭证 401 → 账号级 `console_read` 403 → 房间存在性 404 → 房间级 `transcript_read` 403（末级仅 transcript 路由）。持有 `console_read` 的操作员（本就可列出全部房间）对不存在的房间得到 404，与 roster/timeline 一致；缺 `console_read` 的账号无论房间是否存在均为 403，不因 404/403 之差泄露房间存在性。
 
 | 方法和路径 | 请求 | 成功结果 | 阶段 |
 | --- | --- | --- | --- |
@@ -168,7 +168,7 @@ Server 契约测试（`server/tests/test_console_server.py`；stage 2 项保持�
 7. （本期）roster 详情：`room`/`members`/`transcript_allowed` 字段精确（`board_state` 随确认状态、`harness_state` 恒 `unknown`、`member_id` 稳定排序、`last_activity` 为该成员最新活动）；房间不存在 404。
 8. （本期）Timeline：四类活动字段精确且不含正文；`after`/`limit` 递增分页、短页即尾；加入/确认/重发/重复确认收件幂等重试不产生重复投影行。
 9. （本期）Transcript：省略 `before` 取最新页（页内递增）、`before` 取更早页、`has_more` 如实；大于 SQLite 整数上界的 `before` 按无上界返回最新一页（非 500），审计 `page_before` 记 null；`sender_role_description` 为读取时登记角色；存量无时间戳消息 `created_at` 为 null；每次成功响应在同一事务写入一条审计（owner、room、action、分页参数、时间），审计行不含正文。
-10. （本期）授权边界：仅元数据授权的操作员读不到消息正文（timeline 无正文、无 transcript 权限 403）；房间级 `transcript_read` 只对授权房间生效，跨房间 403；撤销后携旧游标翻页 403、停用/过期会话 401；控制台读取不产生收件事件或 SSE 提示。
+10. （本期）授权边界：仅元数据授权的操作员读不到消息正文（timeline 无正文、无 transcript 权限 403）；房间级 `transcript_read` 只对授权房间生效，跨房间 403；transcript 对不存在房间的次序为 console_read 之后、房间级授权之前（缺 `console_read` 未知房间 403、持 `console_read` 缺房 404，既有未授权房间仍 403）；撤销后携旧游标翻页 403、停用/过期会话 401；控制台读取不产生收件事件或 SSE 提示。
 11. （本期）迁移：v2 样本与 #6 历史 v3 样本升级到 v5 后回投活动（次序与 null `at` 如契约）；消息 ID 与既有 #6 语义不受影响。
 12. （本期）成功响应统一 `Cache-Control: no-store`。
 13. （#3 并入）迁移：已发布的 #5 鉴权预览 v3（`e495544` 形态：`purpose` 列、`operator_grants`、无历史列）以代表性样本升级到 v5——预览的 `console`/`enrollment` purpose、既有会话、`console_read` 与 `transcript_read` 授权与房间数据保留，预置授权无需重授即可登录读房与读 transcript；补入的历史层使既有房间缺省 `since_joining`，DM 重建后即可私聊，ID 播种续旧最大值。#3 DM v4 样本升级到 v5：已确认的 DM 投递不回填房间活动，transcript 只含房间行，DM 历史仍仅参与者可读，ID 续旧最大值。

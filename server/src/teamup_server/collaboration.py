@@ -1210,8 +1210,8 @@ class Collaboration:
         with self._transaction(write=True) as connection:
             owner_id = self._console_operator(connection, token)
             self._require_grant(connection, owner_id, "console_read")
-            self._require_grant(connection, owner_id, "transcript_read", room_id)
             self._console_room(connection, room_id)
+            self._require_grant(connection, owner_id, "transcript_read", room_id)
             cursor = None if before is None or before > _SQLITE_MAX_ID else before
             boundary = "" if cursor is None else "AND m.message_id < ?"
             parameters = (room_id,) if cursor is None else (room_id, cursor)
