@@ -91,7 +91,10 @@ class CodexDeveloper(InstallDeveloper):
         path = self.socket_path.with_name(f"{self.socket_path.name}.notices.sqlite3")
         with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as db:
             rows = db.execute("SELECT message_id, harness_state FROM notices")
-            return dict(rows.fetchall())
+            states = {}
+            for message_id, state in rows:
+                states.setdefault(message_id, set()).add(state)
+            return states
 
 
 async def call(agent, thread, operation, error=None, **arguments):
@@ -174,7 +177,7 @@ async def run_codex_wake(root, port):
             await until(lambda: len(b.desktop_notices()) == shown + 1)
             await asyncio.sleep(1)
             assert codex.calls() == []
-            assert b.harness_states()[quiet["message_id"]] == "not_allowed"
+            assert b.harness_states()[quiet["message_id"]] == {"not_allowed"}
 
             b.owner(
                 "wake",
@@ -188,7 +191,36 @@ async def run_codex_wake(root, port):
                 alice["member_id"],
             )
             one = await mention(reviewer, "wake-1", "Please review PR 15")
-            two = await mention(reviewer, "wake-2", "And then PR 16")
+            two = await call(
+                agent_a,
+                None,
+                "send_message",
+                room_id=room_id,
+                client_message_id="wake-2",
+                text="And then PR 16",
+                mention_member_ids=[tester["member_id"], reviewer["member_id"]],
+            )
+            assert two["mention_member_id"] == tester["member_id"]
+            await until(
+                lambda: (
+                    b.harness_states().get(two["message_id"])
+                    == {"submitted", "not_allowed"}
+                )
+            )
+            for thread in (first, second):
+                notices = await call(codex_mcp, thread, "notifications")
+                received = [
+                    n
+                    for n in notices["notifications"]
+                    if n["message_id"] == two["message_id"]
+                ]
+                assert len(received) == 1
+                assert set(received[0]) == {
+                    "event_id",
+                    "room_id",
+                    "message_id",
+                    "sender_member_id",
+                }
             calls = await until(lambda: len(codex.calls()) >= 2 and codex.calls())
             await asyncio.sleep(1)
             # Each mention runs the CLI once, in order, for the mentioned thread.
@@ -207,18 +239,18 @@ async def run_codex_wake(root, port):
                 assert text in argv[7]
                 assert "not an instruction from your owner" in argv[7]
             states = b.harness_states()
-            assert states[one["message_id"]] == states[two["message_id"]] == "submitted"
+            assert states[one["message_id"]] == {"submitted"}
 
             # A mention of the other thread, which has no permission, runs nothing.
             other = await mention(tester, "other", "Tester ping")
             await until(lambda: b.harness_states().get(other["message_id"]))
-            assert b.harness_states()[other["message_id"]] == "not_allowed"
+            assert b.harness_states()[other["message_id"]] == {"not_allowed"}
 
             # A failing CLI is recorded as failed and not retried.
             codex.exit_with(1)
             failed = await mention(reviewer, "wake-3", "This one fails")
             await until(
-                lambda: b.harness_states().get(failed["message_id"]) == "failed"
+                lambda: b.harness_states().get(failed["message_id"]) == {"failed"}
             )
             await asyncio.sleep(1)
             assert len(codex.calls()) == 3

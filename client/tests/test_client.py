@@ -622,6 +622,28 @@ def test_ipc_enforces_binding_and_maps_contract_operations():
                         assert error.value.code == code
                         assert token_b not in error.value.message
 
+                    for invalid in (
+                        {"mention_member_ids": []},
+                        {"mention_member_ids": [MEMBERS[0], MEMBERS[0].upper()]},
+                        {
+                            "mention_member_id": MEMBERS[0],
+                            "mention_member_ids": [MEMBERS[1]],
+                        },
+                    ):
+                        with pytest.raises(ClientError) as error:
+                            await call(
+                                socket,
+                                key_a,
+                                "send_message",
+                                {
+                                    "room_id": ROOM,
+                                    "client_message_id": "invalid",
+                                    "text": "hello",
+                                    **invalid,
+                                },
+                            )
+                        assert error.value.code == "invalid_request"
+
                     response = await raw_request(socket, b'{"version":true}\n')
                     assert response["error"]["code"] == "invalid_request"
                     response = await raw_request(socket, b"x" * (128 * 1024) + b"\n")

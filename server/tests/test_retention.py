@@ -218,17 +218,29 @@ def test_expire_due_batches_compare_true_utc_and_keep_counters(tmp_path, monkeyp
 def test_retention_startup_pass_empties_expired_rooms(tmp_path):
     db_path = tmp_path / "team.sqlite3"
     with api(db_path) as client:
-        for label in ("sender", "target"):
+        for label in ("sender", "target", "reader"):
             assert enroll(client, label).status_code == 200
         room_path = room(client)
         join(client, "target", room_path)
-        for label in ("sender", "target"):
+        join(client, "reader", room_path)
+        for label in ("sender", "target", "reader"):
             confirm(client, label, room_path)
         target_id = member(client, "target")
         first = send(
             client, room_path, "ack-me", text="first needle", target=target_id
         ).json()
-        second = send(client, room_path, "pending-me", text="second needle").json()
+        targets = [target_id, member(client, "reader")]
+        second = post(
+            client,
+            "sender",
+            f"{room_path}/messages",
+            json={
+                "client_message_id": "pending-me",
+                "text": "second needle",
+                "mention_member_ids": targets,
+            },
+        ).json()
+        assert second["mention_member_ids"] == targets
         events = get(client, "target", "/inbox").json()["events"]
         assert [event["message"]["message_id"] for event in events] == [
             first["message_id"],
@@ -265,6 +277,10 @@ def test_retention_startup_pass_empties_expired_rooms(tmp_path):
             "expired_through_message_id": watermark,
             "history_truncated": True,
         }
+        with closing(sqlite3.connect(db_path)) as connection:
+            assert connection.execute(
+                "SELECT count(*) FROM room_message_additional_mentions"
+            ).fetchone() == (0,)
         # The pending delivery disappeared with the acknowledged one.
         assert get(client, "target", "/inbox").json() == {"events": []}
         error(post(client, "target", f"/inbox/{acked_event}/ack"), 404, "not_found")
@@ -378,7 +394,7 @@ def test_v3_upgrade_prunes_timestamps_and_keeps_null_times(tmp_path):
         assert get(client, "old", "/inbox").json() == {"events": []}
         error(post(client, "old", "/inbox/17/ack"), 404, "not_found")
     with closing(sqlite3.connect(db_path)) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 6
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 7
 
 
 def test_retention_startup_pass_drives_bounded_batches_to_completion(tmp_path):

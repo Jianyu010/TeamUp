@@ -52,10 +52,10 @@ def _optional_text(value):
     return value is None or BOARD_TEXT(value)
 
 
-def _addresses(value):
+def _addresses(value, *, minimum=0, maximum=100):
     return (
         isinstance(value, list)
-        and len(value) <= 100
+        and minimum <= len(value) <= maximum
         and all(is_uuid(item) for item in value)
         and len({item.lower() for item in value}) == len(value)
     )
@@ -92,7 +92,10 @@ OPERATIONS = {
         "POST",
         "/rooms/{room_id}/messages",
         {**ROOM, "client_message_id": MESSAGE_KEY, "text": BOARD_TEXT},
-        {"mention_member_id": _mention},
+        {
+            "mention_member_id": _mention,
+            "mention_member_ids": partial(_addresses, minimum=1, maximum=16),
+        },
     ),
     "read_messages": Operation("GET", "/rooms/{room_id}/messages", ROOM, HISTORY),
     "search_room": Operation(
@@ -184,6 +187,8 @@ class Session:
 
 
 def _valid(operation, params):
+    if params.get("mention_member_id") is not None and "mention_member_ids" in params:
+        return False
     return (
         operation.required.keys() <= params.keys()
         and params.keys() <= operation.required.keys() | operation.optional.keys()

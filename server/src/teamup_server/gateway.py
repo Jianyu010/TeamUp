@@ -138,6 +138,10 @@ class _Message(_Body):
     client_message_id: _ShortText
     text: _LongText
     mention_member_id: _Identifier | None = None
+    mention_member_ids: Annotated[
+        list[_Identifier],
+        Field(min_length=1, max_length=16, json_schema_extra={"uniqueItems": True}),
+    ] = Field(default_factory=list)
 
 
 class _TaskCreate(_Body):
@@ -421,7 +425,9 @@ class Gateway:
 
         @app.post("/v1/rooms/{room_id}/messages", dependencies=[Depends(_require_utf8)])
         def send_message(token: _Bearer, room_id: _Identifier, body: _Message) -> dict:
-            return collaboration.send_message(token, room_id, **body.model_dump())
+            return collaboration.send_message(
+                token, room_id, **body.model_dump(exclude_unset=True)
+            )
 
         @app.get("/v1/rooms/{room_id}/messages")
         def history(
