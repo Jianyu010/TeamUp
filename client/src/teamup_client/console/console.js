@@ -17,12 +17,16 @@ const state = {
   connected: false,
 };
 const wireLimit = 20;
-let key = window.location.hash.slice(1);
-try {
-  if (key) sessionStorage.setItem("teamup-console", key);
-  else key = sessionStorage.getItem("teamup-console");
-} catch {}
-if (window.location.hash) history.replaceState(null, "", window.location.pathname);
+const desktop = location.protocol === "teamup:";
+let key;
+if (!desktop) {
+  key = window.location.hash.slice(1);
+  try {
+    if (key) sessionStorage.setItem("teamup-console", key);
+    else key = sessionStorage.getItem("teamup-console");
+  } catch {}
+  if (window.location.hash) history.replaceState(null, "", window.location.pathname);
+}
 
 function node(tag, text, className) {
   const element = document.createElement(tag);
@@ -32,14 +36,14 @@ function node(tag, text, className) {
 }
 
 async function read(path, params, action) {
-  const url = new URL(path, location.origin);
+  const url = new URL(path, location.href);
   for (const [name, value] of Object.entries(params || {})) {
     if (value !== null && value !== undefined) url.searchParams.set(name, value);
   }
   const response = await fetch(url, {
     method: action ? "POST" : "GET",
     headers: {
-      Authorization: "Bearer " + key,
+      ...(key ? {Authorization: "Bearer " + key} : {}),
       ...(action?.body ? {"Content-Type": "application/json"} : {}),
     },
     body: action?.body ? JSON.stringify(action.body) : undefined,
@@ -452,7 +456,7 @@ window.addEventListener("resize", drawWires);
 window.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && state.page !== "workspace") show("workspace");
 });
-if (key) refresh();
+if (desktop || key) refresh();
 else {
   setConnection("Open the URL printed by TeamUp Client", false);
   renderWorkspace();
