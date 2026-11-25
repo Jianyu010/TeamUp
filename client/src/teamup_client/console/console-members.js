@@ -50,10 +50,29 @@ function scheduleExpiry() {
   if (Number.isFinite(next)) expiryTimer = setTimeout(scheduleExpiry, Math.ceil(next - now));
 }
 
+function memberNames(members) {
+  const counts = new Map();
+  for (const {role} of members) counts.set(role, (counts.get(role) || 0) + 1);
+  return members.map(({id, role}) => {
+    const name = element("span", "", "member-name");
+    name.append(element("span", role));
+    if (counts.get(role) > 1) {
+      const prefix = id.slice(0, 8);
+      const shared = members.some((other) => other.id !== id && other.role === role && other.id.startsWith(prefix));
+      const qualifier = element("small", "(" + (shared ? id : prefix) + ")");
+      qualifier.title = id;
+      name.append(document.createTextNode(" "), qualifier);
+    }
+    return name;
+  });
+}
+
 export function renderTeam(result, requestedAt) {
-  get("team-list").replaceChildren(...(result.members || []).map((member) => {
+  const members = result.members || [];
+  const names = memberNames(members);
+  get("team-list").replaceChildren(...members.map((member, index) => {
     const row = element("li");
-    row.append(element("span", member.role), presenceBadge(member.presence, requestedAt));
+    row.append(names[index], presenceBadge(member.presence, requestedAt));
     return row;
   }));
   scheduleExpiry();
@@ -100,7 +119,7 @@ export function roomMembers({read, subject, chat, policyChanged}) {
       item.sender_member_id === member.id || item.recipient_member_ids?.includes(member.id));
     const receipt = member.acknowledged === page.current
       ? "Acknowledged version " + page.current : "Awaiting acknowledgment of version " + page.current;
-    const content = [element("h3", member.role), element("p", receipt), element("h4", "Recent communication")];
+    const content = [element("h3", selected.querySelector(".member-name").textContent), element("p", receipt), element("h4", "Recent communication")];
     if (recent) {
       const stamp = Date.parse(recent.created_at);
       content.push(element("p", recent.sender + " · " +
@@ -163,15 +182,16 @@ export function roomMembers({read, subject, chat, policyChanged}) {
     get("roster-status").textContent = !ready ? "Room members unavailable."
       : !result.members.length ? "No room members." : "";
     const existing = new Map(Array.from(rail.children, (button) => [button.dataset.member, button]));
-    for (const [index, member] of (result.members || []).entries()) {
+    const members = result.members || [];
+    const names = memberNames(members);
+    for (const [index, member] of members.entries()) {
       const button = existing.get(member.id) || element("button");
       existing.delete(member.id);
       button.type = "button";
       button.dataset.member = member.id;
       button.setAttribute("aria-controls", panel.id);
       button.setAttribute("aria-expanded", String(selected === button));
-      button.replaceChildren(element("span", member.role, "member-name"),
-        presenceBadge(member.presence, started));
+      button.replaceChildren(names[index], presenceBadge(member.presence, started));
       if (rail.children[index] !== button) rail.insertBefore(button, rail.children[index] || null);
     }
     for (const button of existing.values()) button.remove();
