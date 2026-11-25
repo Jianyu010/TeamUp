@@ -89,3 +89,15 @@ test("a nonadvancing intermediate cursor rebases once", async () => {
   assert.equal(result.reset, true);
   assert.deepEqual(result.page.messages, previous.messages);
 });
+
+test("a rejoin between transcript pages discards the previous membership's rows", async () => {
+  const board = {current: 1, acknowledged: 1, membership_id: "old"};
+  const previous = {state: "ready", board, messages: [{id: "5"}]};
+  const current = {
+    state: "ready", board: {...board, membership_id: "new"}, messages: [{id: "7"}],
+  };
+  const {page, reset} = await readTranscript(previous, null, async ({after}) =>
+    after === "4" ? previous : current);
+  assert.equal(reset, true);
+  assert.deepEqual(page.messages, [{id: "7"}]);
+});

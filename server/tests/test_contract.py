@@ -370,6 +370,46 @@ def test_list_rooms_returns_membership_scoped_room_metadata(team):
     assert by_id[rooms["beta"]] == summary(rooms["beta"], "beta")
 
 
+def test_room_directory_pages_public_metadata_without_membership(team):
+    created = [
+        post(
+            team,
+            "sender",
+            "/rooms",
+            json={"name": name, "rules": "Room members only", "history_policy": policy},
+        ).json()
+        for name, policy in (("Review", "retained"), ("Build", "since_joining"))
+    ]
+    first, last = sorted(created, key=lambda entry: entry["room_id"])
+    assert (
+        post(
+            team, "reader", "/dms", json={"member_id": member(team, "sender")}
+        ).status_code
+        == 200
+    )
+
+    path = "/room-directory"
+    response = get(team, "reader", f"{path}?limit=1")
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert response.json() == {"rooms": [first], "next_after": first["room_id"]}
+    cursor = first["room_id"]
+    assert get(team, "reader", f"{path}?after={cursor}&limit=1").json() == {
+        "rooms": [last],
+        "next_after": None,
+    }
+    assert get(team, "reader", f"{path}?after={last['room_id']}").json() == {
+        "rooms": [],
+        "next_after": None,
+    }
+    assert get(team, "reader", "/rooms").json() == {"rooms": []}
+    error(get(team, "reader", f"/rooms/{cursor}/board"), 404, "not_found")
+
+    error(team.get(f"/v1{path}?after={cursor}"), 401, "unauthorized")
+    error(get(team, "reader", f"{path}?after=invalid"), 422, "invalid_request")
+    error(get(team, "reader", f"{path}?limit=101"), 422, "invalid_request")
+
+
 def test_room_history_starts_at_first_join_and_requires_board_ack(team):
     room_path = room(
         team, rules="  Keep secrets private. ", protocol=" Discuss openly. "
@@ -600,6 +640,7 @@ def test_v6_single_recipient_message_survives_mention_migration(tmp_path):
         connection.execute("DROP TABLE room_message_additional_mentions")
         connection.execute("DROP TABLE retired_room_access")
         connection.execute("DROP TABLE room_departures")
+        connection.execute("ALTER TABLE room_members DROP COLUMN membership_id")
         connection.execute("ALTER TABLE members DROP COLUMN retired")
         connection.execute("PRAGMA user_version = 6")
     with api(db_path) as client:

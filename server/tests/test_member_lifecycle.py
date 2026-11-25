@@ -1,6 +1,7 @@
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
+from datetime import datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -339,6 +340,7 @@ def test_migration_preserves_bindings_and_room_messages(tmp_path, version):
     with closing(sqlite3.connect(db_path)) as connection, connection:
         connection.execute("DROP TABLE retired_room_access")
         connection.execute("DROP TABLE room_departures")
+        connection.execute("ALTER TABLE room_members DROP COLUMN membership_id")
         if version == 7:
             connection.execute("ALTER TABLE members DROP COLUMN retired")
         connection.execute(f"PRAGMA user_version = {version}")
@@ -386,11 +388,25 @@ def test_owner_departure_notice_is_durable_and_recipient_scoped(lifecycle):
     confirm(client, "sender", path)
     confirm(client, "target", path)
     send(client, path, "pending", target=member["member_id"])
-    url = f"{path}/leave?notify=true"
+    joined = get(client, "target", "/rooms?include_membership=true").json()["rooms"][0]
+    membership = joined["membership_id"]
+    url = f"{path}/leave?notify=true&membership_id={membership}"
     with ThreadPoolExecutor(max_workers=3) as pool:
         responses = list(pool.map(lambda _: post(client, "target", url), range(3)))
-    assert [item.json() for item in responses] == [{"room_id": room_id}] * 3
+    assert [item.status_code for item in responses] == [200] * 3
+    receipts = [item.json() for item in responses]
+    assert all(receipt["room_id"] == room_id for receipt in receipts)
+    assert sum(receipt["departure_event_id"] is not None for receipt in receipts) == 1
     error(get(client, "target", f"{path}/members"), 404, "not_found")
+    join(client, "target", path)
+    confirm(client, "target", path)
+    error(post(client, "target", url), 409, "membership_changed")
+    error(
+        get(client, "target", f"{path}/messages?membership_id={membership}"),
+        409,
+        "membership_changed",
+    )
+    assert get(client, "target", f"{path}/members").status_code == 200
 
     with api(db_path) as restarted:
         assert get(restarted, "target", "/inbox").json() == {"events": []}
@@ -414,7 +430,7 @@ def test_owner_departure_notice_is_durable_and_recipient_scoped(lifecycle):
 
 
 def test_owner_archive_reads_only_pre_retirement_authorized_history(lifecycle):
-    client, _, db_path, owner, member, peer = lifecycle
+    client, store, db_path, owner, member, peer = lifecycle
     path = room(client)
     blocked = room(client)
     left = room(client)
@@ -476,3 +492,36 @@ def test_owner_archive_reads_only_pre_retirement_authorized_history(lifecycle):
             f"{archive}/dm/{dm_id}/messages", headers=owner_headers
         ).json()
         assert dms["messages"] == [{**dm, "sender_retired": True}]
+        age = timedelta(hours=1)
+        store.expire_due(age, now=datetime.fromisoformat(newest["created_at"]) + age)
+        assert restarted.get(transcript, headers=owner_headers).json()["messages"] == []
+        assert restarted.get(
+            f"{archive}/dm/{dm_id}/messages", headers=owner_headers
+        ).json()["messages"] == [{**dm, "sender_retired": True}]
+        store.expire_due_dms(datetime.fromisoformat(dm["created_at"]))
+        assert (
+            restarted.get(
+                f"{archive}/dm/{dm_id}/messages", headers=owner_headers
+            ).json()["messages"]
+            == []
+        )
+
+
+def test_retained_room_delivery_cannot_reuse_the_previous_membership(lifecycle):
+    client, _, _, _, target, _ = lifecycle
+    path = room(client, history_policy="retained")
+    join(client, "target", path)
+    for label in ("sender", "target"):
+        confirm(client, label, path)
+    sent = send(client, path, "pending", target=target["member_id"]).json()
+    delivery = get(client, "target", f"{path}/messages?delivery=true").json()
+    assert delivery["messages"] == [sent]
+    assert delivery["delivery_board"]["version"] == 1
+    assert delivery["delivery_board"]["room_id"] == path.rsplit("/", 1)[-1]
+    post(client, "target", f"{path}/leave")
+    join(client, "target", path)
+    confirm(client, "target", path)
+    assert get(client, "target", f"{path}/messages").json()["messages"] == [sent]
+    assert (
+        get(client, "target", f"{path}/messages?delivery=true").json()["messages"] == []
+    )

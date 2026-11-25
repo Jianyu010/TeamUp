@@ -225,6 +225,8 @@ _SCHEMA = (
 )
 
 _LIFECYCLE_SCHEMA = (
+    "ALTER TABLE room_members ADD COLUMN membership_id TEXT NOT NULL DEFAULT ''",
+    "UPDATE room_members SET membership_id = lower(hex(randomblob(16)))",
     """
     CREATE TABLE retired_room_access (
         member_id TEXT NOT NULL REFERENCES members(member_id),
@@ -821,7 +823,7 @@ def _room_member(
         """
         SELECT r.name, r.version, r.rules, r.protocol, r.history_policy,
             r.expired_through_message_id, rm.read_board_version,
-            rm.acked_board_version, rm.joined_after
+            rm.acked_board_version, rm.joined_after, rm.membership_id
         FROM room_members AS rm JOIN rooms AS r ON r.room_id = rm.room_id
         WHERE rm.room_id = ? AND rm.member_id = ?
         """,
@@ -2173,8 +2175,11 @@ class Collaboration:
                 ),
             )
             connection.execute(
-                "INSERT INTO room_members (room_id, member_id, joined_after) VALUES (?, ?, 0)",
-                (room_id, member_id),
+                """
+                INSERT INTO room_members (room_id, member_id, joined_after, membership_id)
+                VALUES (?, ?, 0, ?)
+                """,
+                (room_id, member_id, uuid4().hex),
             )
             _record_activity(
                 connection, room_id, "member_joined", member_id, _rfc3339_utc_now()
@@ -2191,11 +2196,11 @@ class Collaboration:
                 raise CollaborationError("not_found")
             joined = connection.execute(
                 """
-                INSERT INTO room_members (room_id, member_id, joined_after)
-                VALUES (?, ?, COALESCE((SELECT MAX(message_id) FROM messages WHERE room_id = ?), 0))
+                INSERT INTO room_members (room_id, member_id, joined_after, membership_id)
+                VALUES (?, ?, COALESCE((SELECT MAX(message_id) FROM messages WHERE room_id = ?), 0), ?)
                 ON CONFLICT (room_id, member_id) DO NOTHING
                 """,
-                (room_id, member_id, room_id),
+                (room_id, member_id, room_id, uuid4().hex),
             )
             if joined.rowcount:
                 _record_activity(
@@ -2203,9 +2208,24 @@ class Collaboration:
                 )
         return dict(room)
 
-    def leave_room(self, token: str, room_id: str, *, notify: bool = False) -> dict:
+    def leave_room(
+        self,
+        token: str,
+        room_id: str,
+        *,
+        notify: bool = False,
+        membership_id: str | None = None,
+    ) -> dict:
+        event_id = None
         with self._transaction(write=True) as connection:
             member_id = _member(connection, token)["member_id"]
+            if membership_id is not None:
+                existing = connection.execute(
+                    "SELECT membership_id FROM room_members WHERE room_id = ? AND member_id = ?",
+                    (room_id, member_id),
+                ).fetchone()
+                if existing is not None and existing["membership_id"] != membership_id:
+                    raise CollaborationError("membership_changed")
             removed = connection.execute(
                 "DELETE FROM room_members WHERE room_id = ? AND member_id = ?",
                 (room_id, member_id),
@@ -2229,24 +2249,28 @@ class Collaboration:
                     (member_id, room_id),
                 )
                 if notify:
+                    event_id = _next_id(connection, "event_id")
                     connection.execute(
                         """
                         INSERT INTO room_departures (event_id, member_id, room_id)
                         VALUES (?, ?, ?)
                         """,
-                        (_next_id(connection, "event_id"), member_id, room_id),
+                        (event_id, member_id, room_id),
                     )
-        if removed.rowcount and notify:
+        if event_id is not None:
             self._notify((member_id,))
-        return {"room_id": room_id}
+        return (
+            {"room_id": room_id, "departure_event_id": event_id}
+            if notify else {"room_id": room_id}
+        )
 
-    def list_rooms(self, token: str) -> list[dict]:
+    def list_rooms(self, token: str, *, include_membership: bool = False) -> list[dict]:
         with self._transaction() as connection:
             member_id = _member(connection, token)["member_id"]
             rows = connection.execute(
                 """
                 SELECT r.room_id, r.name, r.version AS current_board_version,
-                    rm.acked_board_version, (
+                    rm.acked_board_version, rm.membership_id, (
                         SELECT MAX(m.message_id) FROM messages AS m
                         WHERE m.room_id = r.room_id
                     ) AS latest_message_id
@@ -2256,7 +2280,28 @@ class Collaboration:
                 """,
                 (member_id,),
             )
-            return [dict(record) for record in rows]
+            rooms = [dict(record) for record in rows]
+            if not include_membership:
+                for room in rooms:
+                    room.pop("membership_id")
+            return rooms
+
+    def room_directory(self, token: str, after: str | None, limit: int) -> dict:
+        with self._transaction() as connection:
+            _member(connection, token)
+            # Every room currently supports self-service joining by team members.
+            rows = connection.execute(
+                """
+                SELECT room_id, name, history_policy FROM rooms
+                WHERE room_id > ? ORDER BY room_id LIMIT ?
+                """,
+                (after or "", limit + 1),
+            ).fetchall()
+            rooms = [dict(row) for row in rows[:limit]]
+            return {
+                "rooms": rooms,
+                "next_after": rooms[-1]["room_id"] if len(rows) > limit else None,
+            }
 
     def room_detail(self, token: str, room_id: str) -> dict:
         with self._transaction() as connection:
@@ -2623,10 +2668,16 @@ class Collaboration:
         after: int,
         limit: int,
         before: int | None = None,
+        *,
+        membership_id: str | None = None,
+        delivery: bool = False,
     ) -> dict:
         with self._transaction() as connection:
             membership = _authorized_membership(connection, token, room_id)
-            cursor = min(max(after, _transcript_floor(membership)), _SQLITE_MAX_ID)
+            if membership_id is not None and membership["membership_id"] != membership_id:
+                raise CollaborationError("membership_changed")
+            floor = membership["joined_after"] if delivery else _transcript_floor(membership)
+            cursor = min(max(after, floor), _SQLITE_MAX_ID)
             upper = None if before is None or before > _SQLITE_MAX_ID else before
             rows = _room_transcript(
                 connection,
@@ -2636,7 +2687,7 @@ class Collaboration:
                 limit=limit,
                 newest_first=before is not None,
             )
-            return {
+            result = {
                 "messages": [
                     {**_room_message(record), **_retired_sender(record)}
                     for record in rows
@@ -2645,6 +2696,14 @@ class Collaboration:
                     membership["expired_through_message_id"], cursor, upper
                 ),
             }
+            if delivery:
+                result["delivery_board"] = {
+                    "room_id": room_id,
+                    "version": membership["version"],
+                    "rules": membership["rules"],
+                    "protocol": membership["protocol"],
+                }
+            return result
 
     def search(
         self, token: str, room_id: str, query: str, after: int, limit: int

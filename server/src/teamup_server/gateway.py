@@ -38,6 +38,7 @@ _ERRORS = {
     "board_ack_required": (409, "Confirm the current board version first."),
     "conflict": (409, "The request conflicts with the existing state."),
     "member_retired": (409, "This member's binding has been retired."),
+    "membership_changed": (409, "The current room membership has changed."),
     "invalid_mention": (422, "Mention another member of this room."),
     "invalid_peer": (422, "The DM peer must be another available member of this team."),
     "rate_limited": (429, "Too many login attempts. Try again later."),
@@ -87,6 +88,7 @@ _MemberToken = Annotated[
 _Identifier = Annotated[str, AfterValidator(_uuid)]
 _After = Annotated[int, Query(ge=0)]
 _Before = Annotated[int, Query(ge=1)]
+_MembershipID = Annotated[str, Query(pattern=r"^[0-9a-f]{32}$")]
 _Limit = Annotated[int, Query(ge=1, le=100)]
 
 
@@ -459,8 +461,20 @@ class Gateway:
             )
 
         @app.get("/v1/rooms")
-        def list_rooms(token: _Bearer) -> dict:
-            return {"rooms": collaboration.list_rooms(token)}
+        def list_rooms(token: _Bearer, include_membership: bool = False) -> dict:
+            return {
+                "rooms": collaboration.list_rooms(token, include_membership=include_membership)
+            }
+
+        @app.get("/v1/room-directory", dependencies=[Depends(_reject_body)])
+        def room_directory(
+            token: _Bearer,
+            response: Response,
+            after: _Identifier | None = None,
+            limit: _Limit = 50,
+        ) -> dict:
+            _no_store(response)
+            return collaboration.room_directory(token, after, limit)
 
         @app.get("/v1/rooms/{room_id}", dependencies=[Depends(_reject_body)])
         def room_detail(token: _Bearer, room_id: _Identifier, response: Response) -> dict:
@@ -478,9 +492,14 @@ class Gateway:
 
         @app.post("/v1/rooms/{room_id}/leave", dependencies=[Depends(_reject_body)])
         def leave_room(
-            token: _Bearer, room_id: _Identifier, notify: bool = False
+            token: _Bearer,
+            room_id: _Identifier,
+            notify: bool = False,
+            membership_id: _MembershipID | None = None,
         ) -> dict:
-            return collaboration.leave_room(token, room_id, notify=notify)
+            return collaboration.leave_room(
+                token, room_id, notify=notify, membership_id=membership_id
+            )
 
         @app.get("/v1/rooms/{room_id}/board", dependencies=[Depends(_reject_body)])
         def read_board(token: _Bearer, room_id: _Identifier) -> dict:
@@ -508,8 +527,13 @@ class Gateway:
             after: _After = 0,
             limit: _Limit = 50,
             before: _Before | None = None,
+            membership_id: _MembershipID | None = None,
+            delivery: bool = False,
         ) -> dict:
-            return collaboration.history(token, room_id, after, limit, before)
+            return collaboration.history(
+                token, room_id, after, limit, before,
+                membership_id=membership_id, delivery=delivery,
+            )
 
         @app.get(
             "/v1/rooms/{room_id}/search", dependencies=[Depends(_require_query_utf8)]

@@ -4,7 +4,8 @@ function compareIds(left, right) {
 }
 
 export function sameBoard(left, right) {
-  return left?.current === right?.current && left?.acknowledged === right?.acknowledged;
+  return left?.current === right?.current && left?.acknowledged === right?.acknowledged
+    && left?.membership_id === right?.membership_id;
 }
 
 export async function readTranscript(previous, before, fetchPage) {

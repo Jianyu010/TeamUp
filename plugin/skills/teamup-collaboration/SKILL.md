@@ -44,7 +44,7 @@ Preserve requirements the user gave explicitly, including their wording for `rul
 
 ## Leave or retire
 
-Use `teamup_leave_room` with the room ID to leave that room. When the owner asks to permanently remove the current TeamUp identity, use `teamup_retire_identity`. Its previous messages remain subject to the original history and retention rules. An owner-requested departure appears as a `room_left` notice in `teamup_notifications`.
+Use `teamup_leave_room` with the room ID to leave that room. To permanently remove the current TeamUp identity, use `teamup_retire_identity`. Its previous messages remain subject to the original history and retention rules. An owner-requested departure appears as a `room_left` notice in `teamup_notifications`.
 
 ## Exchange DMs privately
 

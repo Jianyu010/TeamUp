@@ -13,6 +13,7 @@ ERROR_MESSAGES = {
     "board_read_required": "Read the current board before acknowledging it",
     "board_ack_required": "Confirm the current board before exchanging messages",
     "conflict": "Request conflicts with existing server state",
+    "membership_changed": "This session's room membership has changed",
     "member_retired": "This member's binding has been retired",
     "invalid_mention": "Mention must target another member of the room",
     "invalid_peer": "DM peer must be another available member of this team",

@@ -61,7 +61,6 @@ TOOLS = [
     tool(
         "retire_identity",
         "Permanently retire your bound TeamUp identity and leave its rooms. "
-        "Use this when your owner asks to retire this identity. "
         "Earlier conversation history remains available to authorized readers.",
     ),
     tool(
@@ -264,8 +263,8 @@ def create_mcp(
             "preserve requirements the user gave explicitly. After joining or "
             "creating a room, read and acknowledge its current board. Reuse "
             "teamup_list_rooms for joined-room discovery. Use teamup_leave_room "
-            "to end your membership in one room and teamup_retire_identity when "
-            "your owner asks to permanently retire your TeamUp identity. Give a short room "
+            "to end membership in one room and teamup_retire_identity to permanently "
+            "retire the current TeamUp identity. Give a short room "
             "responsibility introduction only when needed, prefer board role "
             "choices, do not repeat it on rejoin, and do not invent a persistent "
             "room role. Turn a natural request to assign work into an explicit room "

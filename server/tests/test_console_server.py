@@ -992,6 +992,7 @@ def test_console_v5_upgrade_runs_real_room_expiry_and_keeps_dm_and_audit(tmp_pat
         connection.execute("DROP TABLE room_message_additional_mentions")
         connection.execute("DROP TABLE retired_room_access")
         connection.execute("DROP TABLE room_departures")
+        connection.execute("ALTER TABLE room_members DROP COLUMN membership_id")
         connection.execute("ALTER TABLE members DROP COLUMN retired")
         connection.execute("ALTER TABLE rooms DROP COLUMN expired_through_message_id")
         connection.execute("ALTER TABLE dms DROP COLUMN expired_through_message_id")

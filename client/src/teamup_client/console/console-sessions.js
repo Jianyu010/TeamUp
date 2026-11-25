@@ -14,6 +14,7 @@ function button(text, action, className) {
 
 function actionError(state) {
   if (state === "not_found" || state === "member_retired") return "This session is no longer available.";
+  if (state === "membership_changed") return "This session rejoined. Check its membership before trying again.";
   if (state === "not_registered" || state === "unauthorized") return "This session no longer has access.";
   return "TeamUp could not confirm the change. Please try again.";
 }
@@ -41,7 +42,7 @@ export function sessionControls({request, changed}) {
   let historyRead = 0;
   let retiredKey;
 
-  async function act(session, room) {
+  async function act(session, room, membershipId) {
     if (busy.has(session.id)) return;
     busy.add(session.id);
     retire.disabled = true;
@@ -51,7 +52,9 @@ export function sessionControls({request, changed}) {
     status.textContent = room ? "Leaving room…" : "Retiring identity…";
     try {
       const path = room ? "/api/sessions/leave" : "/api/sessions/retire";
-      const result = await request(path, {session: session.id, room: room?.id}, {});
+      const result = await request(path, {
+        session: session.id, room: room?.id, membership_id: membershipId,
+      }, {});
       if (result.state !== "ready") {
         status.textContent = actionError(result.state);
         return;
@@ -60,7 +63,7 @@ export function sessionControls({request, changed}) {
         ? session.label + " left " + room.name + "."
         : session.label + " moved to Retired sessions.";
       if (!room) panel.open = true;
-      await changed(session, room, result);
+      await changed(session, room, result, membershipId);
       if (!room) get("retired-summary").focus();
     } catch {
       status.textContent = actionError("unavailable");
@@ -99,7 +102,9 @@ export function sessionControls({request, changed}) {
     actions.replaceChildren(...sessions.map((session) => {
       const label = sessions.some((item) => item.id !== session.id && item.label === session.label)
         ? session.label + " (" + session.member_id.slice(0, 8) + ")" : session.label;
-      const control = button("Leave", () => act(session, room));
+      const membership = room.memberships.find((entry) => entry.session === session.id);
+      const control = button("Leave", () => act(session, room, membership?.membership_id));
+      control.title = "Leave and notify this session";
       control.setAttribute("aria-label", "Leave room as " + label);
       control.dataset.session = session.id;
       control.disabled = busy.has(session.id);
@@ -197,7 +202,9 @@ export function sessionControls({request, changed}) {
     if (subject !== current || historyRead !== sequence) return;
     if (page.state !== "ready") {
       get("archive-status").textContent = historyError(page.state);
-      older.hidden = !before;
+      const lostAccess = page.state === "unauthorized" || page.state === "not_found";
+      if (lostAccess) messages.replaceChildren();
+      older.hidden = lostAccess || !before;
       return;
     }
     get("archive-status").textContent = page.messages.length ? "" : "No retained messages";

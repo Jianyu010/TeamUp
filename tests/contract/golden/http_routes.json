@@ -15,6 +15,7 @@
   "GET /v1/members/{member_id}/archive",
   "GET /v1/members/{member_id}/archive/{kind}/{conversation_id}/messages",
   "GET /v1/presence",
+  "GET /v1/room-directory",
   "GET /v1/rooms",
   "GET /v1/rooms/{room_id}",
   "GET /v1/rooms/{room_id}/board",

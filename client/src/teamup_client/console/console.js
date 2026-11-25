@@ -100,20 +100,29 @@ const tasks = taskPanel({
   room: () => state.room,
   actor: () => sessionFor(state.actor),
   sessions: () => state.workspace.sessions,
-  active: () => state.page === "room" && state.roomView === "tasks",
+  active: () => state.page === "room" && Boolean(state.reader) && state.roomView === "tasks",
 });
 
 const lifecycle = sessionControls({
   request: read,
-  changed(session, room, result) {
+  changed(session, room, result, membershipId) {
     const snapshot = state.workspace;
     const retired = snapshot.retired_sessions ?? [];
+    const sessions = room ? snapshot.sessions : snapshot.sessions.filter((item) => item.id !== session.id);
+    const directory = snapshot.directory_available && sessions.some((item) => item.state === "ready");
+    const rooms = snapshot.rooms.flatMap((item) => {
+      if (room && item.id !== room.id) return [item];
+      const memberships = item.memberships.filter((link) => link.session !== session.id ||
+        (membershipId && link.membership_id !== membershipId));
+      if (memberships.length) return [{...item, memberships}];
+      if (directory && item.history_policy) return [{...item, memberships, latest_message_id: null}];
+      return [];
+    });
     applyWorkspace({
       ...snapshot,
-      sessions: room ? snapshot.sessions : snapshot.sessions.filter((item) => item.id !== session.id),
-      rooms: snapshot.rooms.map((item) => !room || item.id === room.id
-        ? {...item, memberships: item.memberships.filter((link) => link.session !== session.id)} : item)
-        .filter((item) => item.memberships.length),
+      sessions,
+      rooms,
+      directory_available: directory,
       retired_sessions: room || retired.some((item) => item.id === session.id) ? retired
         : [...retired, {...session, role_description: result.role_description}],
     });
@@ -128,14 +137,23 @@ const members = roomMembers({
   policyChanged: renderHistoryBoundary,
 });
 
-function setRoomView(view) {
-  state.roomView = view;
-  const isTasks = view === "tasks";
+function renderRoomView() {
+  const joined = Boolean(state.reader);
+  const isTasks = state.roomView === "tasks";
+  get("detail").toggleAttribute("data-preview", !joined);
+  get("room-preview").hidden = joined;
+  get("chat-heading").hidden = !joined;
+  get("member-rail").hidden = !joined;
   get("tasks-tab").setAttribute("aria-pressed", String(isTasks));
   get("chats-tab").setAttribute("aria-pressed", String(!isTasks));
-  get("task-board").hidden = !isTasks;
-  get("chat-scroll").hidden = isTasks;
-  if (isTasks) tasks.refresh();
+  get("task-board").hidden = !joined || !isTasks;
+  get("chat-scroll").hidden = !joined || isTasks;
+}
+
+function setRoomView(view) {
+  state.roomView = view;
+  renderRoomView();
+  if (view === "tasks") tasks.refresh();
 }
 
 function card(label, description) {
@@ -173,7 +191,9 @@ function renderWorkspace() {
   });
   const roomButtons = rooms.map((room) => {
     const noun = room.memberships.length === 1 ? "session" : "sessions";
-    const button = card(room.name, room.memberships.length + " of your " + noun);
+    const description = room.memberships.length
+      ? room.memberships.length + " of your " + noun : "No local sessions joined";
+    const button = card(room.name, description);
     button.dataset.room = room.id;
     if (state.page === "room" && state.room === room.id) button.setAttribute("aria-current", "page");
     button.classList.toggle("related", Boolean(state.focused && state.page === "workspace" && related(room)));
@@ -181,7 +201,16 @@ function renderWorkspace() {
     return button;
   });
   get("sessions").replaceChildren(...(sessionButtons.length ? sessionButtons : [node("p", "No approved sessions", "empty")]));
-  get("rooms").replaceChildren(...(roomButtons.length ? roomButtons : [node("p", "Your joined rooms appear here", "empty")]));
+  const roomRows = [...roomButtons];
+  if (!state.workspace.directory_available && sessions.some((session) => session.state === "ready")) {
+    const status = node("p", "Room directory unavailable", "empty");
+    status.setAttribute("role", "status");
+    roomRows.unshift(status);
+  }
+  if (!roomRows.length) {
+    roomRows.push(node("p", state.workspace.directory_available ? "No team rooms" : "No rooms available", "empty"));
+  }
+  get("rooms").replaceChildren(...roomRows);
   const focus = sessionButtons.find((button) => button.dataset.session === oldSession) ||
     roomButtons.find((button) => button.dataset.room === oldRoom);
   focus?.focus({preventScroll:true});
@@ -294,9 +323,15 @@ function renderRoomHeader() {
   }));
   if (!actors.length) chooser.append(node("option", "No acknowledged session"));
   const membership = room.memberships.find((item) => item.session === state.reader);
+  get("room-heading").textContent = membership ? "Board" : room.name;
   get("board-status").textContent = membership
     ? "Version " + membership.current + " · " + (membership.acknowledged === membership.current ? "Acknowledged" : "Acknowledgment needed")
     : "";
+  const history = room.history_policy === "retained"
+    ? "Retained messages can be read after joining and acknowledging the board."
+    : "Room history starts when you join.";
+  get("room-preview").textContent = membership ? "" : "Copy the room ID to join through your agent. " + history;
+  renderRoomView();
 }
 
 function openRoom(id) {
@@ -313,7 +348,7 @@ function openRoom(id) {
   show("room");
   renderRoomHeader();
   renderChat();
-  setRoomView(state.roomView);
+  if (state.roomView === "tasks") tasks.refresh();
   get("back").focus({preventScroll:true});
   refreshRoom();
   members.refresh();
@@ -323,6 +358,7 @@ const messagesForState = {
   board_ack_required: "This session must read and acknowledge the room board before its chat is available.",
   not_registered: "This session needs to register before it can read chat.",
   not_found: "This room is unavailable to the selected session.",
+  membership_changed: "Room membership changed. Refreshing history…",
   unauthorized: "The selected session no longer has access.",
   unavailable: "Chat is temporarily unavailable.",
 };
@@ -482,7 +518,8 @@ function applyWorkspace(snapshot) {
   } else if (state.page === "room") {
     const oldActor = state.actor;
     selectRoomSubjects(active);
-    if (state.actor !== oldActor) tasks.changeActor();
+    if (oldReader && !state.reader) tasks.reset();
+    else if (state.actor !== oldActor) tasks.changeActor();
     const board = active.memberships.find((item) => item.session === state.reader);
     const contextChanged = state.reader !== oldReader || sessionFor(state.reader)?.member_id !== oldMember ||
       !sameBoard(board, oldBoard);

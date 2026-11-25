@@ -1,6 +1,6 @@
 # Client console read data (#34)
 
-**Contract scope.** The room detail, roster and member Presence subset for #43 and #44 is specified in [Client–Server v1](client-server-v1.md). The board viewer, joinable directory, DM index, explicit disconnect and harness observations below remain proposals. Consumer: the local read-only console served by one machine's TeamUp Client over its approved configured sessions ([#34](https://github.com/Jianyu010/TeamUp/issues/34)). Providers: Server Gateway read ports over Collaboration-owned state, plus Presence for [#31 scoped presence](https://github.com/Jianyu010/TeamUp/issues/31). Related: [#3 DMs](https://github.com/Jianyu010/TeamUp/issues/3), [#4 room directory](https://github.com/Jianyu010/TeamUp/issues/4), [#5 control console](https://github.com/Jianyu010/TeamUp/issues/5), [#6 history and retention](https://github.com/Jianyu010/TeamUp/issues/6). Surveyed at base `94261a7` against code and the published contracts ([Client–Server v1](client-server-v1.md), [MCP–Client v1](mcp-client-v1.md), [conversation history](conversation-history.md), [collaboration surfaces](../specs/collaboration-surfaces.md)). The approval table below applies to proposals still open.
+**Contract scope.** Room detail, roster, member Presence (#43 and #44) and team-public room discovery (#56) are specified in [Client–Server v1](client-server-v1.md). The board viewer, DM index, explicit disconnect and harness observations below remain proposals. Consumer: the local read-only console served by one machine's TeamUp Client over its approved configured sessions ([#34](https://github.com/Jianyu010/TeamUp/issues/34)). Providers: Server Gateway read ports over Collaboration-owned state, plus Presence for [#31 scoped presence](https://github.com/Jianyu010/TeamUp/issues/31). Related: [#3 DMs](https://github.com/Jianyu010/TeamUp/issues/3), [#4 room directory](https://github.com/Jianyu010/TeamUp/issues/4), [#5 control console](https://github.com/Jianyu010/TeamUp/issues/5), [#6 history and retention](https://github.com/Jianyu010/TeamUp/issues/6). Surveyed at base `94261a7` against code and the published contracts ([Client–Server v1](client-server-v1.md), [MCP–Client v1](mcp-client-v1.md), [conversation history](conversation-history.md), [collaboration surfaces](../specs/collaboration-surfaces.md)). The approval table below applies to proposals still open.
 
 The console is a **viewer**: it renders rooms, boards, rosters, DMs and presence for the local operator. No composer, no join, no wake changes, and opening the viewer produces no heartbeat. It reads with each approved session's own member credential; the operator credential is never reused across client memberships, and existing member `GET /v1/rooms` stays unchanged.
 
@@ -31,11 +31,11 @@ All metadata reads are additive `GET`s under Bearer member tokens, read-only tra
 | --- | --- | --- |
 | `GET /v1/rooms/{room_id}/board/view` | Board: `room_id`, `version`, `rules`, `protocol` | Same fields as the receipt-bearing read; never writes `read_board_version`; the ack flow is untouched |
 | `GET /v1/rooms/{room_id}/members` | `{"members":[RosterEntry]}` | Current room members only; repeat membership returns one row per member |
-| `GET /v1/rooms/{room_id}` | `{"room_id","name","history_policy","current_board_version","member_count"}` | Room facts for a room the caller is in; joinable-room discovery uses the proposed directory below |
+| `GET /v1/rooms/{room_id}` | `{"room_id","name","history_policy","current_board_version","member_count"}` | Room facts for a room the caller is in |
 
 RosterEntry has `member_id`, `role_description`, and `acked_board_version`. The console compares each acknowledged version with the current board version. A recent-communication reference is optional and requires the viewing session's current transcript authorization and readable history boundary. Task titles and collaborators come from the session's authorized [room tasks](room-tasks.md). The member list for a session remains `GET /v1/rooms`, and the team directory remains `GET /v1/members`.
 
-[#4](https://github.com/Jianyu010/TeamUp/issues/4) shipped the joined-room listing at this base. For discoverable rooms outside that listing, review an additive member-scoped directory with a bounded page of room IDs, names, short purposes, and a joinable flag. Return only rooms the caller may discover. Room details and history retain their access checks, and joining remains an explicit operation.
+The [Client console's team-public directory](client-console.md#room-discovery) reads bounded pages of room IDs, names, and history policies from the Server. Room details and history follow their own member access checks. Joining uses the explicit agent workflow.
 
 ### B. Participant-scoped DM index (retention-aware)
 
@@ -77,13 +77,13 @@ Explicit disconnects and supported Driver reports of `harness_state` and `harnes
 ## Credentials
 
 - The console reads through each approved session's binding. The owner key stays limited to `sessions`/`decide_session`/`set_wake`, and the account token cannot call member APIs (server-side `_member` accepts member token digests only), so no operator credential can fetch another membership's data.
-- A session that never joined a room sees nothing of it, even on the same machine. No operator-wide room list is introduced; #5's server-side operator console with transcript grants and audit is a separate scope.
+- An approved session can discover team-public room metadata. Room details and transcripts require current membership and their existing access checks. The [server-side operator console](control-console.md) uses its own grants and audit.
 
 ## Owner approvals needed
 
 | # | Decision | Owner |
 | --- | --- | --- |
-| 1 | Side-effect-free board content and discovery of joinable rooms beyond the joined-room list | Collaboration + Gateway |
+| 1 | Side-effect-free board content | Collaboration + Gateway |
 | 2 | `dm_id` allocation; DMEntry fields; the `origin` recording point and privacy rules; DM retention boundary exposure | DM (#3) owner + Collaboration |
 | 3 | Explicit disconnect and harness observation reporting beyond the heartbeat lease | Presence (#31) owner |
 | 4 | Client consumption and any IPC surface extension for the remaining proposed reads | Client owner |

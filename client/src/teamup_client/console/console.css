@@ -105,6 +105,7 @@ button:focus-visible, select:focus-visible, input:focus-visible {
 .stage[data-page="room"] .session-panel { transform: translateX(-110%); opacity: 0; pointer-events: none; }
 .stage[data-page="room"] .room-panel { left: 0; width: var(--rail); background: var(--panel); box-shadow: inset -1px 0 var(--edge); }
 .stage[data-page="room"] .detail { transform: translateX(0); opacity: 1; pointer-events: auto; }
+.stage[data-page="room"] .detail[data-preview] { grid-template-columns: minmax(0,1fr); }
 .stage[data-page="team"] :is(.session-panel,.room-panel,.detail) { visibility: hidden; }
 #compact-room { display: none; }
 .room-main, .roster { min-width: 0; min-height: 0; display: grid; }
@@ -143,6 +144,7 @@ button:focus-visible, select:focus-visible, input:focus-visible {
 .board-heading, .chat-heading {
   display: flex; align-items: center; justify-content: space-between; gap: 7px; flex-wrap: wrap;
 }
+#room-heading { overflow-wrap: anywhere; }
 #board-status { color: var(--muted); font-size: 12px; }
 .room-id { display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: 6px; }
 .room-id label { color: var(--muted); font-size: 12px; }

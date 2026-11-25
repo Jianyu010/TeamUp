@@ -17,6 +17,8 @@ from ._console_data import MAX_BEFORE, ConsoleReader
 from ._protocol import REQUEST_LIMIT, decode_json, is_string, is_uuid
 from .ipc import ClientError
 
+CONSOLE_REQUEST_SECONDS = 18
+WORKSPACE_RESPONSE_RESERVE_SECONDS = 0.5
 STATIC = {
     "/": ("index.html", "text/html; charset=utf-8"),
     "/console.css": ("console.css", "text/css; charset=utf-8"),
@@ -131,13 +133,20 @@ class Handler(BaseHTTPRequestHandler):
         if path in {"/api/sessions/leave", "/api/sessions/retire"}:
             params = self._params(query)
             required = {"session", "room"} if path.endswith("/leave") else {"session"}
-            if set(params) != required or not self._session_id(params["session"]):
+            optional = {"membership_id"} if path.endswith("/leave") else set()
+            if not (
+                required <= params.keys() <= required | optional
+                and self._hex_id(params["session"], 64)
+            ):
                 raise ValueError
             room_id = params.get("room")
             if room_id is not None and not is_uuid(room_id):
                 raise ValueError
+            membership_id = params.get("membership_id")
+            if membership_id is not None and not self._hex_id(membership_id, 32):
+                raise ValueError
             self._task_body("empty")
-            return self._reader.session_action(params["session"], room_id)
+            return self._reader.session_action(params["session"], room_id, membership_id)
         parts = path.split("/")
         if len(parts) != 5 or parts[1:3] != ["api", "tasks"]:
             return None
@@ -173,7 +182,7 @@ class Handler(BaseHTTPRequestHandler):
     def _run(self, operation, *, write=False):
         future = asyncio.run_coroutine_threadsafe(operation, self._loop)
         try:
-            data = future.result(timeout=18)
+            data = future.result(timeout=CONSOLE_REQUEST_SECONDS)
         except concurrent.futures.TimeoutError:
             future.cancel()
             self._json(503, {"state": "unavailable"})
@@ -197,6 +206,7 @@ class Handler(BaseHTTPRequestHandler):
                     "board_ack_required": 409,
                     "conflict": 409,
                     "member_retired": 409,
+                    "membership_changed": 409,
                     "invalid_request": 422,
                     "unavailable": 503,
                 }.get(data.get("state"), 503)
@@ -219,7 +229,12 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError
             return self._reader.versions()
         if path == "/api/workspace" and not params:
-            return self._reader.workspace()
+            directory_deadline = (
+                self._loop.time()
+                + CONSOLE_REQUEST_SECONDS
+                - WORKSPACE_RESPONSE_RESERVE_SECONDS
+            )
+            return self._reader.workspace(directory_deadline=directory_deadline)
         if path == "/api/retired":
             return self._retired_operation(params)
         if path == "/api/team" and set(params) == {"session"}:
@@ -272,7 +287,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _retired_operation(self, params):
         session = params.get("session")
-        if not self._session_id(session):
+        if not self._hex_id(session, 64):
             raise ValueError
         if set(params) == {"session"}:
             return self._reader.retired_history(session)
@@ -292,9 +307,9 @@ class Handler(BaseHTTPRequestHandler):
         )
 
     @staticmethod
-    def _session_id(value):
+    def _hex_id(value, length):
         return bool(
-            isinstance(value, str) and len(value) == 64
+            isinstance(value, str) and len(value) == length
             and all(char in "0123456789abcdef" for char in value)
         )
 

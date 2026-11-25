@@ -172,7 +172,7 @@ def test_console_departure_and_retirement_reach_mcp_and_persist_history(develope
             target_id = target_profile["member_id"]
             paths = {
                 name: (await tool(peer, "create_room", name=name))["room_id"]
-                for name in ("Depart", "Archive")
+                for name in ("Depart", "Archive", "Passive")
             }
             for room_id in paths.values():
                 await tool(target, "join_room", room_id=room_id)
@@ -188,11 +188,23 @@ def test_console_departure_and_retirement_reach_mcp_and_persist_history(develope
                 client_message_id="archive",
                 text="Keep this history",
             )
-            active = (await console.get("/api/workspace")).json()["sessions"]
+            workspace = (await console.get("/api/workspace")).json()
             session_id = next(
-                item["id"] for item in active if item["member_id"] == target_id
+                item["id"]
+                for item in workspace["sessions"]
+                if item["member_id"] == target_id
             )
-            params = {"session": session_id, "room": paths["Depart"]}
+            room = next(
+                item for item in workspace["rooms"] if item["id"] == paths["Depart"]
+            )
+            membership = next(
+                item for item in room["memberships"] if item["session"] == session_id
+            )
+            params = {
+                "session": session_id,
+                "room": paths["Depart"],
+                "membership_id": membership["membership_id"],
+            }
             rejected = await console.post(
                 "/api/sessions/leave",
                 params=params,
@@ -223,13 +235,35 @@ def test_console_departure_and_retirement_reach_mcp_and_persist_history(develope
                     new_secret(),
                 ),
             ):
+                # A member bearer can record its own departure, while only the
+                # local owner action can send a message into an attached harness.
+                async with httpx.AsyncClient(
+                    base_url=developer.server.url,
+                    headers={"Authorization": f"Bearer {binding['member_token']}"},
+                    trust_env=False,
+                ) as server:
+                    departure = await server.post(
+                        f"/v1/rooms/{paths['Passive']}/leave?notify=true"
+                    )
+                    assert departure.status_code == 200
+                    async with asyncio.timeout(5):
+                        while (await server.get("/v1/inbox?kinds=room_left")).json()[
+                            "events"
+                        ]:
+                            await asyncio.sleep(0.02)
+                    assert messages.empty()
+
                 for _ in range(2):
                     response = await console.post("/api/sessions/leave", params=params)
                     assert response.status_code == 200, response.text
                 text = await asyncio.wait_for(messages.get(), timeout=10)
                 assert paths["Depart"] in text
-            (notice,) = (await tool(target, "notifications"))["notifications"]
-            assert (notice["kind"], notice["room_id"]) == ("room_left", paths["Depart"])
+            recorded = (await tool(target, "notifications"))["notifications"]
+            assert [(item["kind"], item["room_id"]) for item in recorded] == [
+                ("room_left", paths["Passive"]),
+                ("room_left", paths["Depart"]),
+            ]
+            assert messages.empty()
             assert not (await tool(peer, "notifications"))["notifications"]
             await tool(target, "get_board", room_id=paths["Depart"], error="not_found")
 
@@ -283,6 +317,8 @@ def test_console_departure_and_retirement_reach_mcp_and_persist_history(develope
                     "/api/retired", params={"session": session_id, "after": 0}
                 )
             ).json()["notifications"]
-            assert notices == [{**notice, "event_id": str(notice["event_id"])}]
+            assert notices == [
+                {**item, "event_id": str(item["event_id"])} for item in recorded
+            ]
 
     asyncio.run(asyncio.wait_for(scenario(), 45))

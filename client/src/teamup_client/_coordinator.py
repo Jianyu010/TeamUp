@@ -414,10 +414,14 @@ class Coordinator:
             if f"{{{name}}}" not in operation.route
         }
         try:
-            result = await self._upstream.request(
-                operation.verb, path, binding.member_token,
-                **({"query": fields} if operation.verb == "GET" else {"body": fields or None}),
-            )
+            if operation.verb == "GET":
+                result = await self._upstream.request(
+                    operation.verb, path, binding.member_token, query=fields
+                )
+            else:
+                result = await self._upstream.request(
+                    operation.verb, path, binding.member_token, body=fields or None
+                )
         except ClientError as exc:
             if exc.code == "not_registered" and await self._sync_retirement(session):
                 raise self._retired_error() from None
@@ -517,18 +521,40 @@ class Coordinator:
         )
         return self._archive_session(session, receipt)
 
-    async def _session_action(self, identity, room_id):
+    async def _session_action(self, identity, room_id, membership_id=None):
         session = self._sessions.get(identity)
         if session is None:
             raise ClientError("not_found", "Unknown or unapproved session")
         if room_id is None:
             return await self._retire(session)
+        if membership_id is None:
+            listing = await self._upstream.request(
+                "GET", "/rooms", session.binding.member_token,
+                query={"include_membership": "true"},
+            )
+            if self._sessions.get(identity) is not session:
+                raise ClientError("not_found", "Unknown or unapproved session")
+            room = next(
+                (room for room in listing["rooms"] if room["room_id"] == room_id), None
+            )
+            if room is None:
+                return {"room_id": room_id}
+            membership_id = room.get("membership_id")
+        query = {"notify": "true"}
+        if membership_id is not None:
+            query["membership_id"] = membership_id
         result = await self._upstream.request(
-            "POST", f"/rooms/{room_id}/leave", session.binding.member_token,
-            query={"notify": "true"},
+            "POST", f"/rooms/{room_id}/leave", session.binding.member_token, query=query
         )
+        event_id = result.get("departure_event_id")
+        if is_integer(event_id, 1, 2**63 - 1):
+            self._record_departure(session.scope, event_id, room_id)
+            if self._sessions.get(identity) is session:
+                job = asyncio.create_task(self._deliver_departure(session, room_id))
+                session.workers.append(job)
+                job.add_done_callback(session.workers.remove)
         session.inbox_changed.set()
-        return result
+        return {"room_id": room_id}
 
     @staticmethod
     def _console_id(identity):
@@ -546,14 +572,16 @@ class Coordinator:
             for identity, item in sorted(self._retired.items())
         ]
 
-    async def console_session_action(self, session_id: str, room_id: str | None) -> dict:
+    async def console_session_action(
+        self, session_id: str, room_id: str | None, membership_id: str | None
+    ) -> dict:
         if room_id is None:
             for identity, profile in self._retired.items():
                 if self._console_id(identity) == session_id:
                     return {"state": "ready", **self._retirement_receipt(profile)}
         for identity in self._sessions:
             if self._console_id(identity) == session_id:
-                result = await self._session_action(identity, room_id)
+                result = await self._session_action(identity, room_id, membership_id)
                 return {"state": "ready", **result}
         raise ClientError("not_found", "Unknown or unapproved session")
 
@@ -852,11 +880,7 @@ class Coordinator:
                     room_id = event.get("room_id")
                     if not is_uuid(room_id):
                         raise unavailable()
-                    if self._notices.record_departure(scope, event_id, room_id):
-                        self._notice_output.emit(
-                            {"kind": "room_left", "event_id": event_id, "room_id": room_id}
-                        )
-                        await self._deliver_departure(session, room_id)
+                    self._record_departure(scope, event_id, room_id)
                 elif event["kind"] == "dm":
                     # A DM notice is typed and body-free: no desktop or wake
                     # pipeline, and no session authorization change.
@@ -882,6 +906,12 @@ class Coordinator:
                 after = event_id
             if len(events) < limit:
                 return
+
+    def _record_departure(self, scope, event_id, room_id):
+        if self._notices.record_departure(scope, event_id, room_id):
+            self._notice_output.emit(
+                {"kind": "room_left", "event_id": event_id, "room_id": room_id}
+            )
 
     async def _deliver_departure(self, session, room_id):
         lease = self._leases.get(session.identity)
@@ -977,17 +1007,21 @@ class Coordinator:
         if driver is None:
             return "failed"
         room = notice["room_id"]
+        role, room_name = await self._names(binding, session.scope, notice)
         try:
-            # Recheck access as this member before anything reaches the session.
+            # Read the message and acknowledged board under the same membership.
             page = await self._upstream.request(
                 "GET",
                 f"/rooms/{room}/messages",
                 binding.member_token,
-                query={"after": notice["message_id"] - 1, "limit": 1},
+                query={"after": notice["message_id"] - 1, "limit": 1, "delivery": "true"},
             )
-            board = await self._upstream.request(
-                "GET", f"/rooms/{room}/board", binding.member_token
-            )
+            board = page.get("delivery_board")
+            if board is None:
+                # Servers without the lifecycle API still use the separate board read.
+                board = await self._upstream.request(
+                    "GET", f"/rooms/{room}/board", binding.member_token
+                )
         except (ClientError, OSError, OverflowError):
             return "failed"
         messages = page.get("messages") if isinstance(page, dict) else None
@@ -1008,7 +1042,8 @@ class Coordinator:
             and isinstance(board.get("protocol"), str)
         ):
             return "failed"
-        role, room_name = await self._names(binding, session.scope, notice)
+        if self._leases.get(session.identity) is not lease:
+            return "waiting"
         prompt = wake_prompt(notice, role, room_name, message, board)
         self._notices.set_harness_state(session.scope, notice["event_id"], "submitting")
         submitted = await driver(lease.address, lease.token, prompt)
