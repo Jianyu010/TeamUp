@@ -77,7 +77,11 @@ def test_desktop_launcher_reuses_client_through_private_socketpair():
                 )
                 response = connection.getresponse()
                 assert response.status == 200
-                assert json.loads(response.read()) == {"sessions": [], "rooms": []}
+                assert json.loads(response.read()) == {
+                    "sessions": [],
+                    "rooms": [],
+                    "directory_available": False,
+                }
             finally:
                 connection.close()
         finally:

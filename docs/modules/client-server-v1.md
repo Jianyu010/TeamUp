@@ -68,6 +68,18 @@ Client 使用已配置的 Server 地址和 TLS 设置读取版本。此操作只
 
 本地会话、远端会话采用相同的房间成员规则。Client 将各成员的确认版本与房间当前版本比较。最近发言仅来自同一阅读会话在当前房间有权读取的消息，任务及队友仅来自该会话可读的房间任务。详情缺失时可以继续展示名单。Server 的正文、任务和在线状态分别执行各自的权限检查。
 
+## 团队公开房间目录（#56）
+
+| 路由 | 响应 |
+| --- | --- |
+| `GET /v1/room-directory` | `{"rooms":[{"room_id":"…","name":"…","history_policy":"since_joining"}],"next_after":null}`，带 `Cache-Control: no-store`。 |
+
+本机 Client 通过 Gateway 读取 Collaboration 拥有的房间目录。凭证为当前有效的成员 token。Collaboration 在同一个只读事务内验证凭证和账号状态，并返回该 Server 上允许成员自行加入的团队公开房间。当前支持的房间都是团队公开房间，因此同一 Server 上的有效成员可以发现同一批房间。缺少凭证、凭证失效或账号停用返回 401 `unauthorized`。
+
+目录按 `room_id` 升序排列。`after` 是可省略的排他 UUID 游标，`limit` 默认 50，取值为 1–100。参数无效或请求含正文返回 422 `invalid_request`。有下一页时 `next_after` 是本页最后一个 ID，否则为 null。每页独立鉴权。刷新时从首页重读以发现排序位置在上次游标之前的新房间。
+
+目录仅含房间 ID、名称和加入后的历史策略。私聊、公告与确认状态、成员名单、任务和消息均在各自的授权入口读取。查看目录不加入房间，也不记录公告回执。成员加入后，详情和历史依上节及各自的公告确认规则授权。旧客户端和 MCP 继续使用成员范围的 `GET /v1/rooms`。
+
 ## 成员在线状态（#31 / #43）
 
 Client 后台在每个获准且登记的成员绑定处观测自身连接。Gateway 将请求交给 Presence。Presence 仅持有临时观测，通过 Collaboration 的 `get_member(token)` 取得上报者身份，通过 `authorized_presence_members(token)` 取得本次查询可见的成员 ID。后者在一次只读事务内验证调用者及账号状态，返回调用者本人，以及与其至少同属一个当前房间的可用成员，按 ID 去重。账号停用的成员不返回观测。读请求不能产生心跳。

@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from importlib.metadata import PackageNotFoundError, version
 from typing import Protocol
 
-from ._protocol import is_integer, is_string
+from ._protocol import is_integer, is_string, is_uuid
 from ._upstream import unavailable
 from .ipc import ClientError
 
@@ -15,6 +15,7 @@ PAGE = 30
 VISIBLE_WIRE_LIMIT = 20
 TASK_OBSERVATION_SECONDS = 2
 TASK_OBSERVATION_PAGES = 2
+DIRECTORY_OBSERVATION_SECONDS = 3
 PRESENCE_OBSERVATION_SECONDS = 2
 VERSION_OBSERVATION_SECONDS = 2
 MAX_BEFORE = 1 << 63  # The Server treats this as an unbounded latest-page read.
@@ -168,7 +169,61 @@ class ConsoleReader:
             return session, description, []
         return session, description, listing["rooms"]
 
-    async def workspace(self) -> dict:
+    async def _directory_pages(self, session: ConsoleSession) -> list[dict]:
+        rooms: list[dict] = []
+        after: str | None = None
+        while True:
+            query: dict = {"limit": 100}
+            if after is not None:
+                query["after"] = after
+            page = await self._read(session, "/room-directory", query)
+            entries = page.get("rooms")
+            if not isinstance(entries, list) or any(
+                not isinstance(room, dict)
+                or not is_uuid(room.get("room_id"))
+                or not is_string(room.get("name"), 200)
+                or room.get("history_policy") not in ("retained", "since_joining")
+                for room in entries
+            ):
+                raise unavailable()
+            rooms.extend(entries)
+            cursor = page.get("next_after")
+            if cursor is None:
+                return rooms
+            if (
+                not entries
+                or cursor != entries[-1]["room_id"]
+                or (after is not None and cursor <= after)
+            ):
+                raise unavailable()
+            after = cursor
+
+    async def _directory(
+        self, candidates: list[ConsoleSession], deadline: float | None
+    ) -> tuple[ConsoleSession | None, list[dict]]:
+        now = asyncio.get_running_loop().time()
+        stop = now + DIRECTORY_OBSERVATION_SECONDS
+        if deadline is not None:
+            stop = min(stop, deadline)
+        if stop <= now:
+            return None, []
+        try:
+            async with asyncio.timeout_at(stop):
+                for session in candidates:
+                    try:
+                        return session, await self._directory_pages(session)
+                    except ClientError as exc:
+                        # Another approved member can replace a lost credential.
+                        if (
+                            exc.code not in {"unauthorized", "not_registered"}
+                            and self._current(session.id) == session
+                        ):
+                            break
+        except TimeoutError:
+            pass
+        return None, []
+
+    async def workspace(self, *, directory_deadline: float | None = None) -> dict:
         reports = await asyncio.gather(
             *(self._describe(item) for item in self._sessions())
         )
@@ -222,6 +277,14 @@ class ConsoleReader:
             )
             for (membership, _), active in zip(work, observations, strict=True):
                 membership["active_task"] = active
+        directory_session, directory = await self._directory(
+            [
+                reference
+                for reference, session, _ in reports
+                if session["state"] == "ready"
+            ],
+            directory_deadline,
+        )
         approved = {
             reference.id
             for reference, _, _ in reports
@@ -232,9 +295,31 @@ class ConsoleReader:
             room["memberships"] = [
                 item for item in room["memberships"] if item["session"] in approved
             ]
+        rooms = {
+            identifier: room
+            for identifier, room in rooms.items()
+            if room["memberships"]
+        }
+        directory_available = (
+            directory_session is not None and directory_session.id in approved
+        )
+        if directory_available:
+            for entry in directory:
+                identifier = entry["room_id"]
+                room = rooms.setdefault(
+                    identifier,
+                    {
+                        "id": identifier,
+                        "name": entry["name"],
+                        "latest_message_id": None,
+                        "memberships": [],
+                    },
+                )
+                room["history_policy"] = entry["history_policy"]
         ordered = sorted(
-            (room for room in rooms.values() if room["memberships"]),
+            rooms.values(),
             key=lambda entry: (
+                not entry["memberships"],
                 -int(entry["latest_message_id"] or 0),
                 entry["name"].casefold(),
                 entry["id"],
@@ -243,7 +328,11 @@ class ConsoleReader:
         for room in ordered:
             message = room["latest_message_id"]
             room["latest_message_id"] = str(message) if message is not None else None
-        return {"sessions": sessions, "rooms": ordered}
+        return {
+            "sessions": sessions,
+            "rooms": ordered,
+            "directory_available": directory_available,
+        }
 
     async def _participating(
         self, session: ConsoleSession, member_id: str, room_id: str
