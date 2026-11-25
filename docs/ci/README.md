@@ -8,9 +8,9 @@ TeamUp 的 main 分支只接受合入门禁的自动合入。仓库 owner（`Jia
 
 | 层 | Job | 何时运行 | 失败后果 |
 | --- | --- | --- | --- |
-| 1 · 路由 | 由门禁判定：改受保护路径、删除测试、新增 skip/xfail，或改动超过 300 个文件 | 每次判定 | 等待 owner 审查并加 `ready` |
+| 1 · 路由 | 由门禁判定：没有关联 issue；改受保护路径、删除测试、新增 skip/xfail，或改动超过 300 个文件 | 每次判定 | 关联 issue，或等待 owner 审查并加 `ready` |
 | 2 · 静态检查 | `2 · Lint`（ruff）、`2 · Architecture`（依赖方向） | 每次推送，草稿也运行 | 门禁红，不合入 |
-| 3 · 运行代码的检查 | `3 · Linux UT`（组件与 CI 单测）、`3 · Linux ST`（全仓 pytest，不含场景）、`3 · AI Review` | PR 标为 ready for review 之后；AI Review 在 CI 通过后由门禁派发 | 门禁红；审查有未解决发现时不合入 |
+| 3 · 运行代码的检查 | `3 · Linux UT`（组件与 CI 单测）、`3 · Linux ST`（全仓 pytest，不含场景）、`3 · AI Review` | PR 标为 ready for review 之后；AI Review 在 CI 通过后由门禁派发 | 门禁红；P0/P1 发现未修复、P2 发现未回复时 `3 · Review Findings` 为红，不合入 |
 | 4 · 端到端 | `4 · Nightly`（免模型场景和性能）、`4 · Weekly`（真实 Agent） | main 上按计划运行 | main 冻结（nightly），或开 `weekly-failure` issue |
 | 5 · 合入 | `5 · Merge Gate`（`merge-gate` 状态）、`5 · Merge` | 检查结束、标签变化或每 15 分钟的扫描 | PR 留在门前 |
 
@@ -25,6 +25,8 @@ TeamUp 的 main 分支只接受合入门禁的自动合入。仓库 owner（`Jia
 | `1 · PR Routing` | 1 | 门禁写入的提交状态（`merge-gate-01`） | 门禁的路由结论：PR 走自动路径还是等待 owner | 否，只报告 | – | 启用 |
 | `1 · Protected Changes` | 1 | 同上 | 改了受保护路径、删除测试或新增 skip/xfail 时为红，owner 加 `ready` 后为绿 | 否，只报告 | – | 启用 |
 | `1 · Automation Limits` | 1 | 同上 | 改动超过 300 个文件、PR 作者不受信或审查重跑次数用尽时为红 | 否，只报告 | – | 启用 |
+| `1 · Linked Issue` | 1 | 同上 | PR 的标题或正文没有引用本仓库的 issue（`#N` 或 `Jianyu010/TeamUp#N`，引用的是 PR 不算）时为红；门禁据此拦截，owner 加 `ready` 可放行 | 否，门禁执行 | – | 启用 |
+| `3 · Review Findings` | 3 | 同上 | 按下文"AI 审查发现"判定：有未修复的 P0/P1 或未回复的 P2 时为红；当前 head 还没有审查时为 pending | 否，门禁执行 | – | 启用 |
 | `2 · Type Check` | 2 | `type-check-01` | `uv run --no-sync mypy`，配置在根 `pyproject.toml` 的 `[tool.mypy]`，覆盖 `server/src`、`client/src`、`plugin/mcp/src` | 是 | `gate/type-check-failed` | 启用 |
 | `2 · Secrets` | 2 | `secrets-01` | `gitleaks dir . --config .gitleaks.toml --redact --exit-code 1` | 是 | `gate/secrets-failed` | 启用 |
 | `2 · Workflow Lint` | 2 | `workflow-lint-01` | `actionlint -config-file .github/actionlint.yaml`（列出自托管 runner 标签）与 `zizmor --offline .github/workflows`（配置 `.github/zizmor.yml`） | 是 | `gate/workflow-lint-failed` | 启用 |
@@ -45,11 +47,21 @@ TeamUp 的 main 分支只接受合入门禁的自动合入。仓库 owner（`Jia
   - 不是草稿；
   - 没有 `pr/hold`；
   - 必需检查都通过；
-  - 当前 head 的 `3 · AI Review` 通过，或维护者加了 `ready`；
+  - 当前 head 的 `3 · AI Review` 通过，审查发现按下文处理完，或维护者加了 `ready`；
+  - PR 关联了至少一个 issue（改标题或正文后门禁重新判定，删掉引用会让门禁回到 pending）；
   - 第 1 层路由没有拦截。
 - 合入者在 hp-laptop 的 `merge-01` 运行器上执行，令牌是仓库密钥 `TEAMUP_MERGE_TOKEN`。它每次合入一个 PR，用 squash 方式合入。
 - `ready` 只能由 admin 或 maintain 角色添加。PR 在加标签后又推送新提交时，标签会被自动移除。
 - `pr/hold` 让 PR 停在门前，直到移除该标签。
+
+### AI 审查发现
+
+审查器给每条发现定严重度，对应关系是 `critical` = P0、`high` = P1、`medium` = P2。门禁读审查留下的发现台账（ledger），把结论写成提交状态 `3 · Review Findings`：
+
+- **P0、P1 必须修复。** 只有审查器在后续轮次判定为已修复（`fixed`），或认可作者的解释（`answered`），才算处理完。作者回复或把讨论标为已解决都不够；推送修复后，审查器会在下一轮复查。
+- **P2 必须回复。** PR 作者或 owner 在该发现的讨论里回复修复方式或不改的理由，或把讨论标为已解决，或在 PR 对话里以 `F<n>: ...` 开头回复。审查器判定为已修复的也算处理完。
+- 不满足时 `3 · Review Findings` 为红，`merge-gate` 保持 pending 并写明还缺哪些发现。
+- 被标为已解决、但没有修复的 P0/P1 不会再被审查器复查，只能由 owner 审过后加 `ready` 放行。
 
 ### 冻结
 
@@ -58,7 +70,7 @@ TeamUp 的 main 分支只接受合入门禁的自动合入。仓库 owner（`Jia
 - main 上的 `CI` 推送运行失败；
 - nightly 失败。
 
-冻结期间只合入带 `ready` 的 PR，通常是修复本身。main 恢复绿色、nightly 再次通过后，issue 自动关闭。weekly 失败不会冻结 main，只开 `weekly-failure` issue。
+冻结期间只合入两种 PR：带 `ready` 的 PR；或在标题、正文里用 `Refs #N`（或 `Ref`、`Part of`）引用了某个打开的冻结 issue 的修复 PR，它仍要门禁全绿，但不必等 owner。用 `Closes`、`Fixes`、`Resolves` 引用冻结 issue 的 PR 不走这条路：那样修复一合入 issue 就被关闭，不会等到 main 真的恢复绿色。合入前合入者会重读 PR，引用被删掉或改成关闭关键字时不合入。main 恢复绿色、nightly 再次通过后，issue 自动关闭。weekly 失败不会冻结 main，只开 `weekly-failure` issue。
 
 ## 运行器
 
@@ -143,7 +155,7 @@ GitHub 的 cron 常常推迟 3–5 小时，所以 `gate-tick.yml` 每 15 分钟
 2. hp-laptop 上的模型按 [标签规范](labeling.md) 打上 `type`、`source`、`priority`、`area` 和 `size`；
 3. 检查必需的轴，缺少时加上 `status/triage`。
 
-PR 上的 `gate/*-failed`、从 issue 镜像的 `type/*` 和 `pr/no-issue` 由 `gate-queue.yml` 的 `pr-labels` 维护。这些标签只用于提示，门禁不读取它们。发布说明按 `type/*` 分组。
+PR 上的 `gate/*-failed`、从 issue 镜像的 `type/*` 和 `pr/no-issue` 由 `gate-queue.yml` 的 `pr-labels` 维护。这些标签只用于提示，门禁不读取它们；没有关联 issue 的拦截由门禁自己判定（`1 · Linked Issue`），与 `pr/no-issue` 用同一条规则。发布说明按 `type/*` 分组。
 
 ## 维护者操作
 

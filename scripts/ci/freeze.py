@@ -1,7 +1,8 @@
 """Freeze and thaw auto-merge (layer 5, docs/ci/README.md).
 
 A freeze is an open issue labelled ``ci/freeze`` whose title starts with ``[ci:<source>]``.
-While one is open the merger merges only PRs the owner passed with ``ready`` (scripts/ci/merge.py),
+While one is open the merger merges only PRs the owner passed with ``ready``, and green PRs that
+refer to the freeze issue (scripts/ci/merge.py),
 so a fix or revert can land and nothing else piles onto a red ``main``. Each source owns its own
 issue: ``main`` (CI on a push to main) and ``nightly``. The same source clears it when it
 is green again; a person can also close the issue. ``weekly`` uses the same mechanics with the
@@ -68,8 +69,10 @@ def set_freeze(gh: GitHub, label: str, source: str, reason: str, url: str) -> No
     else:
         title = f"{title_prefix(source)} auto-merge frozen: {source} is red"
         tail = (
-            "Auto-merge is frozen: the merger only merges PRs the owner passed with `ready`. Land "
-            f"the fix or revert that way; this issue closes itself when {source} is green again."
+            "Auto-merge is frozen: the merger only merges PRs the owner passed with `ready`, and "
+            "green PRs that refer to this issue (write `Refs #<this issue>`; `Closes` would close "
+            "it before the fix is proven). Land the fix or revert that way; this issue closes "
+            f"itself when {source} is green again."
         )
     issue = gh.call(
         "POST",
