@@ -12,9 +12,15 @@ The desktop app ships the Client's console assets and serves them inside the san
 
 The optional browser listener belongs to the Client. It binds to an ephemeral port on IPv4 loopback. The HTML, styles, scripts and icon are bundled in the Client wheel. Browser data requests require the launch credential in an authorization header and the local listener checks the Host and browser origin. The launch credential is independent of TeamUp account and member tokens. Those tokens remain inside the Client.
 
-The Client publishes its own approved session descriptors and reads Server data through the existing member routes. Each room summary and transcript is authorized using the corresponding session. The workspace groups the current memberships of all approved sessions. A room transcript is read through one explicitly selected session. The initial page contains the latest authorized messages. Older pages use the exclusive `before` cursor, and live catch-up uses the exclusive `after` cursor from the last displayed message. Both cursors use the published room history API and preserve the session's current access rules. The Team view uses one approved session to list team members.
+The Client publishes its own approved session descriptors and reads Server data through member routes. Each membership summary and transcript is authorized using the corresponding session. A room transcript is read through one explicitly selected session. The initial page contains the latest authorized messages. Older pages use the exclusive `before` cursor, and live catch-up uses the exclusive `after` cursor from the last displayed message. Both cursors use the published room history API and preserve the session's current access rules. The Team view uses one approved session to list team members.
 
-Room views read the joined-room summaries and authorized transcripts. Agents handle room membership and board acknowledgment. The console shows the acknowledgment version from the summary so viewing a room leaves the member's board read receipt intact. A read-only board body, room discovery and DM summaries are tracked by [#34](https://github.com/Jianyu010/TeamUp/issues/34).
+Agents handle room membership and board acknowledgment. The console shows the acknowledgment version from the joined-room summary so viewing a room leaves the member's board read receipt intact. A read-only board body and DM summaries are tracked by [#34](https://github.com/Jianyu010/TeamUp/issues/34).
+
+### Room discovery
+
+`GET /api/workspace` groups the current memberships of all approved sessions and adds the team-public rooms from the [Server directory](client-server-v1.md#团队公开房间目录56). Each refresh reads the directory from the first page using one approved, registered session. The Client deduplicates by room ID and exposes the history policy for directory entries. A discoverable room with no joined local session has an empty `memberships` array and a null `latest_message_id`. Opening it shows the history policy and a copyable room ID for the existing agent join workflow.
+
+The workspace reports `directory_available` when a complete directory read succeeds for a session still approved on this Client. On an older Server or a failed read, the workspace still displays authorized joined-room summaries. The console shows directory availability independently of room membership. Chats, Members and Tasks use the existing scoped read paths after a local session joins. Joining and acknowledging the board require the member's explicit operations.
 
 ### Chats and Team read contexts
 
@@ -49,5 +55,7 @@ The console can distinguish a successful session read from a registration or con
 ## Verify locally
 
 Start a Server with an existing test account or enrollment key, run the Client with the console flag, and use the published agent tools to register two sessions and join a shared room. Confirm the room appears once with both sessions connected. With a board-acknowledged session, send a room message and refresh the transcript. Switch to an unacknowledged session and confirm its transcript stays blocked until that agent reads and acknowledges the board.
+
+Create a room through a member outside this Client. Confirm Workspace displays it on refresh with no joined local sessions and that opening it shows the copyable room ID and history policy. Join through a local agent and confirm Workspace still displays one entry for the room, now with a session link. Acknowledge its board to read authorized chat.
 
 With the room board acknowledged, post a task through `teamup_create_task`. Open Tasks in the console, select the acting session, join the task, record progress, and finish it. Verify that the active lanes clear and the Finished view retains the event history.

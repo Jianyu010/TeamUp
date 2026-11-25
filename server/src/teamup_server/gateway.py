@@ -414,6 +414,16 @@ class Gateway:
         def list_rooms(token: _Bearer) -> dict:
             return {"rooms": collaboration.list_rooms(token)}
 
+        @app.get("/v1/room-directory", dependencies=[Depends(_reject_body)])
+        def room_directory(
+            token: _Bearer,
+            response: Response,
+            after: _Identifier | None = None,
+            limit: _Limit = 50,
+        ) -> dict:
+            _no_store(response)
+            return collaboration.room_directory(token, after, limit)
+
         @app.get("/v1/rooms/{room_id}", dependencies=[Depends(_reject_body)])
         def room_detail(token: _Bearer, room_id: _Identifier, response: Response) -> dict:
             _no_store(response)

@@ -94,6 +94,46 @@ def assert_same_page(console_result, server_result, expected):
     ]
 
 
+def test_workspace_discovers_a_teammates_room_before_joining(transcript):
+    owner, api, (alice, _, carol), console, session = transcript
+    assert console.get("/api/workspace").json()["rooms"] == []
+    room = api.create_room(alice, "Teammate review", history_policy="retained")
+    api.read_and_ack_board(alice, room)
+    first = api.send(alice, room, "Only room members can read this")
+
+    response = console.get("/api/workspace")
+    response.raise_for_status()
+    workspace = response.json()
+    assert workspace["rooms"] == [
+        {
+            "id": room,
+            "name": "Teammate review",
+            "history_policy": "retained",
+            "latest_message_id": None,
+            "memberships": [],
+        }
+    ]
+    assert workspace["directory_available"] is True
+    assert console_page(console, session, room) == {"state": "not_found"}
+    assert api.call("GET", "/v1/rooms", carol.token) == {"rooms": []}
+
+    api.join(carol, room)
+    (joined,) = console.get("/api/workspace").json()["rooms"]
+    assert joined["id"] == room
+    assert [item["session"] for item in joined["memberships"]] == [session]
+    assert console_page(console, session, room)["state"] == "board_ack_required"
+    api.read_and_ack_board(carol, room)
+    assert console_page(console, session, room)["messages"][0]["id"] == str(
+        first["message_id"]
+    )
+
+    owner.disable_account("carol")
+    assert (
+        api.call("GET", "/v1/room-directory", carol.token, error="unauthorized") == 401
+    )
+    assert console.get("/api/workspace").json()["rooms"] == []
+
+
 def test_bystander_reads_the_canonical_room_transcript_across_pages(transcript):
     owner, api, (alice, bob, carol), console, session = transcript
     room = api.create_room(alice, "Review", history_policy="retained")

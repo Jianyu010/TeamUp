@@ -1999,6 +1999,23 @@ class Collaboration:
             )
             return [dict(record) for record in rows]
 
+    def room_directory(self, token: str, after: str | None, limit: int) -> dict:
+        with self._transaction() as connection:
+            _member(connection, token)
+            # Every room currently supports self-service joining by team members.
+            rows = connection.execute(
+                """
+                SELECT room_id, name, history_policy FROM rooms
+                WHERE room_id > ? ORDER BY room_id LIMIT ?
+                """,
+                (after or "", limit + 1),
+            ).fetchall()
+            rooms = [dict(row) for row in rows[:limit]]
+            return {
+                "rooms": rooms,
+                "next_after": rooms[-1]["room_id"] if len(rows) > limit else None,
+            }
+
     def room_detail(self, token: str, room_id: str) -> dict:
         with self._transaction() as connection:
             member_id = _member(connection, token)["member_id"]

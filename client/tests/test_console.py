@@ -10,6 +10,7 @@ from teamup_client._upstream import Upstream as ServerTransport
 from teamup_client.ipc import ClientError
 
 ROOM = "247629c4-8e54-4d0e-8b25-7a8c43bf85b2"
+DISCOVERABLE_ROOM = "847629c4-8e54-4d0e-8b25-7a8c43bf85b2"
 BACKEND = "93e57f02-b2d7-4145-a968-9f0b60319c71"
 REVIEWER = "a4a4610b-42b2-45d3-9002-c4ee89fe3427"
 REMOTE = "1fb1fae4-88ac-4bb8-aec1-be36cb403825"
@@ -40,6 +41,8 @@ class Upstream:
                     }
                 ],
             }
+        if path == "/room-directory":
+            raise ClientError("not_found", "Directory is unavailable on this Server")
         if path == f"/rooms/{ROOM}/tasks":
             if token == "reviewer-secret":
                 raise ClientError("board_ack_required", "Current board needed")
@@ -81,6 +84,7 @@ def test_workspace_and_room_reads_keep_session_scope_and_board_ack():
         reader = ConsoleReader(sessions, request)
         workspace = await reader.workspace()
         assert [room["id"] for room in workspace["rooms"]] == [ROOM]
+        assert workspace["directory_available"] is False
         assert {item["id"] for item in workspace["sessions"]} == {"primary", "review"}
         assert {item["session"] for item in workspace["rooms"][0]["memberships"]} == {
             "primary",
@@ -108,6 +112,82 @@ def test_workspace_and_room_reads_keep_session_scope_and_board_ack():
         assert reviewer["messages"] == []
         assert all(not path.endswith("/board") for _, path, _, _ in request.calls)
         assert all(path != "/presence" for _, path, _, _ in request.calls)
+
+    asyncio.run(scenario())
+
+
+def test_workspace_combines_all_directory_pages_with_joined_rooms():
+    async def scenario():
+        upstream = Upstream()
+        cursors = []
+
+        async def request(method, path, token, *, query=None):
+            if path == "/room-directory":
+                assert token == "backend-secret"
+                cursor = query.get("after")
+                cursors.append(cursor)
+                if cursor is None:
+                    return {
+                        "rooms": [
+                            {
+                                "room_id": ROOM,
+                                "name": "Compatibility",
+                                "history_policy": "since_joining",
+                            }
+                        ],
+                        "next_after": ROOM,
+                    }
+                assert cursor == ROOM
+                return {
+                    "rooms": [
+                        {
+                            "room_id": DISCOVERABLE_ROOM,
+                            "name": "Teammate room",
+                            "history_policy": "retained",
+                        }
+                    ],
+                    "next_after": None,
+                }
+            return await upstream(method, path, token, query=query)
+
+        result = await ConsoleReader(sessions, request).workspace()
+        assert cursors == [None, ROOM]
+        assert result["directory_available"] is True
+        joined, discoverable = result["rooms"]
+        assert joined["id"] == ROOM
+        assert [item["session"] for item in joined["memberships"]] == [
+            "primary",
+            "review",
+        ]
+        assert discoverable == {
+            "id": DISCOVERABLE_ROOM,
+            "name": "Teammate room",
+            "history_policy": "retained",
+            "latest_message_id": None,
+            "memberships": [],
+        }
+
+    asyncio.run(scenario())
+
+
+def test_directory_discards_pages_when_its_local_session_is_revoked():
+    async def scenario():
+        upstream = Upstream()
+        approved = list(sessions())[:1]
+
+        async def request(method, path, token, *, query=None):
+            if path == "/room-directory":
+                approved.clear()
+                return {
+                    "rooms": [
+                        {"room_id": ROOM, "name": "Build", "history_policy": "retained"}
+                    ],
+                    "next_after": None,
+                }
+            return await upstream(method, path, token, query=query)
+
+        result = await ConsoleReader(lambda: tuple(approved), request).workspace()
+        assert result == {"sessions": [], "rooms": [], "directory_available": False}
 
     asyncio.run(scenario())
 

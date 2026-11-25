@@ -39,7 +39,7 @@
         <div class="room-main">
           <section class="billboard" aria-label="Room information">
             <div class="board-heading">
-              <h2>Board</h2>
+              <h2 id="room-heading">Board</h2>
               <span id="board-status"></span>
             </div>
             <div class="room-id">
@@ -51,8 +51,9 @@
               </div>
               <span id="copy-status" class="sr-only" role="status"></span>
             </div>
+            <p class="muted" id="room-preview" hidden></p>
           </section>
-          <div class="chat-heading">
+          <div class="chat-heading" id="chat-heading">
             <nav class="room-tabs" aria-label="Room views">
               <button type="button" id="tasks-tab" aria-pressed="false">Tasks</button>
               <button type="button" id="chats-tab" aria-pressed="true">Chats</button>
@@ -75,7 +76,7 @@
             <div id="task-lanes" class="task-lanes"></div>
           </section>
         </div>
-        <aside class="roster" aria-labelledby="roster-title">
+        <aside class="roster" id="member-rail" aria-labelledby="roster-title">
           <h2 id="roster-title">Members</h2>
           <p id="roster-status" class="muted" role="status"></p>
           <div id="roster" class="scroll-frame"></div>
