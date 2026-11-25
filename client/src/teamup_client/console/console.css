@@ -146,10 +146,6 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
 #member-detail p, #member-detail ul, #member-detail small { color: var(--muted); font-size: 12px; }
 #member-detail ul { padding-inline-start: 16px; margin: 0; }
 #member-detail small { display: block; }
-.mention-overflow { display: inline; padding-left: 5px; color: var(--muted); font-size: 12px; }
-.mention-overflow summary { display: inline; cursor: pointer; text-decoration: underline; }
-.mention-overflow span { display: block; overflow-wrap: anywhere; }
-.message strong { overflow-wrap: anywhere; }
 .billboard {
   display: grid; gap: 7px; padding: 9px 12px; border: 1px solid #425653;
   border-left: 2px solid #82b3a5; background: #212e2d; border-radius: 6px;
@@ -217,8 +213,21 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
   padding: 8px 5px; border-bottom: 1px solid var(--line);
 }
 .message time { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12px; overflow-wrap: anywhere; }
+.message-content { display: grid; gap: 2px; min-width: 0; }
+.message-routing { color: var(--accent); font-size: 12px; overflow-wrap: anywhere; }
+.message-title { overflow-wrap: anywhere; }
 .message p { white-space: pre-wrap; overflow-wrap: anywhere; }
-.message strong { color: var(--accent); }
+.mention-overflow { display: inline; margin-inline-start: 4px; }
+.mention-overflow summary {
+  display: inline-block; cursor: pointer; padding-inline: 4px; border-radius: 3px;
+}
+.mention-overflow summary:is(:hover, :focus-visible) { background: var(--raised); }
+.mention-overflow summary:focus-visible { outline: 2px solid var(--accent); }
+.mention-overflow:not([open]):has(summary:is(:hover, :focus-visible))::details-content { content-visibility: visible; }
+.mention-recipients {
+  display: block; margin: 3px 0; padding: 4px 7px; border-inline-start: 2px solid var(--edge);
+  background: var(--panel); color: var(--muted); overflow-wrap: anywhere;
+}
 .team-panel { left: 0; right: 0; padding: 16px; }
 .team-panel ul { list-style: none; padding: 0; }
 .team-panel li { display: flex; gap: 10px; align-items: baseline; padding: 6px 0; }

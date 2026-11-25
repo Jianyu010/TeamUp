@@ -69,3 +69,42 @@ export async function readTranscript(previous, before, fetchPage) {
   page.history_truncated ||= truncated;
   return {page, reset: false};
 }
+
+
+export function messageRow(node, message, expanded = false) {
+  const date = message.created_at ? new Date(message.created_at) : null;
+  const knownTime = date && !Number.isNaN(date.getTime());
+  const time = node("time", knownTime
+    ? date.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}) : "—");
+  if (knownTime) {
+    time.dateTime = message.created_at;
+    time.title = date.toLocaleString();
+  }
+
+  const recipients = message.mentioned_recipients ?? (message.mentioned ? [message.mentioned] : []);
+  const labels = recipients.slice(0, 2).join(", ");
+  const routing = node("div", undefined, "message-routing");
+  routing.append(node("span", labels ? message.sender + " → " + labels : message.sender));
+  if (recipients.length > 2) {
+    const more = node("details", undefined, "mention-overflow");
+    more.dataset.id = message.id;
+    more.open = expanded;
+    const summary = node("summary", "…");
+    const list = node("span", recipients.join(", "), "mention-recipients");
+    list.id = "message-recipients-" + message.id;
+    summary.setAttribute("aria-label", "All recipients");
+    summary.setAttribute("aria-describedby", list.id);
+    more.append(summary, list);
+    routing.append(more);
+  }
+
+  const heading = /^#[\t ]+([^\r\n]+)\r?\n[\t ]*\r?\n/.exec(message.text);
+  const hasTitle = heading && heading[1].trim() && heading[0].length < message.text.length;
+  const title = hasTitle ? heading[1].trim() : "#" + message.id;
+  const body = hasTitle ? message.text.slice(heading[0].length) : message.text;
+  const content = node("div", undefined, "message-content");
+  content.append(routing, node("strong", title, "message-title"), node("p", body));
+  const row = node("article", undefined, "message");
+  row.append(time, content);
+  return row;
+}

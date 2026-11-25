@@ -1,4 +1,4 @@
-import {readTranscript, sameBoard} from "/console-history.mjs";
+import {messageRow, readTranscript, sameBoard} from "/console-history.mjs";
 import {roomBoard} from "/console-board.js";
 import {roomMembers, renderTeam} from "/console-members.js";
 import {taskPanel} from "/console-tasks.js";
@@ -436,32 +436,15 @@ function renderChat(options = {}) {
     : messagesForState[chat.state] || (chat.messages?.length ? "" : "No messages in this session’s history.");
   renderHistoryBoundary();
   members.chatChanged();
-  const expanded = new Set(Array.from(get("messages").querySelectorAll("details[open]"), (item) => item.dataset.id));
-  const rows = (chat?.messages || []).map((message) => {
-    const date = message.created_at ? new Date(message.created_at) : null;
-    const time = node("time", date && !Number.isNaN(date.getTime())
-      ? date.toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"}) : "—");
-    if (date && !Number.isNaN(date.getTime())) {
-      time.dateTime = message.created_at;
-      time.title = date.toLocaleString();
-    }
-    const row = node("article", undefined, "message");
-    const content = node("div");
-    const targets = message.mentioned_recipients ?? (message.mentioned ? [message.mentioned] : []);
-    const header = targets.length ? message.sender + " -> " + targets.slice(0, 2).join(", ") : message.sender;
-    content.append(node("strong", header));
-    if (targets.length > 2) {
-      const more = node("details", undefined, "mention-overflow");
-      more.dataset.id = message.id;
-      more.open = expanded.has(message.id);
-      more.append(node("summary", "(and " + (targets.length - 2) + " more)"), node("span", targets.slice(2).join(", ")));
-      content.append(more);
-    }
-    content.append(node("p", message.text));
-    row.append(time, content);
-    return row;
-  });
-  get("messages").replaceChildren(...rows);
+  const list = get("messages");
+  const focused = document.activeElement?.closest(".mention-overflow")?.dataset.id;
+  const expanded = new Set(Array.from(list.querySelectorAll("details[open]"), (item) => item.dataset.id));
+  const rows = (chat?.messages || []).map((message) => messageRow(node, message, expanded.has(message.id)));
+  list.replaceChildren(...rows);
+  if (focused) {
+    const details = Array.from(list.querySelectorAll(".mention-overflow")).find((item) => item.dataset.id === focused);
+    details?.querySelector("summary").focus({preventScroll: true});
+  }
   if (options.prepend) page.scrollTop = prior + (page.scrollHeight - priorHeight);
   else if (options.reset || nearEnd) page.scrollTop = page.scrollHeight;
   else page.scrollTop = prior;
