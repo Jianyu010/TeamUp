@@ -78,6 +78,7 @@ class TeamupGateway:
         self.streams = {}
         self.account_valid = True
         self.dm_enabled = True
+        self.departure_filter_supported = True
         self.dm_history = []
         self.dm_expiry = None
         self.dm_open_error = None
@@ -165,6 +166,12 @@ class TeamupGateway:
                 self.streams[token] = writer
                 await reader.read()
             elif path == "/v1/inbox":
+                if (not self.departure_filter_supported
+                        and "room_left" in query.get("kinds", [""])[0].split(",")):
+                    await self.json_response(
+                        writer, {"error": {"code": "invalid_request", "message": "Invalid kinds"}}, 422
+                    )
+                    return
                 after = int(query.get("after", [0])[0])
                 limit = int(query.get("limit", [50])[0])
                 events = [
@@ -1794,7 +1801,8 @@ def test_dm_ipc_routing_credentials_and_error_passthrough():
     asyncio.run(scenario())
 
 
-def test_old_server_ignores_kinds_and_lacks_dm_routes():
+@pytest.mark.parametrize("ignores_unknown_kinds", [True, False])
+def test_old_server_leaves_normal_inbox_available(ignores_unknown_kinds):
     from teamup_client.ipc import ClientError, call
 
     async def scenario():
@@ -1807,6 +1815,7 @@ def test_old_server_ignores_kinds_and_lacks_dm_routes():
                     token_a: {"member_id": MEMBERS[0], "role_description": "dev"}
                 }
                 upstream.dm_enabled = False
+                upstream.departure_filter_supported = ignores_unknown_kinds
                 mention = {
                     "event_id": 5,
                     "kind": "mention",
@@ -1831,13 +1840,16 @@ def test_old_server_ignores_kinds_and_lacks_dm_routes():
                     stream.write(b"event: inbox_changed\ndata: {}\n\n")
                     await stream.drain()
                     await until(lambda: not upstream.events[token_a])
+                    expected_kinds = "message,mention,dm"
+                    if ignores_unknown_kinds:
+                        expected_kinds += ",room_left"
                     assert (
                         "GET",
                         "/v1/inbox",
                         {
                             "after": ["0"],
                             "limit": ["100"],
-                            "kinds": ["message,mention,dm"],
+                            "kinds": [expected_kinds],
                         },
                         token_a,
                         None,

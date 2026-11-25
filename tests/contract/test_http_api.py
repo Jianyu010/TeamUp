@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 DOCS = (
     "docs/modules/client-server-v1.md",
     "docs/modules/account-login-v1.md",
+    "docs/modules/member-lifecycle.md",
     "docs/modules/room-tasks.md",
     "docs/modules/direct-messages.md",
     "docs/modules/control-console.md",

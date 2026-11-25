@@ -21,7 +21,7 @@ test("serves the bundled console without a running Client", async () => {
   assert.match(html, /<title>TeamUp/);
   assert.match(html, /<footer[^>]*>[\s\S]*id="client-version"[\s\S]*id="server-version"[\s\S]*<\/footer>/);
   assert.match(response.headers.get("Content-Security-Policy"), /connect-src 'self'/);
-  for (const asset of ["/console-members.js", "/console-history.mjs"]) {
+  for (const asset of ["/console-members.js", "/console-history.mjs", "/console-sessions.js"]) {
     const script = await handle(new Request(origin + asset));
     assert.equal(script.status, 200);
     assert.equal(script.headers.get("Content-Type"), "text/javascript; charset=utf-8");
@@ -95,6 +95,16 @@ test("relays named reads and task actions with the main process credential", asy
   assert.deepEqual(await versions.json(), { state: "ready" });
   assert.equal((await handle(consoleRequest("/api/versions", {}, "https://example.com"))).status, 403);
 
+  const archive = "/api/retired?session=retired";
+  const leave = "/api/sessions/leave?session=local&room=room";
+  const retire = "/api/sessions/retire?session=local";
+  assert.equal((await handle(consoleRequest(archive))).status, 200);
+  for (const action of [leave, retire]) {
+    assert.equal((await handle(consoleRequest(action, { method: "POST" }))).status, 409);
+    assert.equal((await handle(consoleRequest(action))).status, 404);
+    assert.equal((await handle(consoleRequest(action, { method: "POST" }, "https://example.org"))).status, 403);
+  }
+
   const task = "/api/tasks/01234567-89ab-4cde-8123-456789abcdef/progress?room=room&session=local";
   const body = JSON.stringify({ client_progress_id: "progress-1", note: "In review" });
   const write = await handle(consoleRequest(task, {
@@ -116,6 +126,9 @@ test("relays named reads and task actions with the main process credential", asy
     ["/api/team?session=local", "GET", ""],
     [roomMembers, "GET", ""],
     ["/api/versions", "GET", ""],
+    [archive, "GET", ""],
+    [leave, "POST", ""],
+    [retire, "POST", ""],
     [task, "POST", body],
     ["/api/team?session=redirect", "GET", ""],
   ].map(([url, method, body]) => ({

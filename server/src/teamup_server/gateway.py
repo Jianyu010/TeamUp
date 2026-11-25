@@ -184,7 +184,7 @@ class _DMMessage(_Body):
     text: _LongText
 
 
-_EVENT_KINDS = frozenset(("message", "mention", "dm"))
+_EVENT_KINDS = frozenset(("message", "mention", "dm", "room_left"))
 
 
 def _event_kinds(value: str | None) -> tuple[str, ...]:
@@ -400,6 +400,37 @@ class Gateway:
         def search_members(token: _Bearer, q: str = "") -> dict:
             return {"members": collaboration.search_members(token, q)}
 
+        @app.get("/v1/members/me/retirement")
+        def member_retirement(token: _Bearer, response: Response) -> dict:
+            _no_store(response)
+            return collaboration.member_retirement(token)
+
+        @app.post("/v1/members/me/retire", dependencies=[Depends(_reject_body)])
+        def retire_self(token: _Bearer) -> dict:
+            return collaboration.retire_self(token)
+
+        @app.get("/v1/members/{member_id}/archive")
+        def list_retired_conversations(
+            token: _Bearer, member_id: _Identifier, response: Response
+        ) -> dict:
+            _no_store(response)
+            return collaboration.list_retired_conversations(token, member_id)
+
+        @app.get("/v1/members/{member_id}/archive/{kind}/{conversation_id}/messages")
+        def retired_history(
+            token: _Bearer,
+            member_id: _Identifier,
+            kind: Literal["room", "dm"],
+            conversation_id: _Identifier,
+            response: Response,
+            before: _Before | None = None,
+            limit: _Limit = 50,
+        ) -> dict:
+            _no_store(response)
+            return collaboration.retired_history(
+                token, member_id, kind, conversation_id, before, limit
+            )
+
         @app.patch("/v1/members/{member_id}", dependencies=[Depends(_require_utf8)])
         def rename_member(
             token: _Bearer, member_id: _Identifier, body: _MemberRole
@@ -446,8 +477,10 @@ class Gateway:
             return collaboration.join_room(token, room_id)
 
         @app.post("/v1/rooms/{room_id}/leave", dependencies=[Depends(_reject_body)])
-        def leave_room(token: _Bearer, room_id: _Identifier) -> dict:
-            return collaboration.leave_room(token, room_id)
+        def leave_room(
+            token: _Bearer, room_id: _Identifier, notify: bool = False
+        ) -> dict:
+            return collaboration.leave_room(token, room_id, notify=notify)
 
         @app.get("/v1/rooms/{room_id}/board", dependencies=[Depends(_reject_body)])
         def read_board(token: _Bearer, room_id: _Identifier) -> dict:

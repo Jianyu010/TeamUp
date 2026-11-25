@@ -113,6 +113,71 @@ class NoticeStore:
                 ) WITHOUT ROWID
             """)
 
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS room_departure_notices (
+                    binding_scope TEXT NOT NULL,
+                    event_id INTEGER NOT NULL,
+                    room_id TEXT NOT NULL,
+                    delivered INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (binding_scope, event_id)
+                ) WITHOUT ROWID
+            """)
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS retired_sessions (
+                    server_url TEXT NOT NULL,
+                    harness_instance_id TEXT NOT NULL,
+                    session_key TEXT NOT NULL,
+                    scope TEXT NOT NULL,
+                    harness TEXT NOT NULL,
+                    member_id TEXT NOT NULL,
+                    role_description TEXT NOT NULL,
+                    PRIMARY KEY (server_url, harness_instance_id, session_key)
+                ) WITHOUT ROWID
+            """)
+
+    def record_departure(self, scope, event_id, room_id):
+        with self._db:
+            inserted = self._db.execute(
+                """
+                INSERT INTO room_departure_notices (binding_scope, event_id, room_id)
+                VALUES (?, ?, ?) ON CONFLICT (binding_scope, event_id) DO NOTHING
+                """,
+                (scope, event_id, room_id),
+            )
+        return inserted.rowcount == 1
+
+    def retire_session(self, server_url, identity, scope, harness, profile):
+        with self._db:
+            self._db.execute(
+                """
+                INSERT INTO retired_sessions VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (server_url, harness_instance_id, session_key) DO NOTHING
+                """,
+                (
+                    server_url, *identity, scope, harness,
+                    profile["member_id"], profile["role_description"],
+                ),
+            )
+            self._db.execute(
+                "DELETE FROM wake_permissions WHERE harness_instance_id = ? AND session_key = ?",
+                identity,
+            )
+
+    def retired_sessions(self, server_url):
+        cursor = self._db.execute(
+            """
+            SELECT harness_instance_id, session_key, scope, harness, member_id, role_description
+            FROM retired_sessions WHERE server_url = ?
+            ORDER BY harness_instance_id, session_key
+            """,
+            (server_url,),
+        )
+        fields = tuple(column[0] for column in cursor.description)
+        return {
+            (row[0], row[1]): dict(zip(fields, row, strict=True))
+            for row in cursor
+        }
+
     def record(self, scope, notice, preview=""):
         fields = {
             key: value for key, value in notice.items() if key not in ("kind", "scope")
@@ -149,20 +214,26 @@ class NoticeStore:
             return []
         cursor = self._db.execute(
             """
-            SELECT event_id, room_id, dm_id, message_id, sender_member_id
+            SELECT event_id, room_id, dm_id, message_id, sender_member_id, kind
             FROM (
-                SELECT event_id, room_id, NULL AS dm_id, message_id, sender_member_id
+                SELECT event_id, room_id, NULL AS dm_id, message_id, sender_member_id,
+                    'mention' AS kind
                 FROM notices WHERE binding_scope = ? AND event_id > ?
                 UNION ALL
-                SELECT event_id, NULL AS room_id, dm_id, message_id, sender_member_id
+                SELECT event_id, NULL, dm_id, message_id, sender_member_id, 'dm'
                 FROM dm_notices WHERE binding_scope = ? AND event_id > ?
+                UNION ALL
+                SELECT event_id, room_id, NULL, NULL, NULL, 'room_left'
+                FROM room_departure_notices WHERE binding_scope = ? AND event_id > ?
             ) ORDER BY event_id LIMIT ?
             """,
-            (scope, after, scope, after, limit),
+            (scope, after, scope, after, scope, after, limit),
         )
         rows = []
-        for event_id, room_id, dm_id, message_id, sender in cursor:
-            if dm_id is None:
+        for event_id, room_id, dm_id, message_id, sender, kind in cursor:
+            if kind == "room_left":
+                rows.append({"event_id": event_id, "kind": kind, "room_id": room_id})
+            elif kind == "mention":
                 rows.append(
                     {
                         "event_id": event_id,
@@ -184,12 +255,26 @@ class NoticeStore:
         return rows
 
     def mark_delivered(self, scope, event_ids):
+        addresses = [(scope, event_id) for event_id in event_ids]
         with self._db:
             self._db.executemany(
                 "UPDATE notices SET state = 'delivered' "
                 "WHERE binding_scope = ? AND event_id = ?",
-                [(scope, event_id) for event_id in event_ids],
+                addresses,
             )
+            self._db.executemany(
+                "UPDATE room_departure_notices SET delivered = 1 "
+                "WHERE binding_scope = ? AND event_id = ?",
+                addresses,
+            )
+
+    def unread_departures(self, scope):
+        (count,) = self._db.execute(
+            "SELECT count(*) FROM room_departure_notices "
+            "WHERE binding_scope = ? AND delivered = 0",
+            (scope,),
+        ).fetchone()
+        return count
 
     def unread(self, scope):
         (count,) = self._db.execute(

@@ -1,5 +1,7 @@
 # Client–Server v1
 
+Agent self-retirement, owner-managed departure, and retired history are specified in [Session retirement and room departure](member-lifecycle.md).
+
 本契约用于 TeamUp 最小闭环。提供方为 Server Gateway，业务状态归 Collaboration，消费方为 Client。本文锁定首轮登记、公共房间、公告确认、历史、定向通知及补收，并增量提供成员本人房间列表。私聊、邀请房间、公告发布、停用、健康和 harness 唤醒仍按 [MVP 设计](../specs/mvp.md) 演进。
 
 私聊（DM）的加法契约另见 [Direct Messages](direct-messages.md)：新增 `/v1/dms` 路由、收件箱 `kinds` 查询参数与 `kind: "dm"` 事件，房间语义不变。
@@ -64,7 +66,7 @@ Client 使用已配置的 Server 地址和 TLS 设置读取版本。此操作只
 - Collaboration 在同一事务中标记退役、删除该成员的房间关系，并丢弃其未确认收件箱事件和未领取的任务提醒。退役后所有成员 API 拒绝该凭证（401 `unauthorized`），已连接的 SSE 在权限复核时关闭。退役成员不会出现在查找、房间名单或 Presence 中。退役和更名均保留房间消息、私聊历史及历史活动中的原 ID。授权的房间历史页面在该成员发送的 Message 上追加 `sender_retired: true`，活跃成员的消息保留既有形状。
 - 新消息若包含已退役成员，按无效房间目标返回 422 `invalid_mention`，整笔请求不写入消息或投递事件。此前已成功提交的完全相同重试仍返回原收据。新私聊和向已退役对端发送的规则见 [私聊契约](direct-messages.md)。
 - 离开房间只删除本人的该房间关系及其未确认房间收件箱事件，其他房间和私聊照常可用。已无关系时成功，包括未知房间 ID。成员可以重新加入，按房间策略建立新的历史起点，并重新读取和确认当前公告。任务入口按当前房间授权判断资格，已记录的参与和进度仍归原成员。
-- Schema v8 在 `members` 增加 `retired` 标记，已有成员默认为未退役。按 Server、Client、MCP 的顺序升级。旧 Client 可继续使用已有路由，旧 Server 通过原错误响应报告缺少新路由。
+- Schema v8 在 `members` 增加 `retired` 标记；v9 增加退役房间历史范围和离开房间通知，已有成员默认为未退役。按 Server、Client、MCP 的顺序升级。旧 Client 可继续使用已有路由，旧 Server 通过原错误响应报告缺少新路由。
 
 ## 已加入房间的成员和策略（#34 / #43 / #44）
 

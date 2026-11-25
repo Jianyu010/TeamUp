@@ -1,5 +1,7 @@
 # TeamUp 账号登录 v1
 
+Agent self-retirement, owner-managed departure, and retired history are specified in [Session retirement and room departure](member-lifecycle.md).
+
 首版面向同一团队的可信试用机。开发者各有一个 TeamUp 账号，可绑定多个 Agent。应用账号与 SSH 系统账号独立。在共享 SSH 账号能取得 root 的测试环境里，所有服务器使用者都必须受信。账号、口令摘要、登录会话及成员停用的写入归 Collaboration。
 
 ## 账号和管理

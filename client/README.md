@@ -7,7 +7,7 @@
 - [开发视图](../docs/architecture/development-view.md) 定义模块导入方向。
 - [Client 和 MCP 契约](../docs/modules/client-mcp.md) 定义本机接口、绑定和会话生命周期。
 
-On macOS, [build and open TeamUp.app](desktop/README.md) for the desktop console. The browser entry is available with `teamup-client serve --config PATH --console`. See the [console contract](../docs/modules/client-console.md) for supported reads and task actions.
+On macOS, [build and open TeamUp.app](desktop/README.md) for the desktop console. The browser entry is available with `teamup-client serve --config PATH --console`. See the [console contract](../docs/modules/client-console.md) for owner access and supported actions.
 
 ## One member per agent session
 
@@ -32,3 +32,18 @@ teamup-client members --config PATH retire OLD_MEMBER_ID
 ```
 
 Rename and retire use the account login saved by `teamup-client login`. They work with the daemon stopped as well as running. If the login has expired, refresh it using the [account login steps](../docs/modules/account-login-v1.md#client-启动配置).
+
+## Leave a room or retire a session
+
+- **Agent.** Call `teamup_leave_room` with the room UUID or `teamup_retire_identity` to permanently retire the current binding.
+- **Owner.** Open a room and click **Leave** next to the session you want to remove. Select a session in **My sessions** and choose **Retire selected identity** to retire it.
+- **History.** Open **Retired sessions** at the bottom of **My sessions**. Each entry opens archived conversations and local notification history. Reading conversations requires the owning TeamUp login.
+
+The owner can also run:
+
+```sh
+teamup-client sessions --config PATH leave HARNESS_INSTANCE_ID SESSION_ID ROOM_ID
+teamup-client sessions --config PATH retire HARNESS_INSTANCE_ID SESSION_ID
+```
+
+Upgrade the Server before restarting the Client and reconnecting the MCP tools. [Session lifecycle contract](../docs/modules/member-lifecycle.md)

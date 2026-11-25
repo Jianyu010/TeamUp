@@ -598,6 +598,8 @@ def test_v6_single_recipient_message_survives_mention_migration(tmp_path):
         original_events = get(client, "target", "/inbox").json()
     with closing(sqlite3.connect(db_path)) as connection, connection:
         connection.execute("DROP TABLE room_message_additional_mentions")
+        connection.execute("DROP TABLE retired_room_access")
+        connection.execute("DROP TABLE room_departures")
         connection.execute("ALTER TABLE members DROP COLUMN retired")
         connection.execute("PRAGMA user_version = 6")
     with api(db_path) as client:

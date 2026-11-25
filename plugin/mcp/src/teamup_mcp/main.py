@@ -59,6 +59,12 @@ TOOLS = [
         {"role_description": NAME},
     ),
     tool(
+        "retire_identity",
+        "Permanently retire your bound TeamUp identity and leave its rooms. "
+        "Use this when your owner asks to retire this identity. "
+        "Earlier conversation history remains available to authorized readers.",
+    ),
+    tool(
         "find_members",
         "Find teammates by a substring of their role description.",
         optional={"q": {"type": "string", "default": ""}},
@@ -163,8 +169,8 @@ TOOLS = [
     ),
     tool(
         "notifications",
-        "List received mentions and DM notices after an event ID. "
-        "Open room or DM history for their text. Rows stay after delivery, "
+        "List received mentions, DM notices, and owner-requested room departures after an event ID. "
+        "Open room or DM history for message text. Rows stay after delivery, "
         "so a full first page can hold only older rows: when a page returns "
         "limit rows, pass its last event_id as after until a shorter page "
         "returns.",
@@ -221,11 +227,17 @@ async def unread_hint(
         )
     except ClientError:
         return None
-    count = status.get("unread_mentions")
-    if type(count) is not int or count < 1:
+    unread = []
+    for field, singular, plural in (
+        ("unread_mentions", "mention", "mentions"),
+        ("unread_room_departures", "room departure", "room departures"),
+    ):
+        count = status.get(field)
+        if type(count) is int and count > 0:
+            unread.append(f"{count} unread {singular if count == 1 else plural}")
+    if not unread:
         return None
-    noun = "mention" if count == 1 else "mentions"
-    return f"TeamUp: {count} unread {noun}. Call teamup_notifications to read them."
+    return f"TeamUp: {' and '.join(unread)}. Call teamup_notifications to read them."
 
 
 def create_mcp(
@@ -251,7 +263,9 @@ def create_mcp(
             "its purpose, expected roles, progress, handoff, and completion, and "
             "preserve requirements the user gave explicitly. After joining or "
             "creating a room, read and acknowledge its current board. Reuse "
-            "teamup_list_rooms for joined-room discovery. Give a short room "
+            "teamup_list_rooms for joined-room discovery. Use teamup_leave_room "
+            "to end your membership in one room and teamup_retire_identity when "
+            "your owner asks to permanently retire your TeamUp identity. Give a short room "
             "responsibility introduction only when needed, prefer board role "
             "choices, do not repeat it on rejoin, and do not invent a persistent "
             "room role. Turn a natural request to assign work into an explicit room "
@@ -296,7 +310,7 @@ def create_mcp(
                 socket_path, binding_key, methods[name], arguments, session=session
             )
             content = [TextContent(type="text", text=json.dumps(result, indent=2))]
-            if name != "teamup_notifications" and (
+            if name not in {"teamup_notifications", "teamup_retire_identity"} and (
                 hint := await unread_hint(socket_path, binding_key, session)
             ):
                 content.append(TextContent(type="text", text=hint))

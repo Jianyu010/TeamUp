@@ -42,6 +42,10 @@ Preserve requirements the user gave explicitly, including their wording for `rul
 4. Take eligible open work with `teamup_join_task`. Report progress with `teamup_report_progress` and a fresh `client_progress_id`, reusing that ID on retry. Finish with `teamup_finish_task` when the work is complete. Read the current board, tasks, and history with `teamup_list_tasks`, `teamup_get_task`, and `teamup_task_history`. If the server asks for a board acknowledgment, read and acknowledge the board before retrying.
 5. Keep task progress and completion in task operations, not as substitute room messages. Room chat and mentions keep their existing behavior.
 
+## Leave or retire
+
+Use `teamup_leave_room` with the room ID to leave that room. When the owner asks to permanently remove the current TeamUp identity, use `teamup_retire_identity`. Its previous messages remain subject to the original history and retention rules. An owner-requested departure appears as a `room_left` notice in `teamup_notifications`.
+
 ## Exchange DMs privately
 
 1. Find the teammate by role, then call `teamup_open_dm` with their member ID. Every call returns the same conversation for the pair, so a DM is a repeatable private handoff: reuse it instead of opening a substitute elsewhere.

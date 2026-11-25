@@ -102,12 +102,32 @@ class Request(Protocol):
     ) -> Awaitable[dict]: ...
 
 
+class SessionLifecycle(Protocol):
+    def console_retired_sessions(self) -> list[dict]: ...
+
+    async def console_session_action(self, session_id: str, room_id: str | None) -> dict: ...
+
+    async def console_retired_history(
+        self,
+        session_id: str,
+        *,
+        after: int | None = None,
+        kind: str | None = None,
+        conversation: str | None = None,
+        before: int | None = None,
+    ) -> dict: ...
+
+
 class ConsoleReader:
     def __init__(
-        self, sessions: Callable[[], tuple[ConsoleSession, ...]], request: Request
+        self,
+        sessions: Callable[[], tuple[ConsoleSession, ...]],
+        request: Request,
+        lifecycle: SessionLifecycle | None = None,
     ):
         self._sessions = sessions
         self._request = request
+        self._lifecycle = lifecycle
         self._reads = asyncio.Semaphore(8)
         try:
             installed_version = version("teamup-client")
@@ -246,7 +266,37 @@ class ConsoleReader:
         for room in ordered:
             message = room["latest_message_id"]
             room["latest_message_id"] = str(message) if message is not None else None
-        return {"sessions": sessions, "rooms": ordered}
+        result = {"sessions": sessions, "rooms": ordered}
+        if self._lifecycle is not None:
+            result["retired_sessions"] = self._lifecycle.console_retired_sessions()
+        return result
+
+    async def session_action(self, session_id: str, room_id: str | None) -> dict:
+        if self._lifecycle is None:
+            return {"state": "not_found"}
+        try:
+            return await self._lifecycle.console_session_action(session_id, room_id)
+        except ClientError as exc:
+            return {"state": exc.code}
+
+    async def retired_history(
+        self,
+        session_id: str,
+        *,
+        after: int | None = None,
+        kind: str | None = None,
+        conversation: str | None = None,
+        before: int | None = None,
+    ) -> dict:
+        if self._lifecycle is None:
+            return {"state": "not_found"}
+        async with self._reads:
+            try:
+                return await self._lifecycle.console_retired_history(
+                    session_id, after=after, kind=kind, conversation=conversation, before=before
+                )
+            except ClientError as exc:
+                return {"state": exc.code}
 
     async def _participating(
         self, session: ConsoleSession, member_id: str, room_id: str

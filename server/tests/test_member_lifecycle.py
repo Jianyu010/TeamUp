@@ -328,16 +328,20 @@ def test_leaving_a_room_ends_only_that_membership(lifecycle, policy):
     assert [event["message"] for event in pending] == [other]
 
 
-def test_v7_migration_preserves_bindings_and_room_messages(tmp_path):
-    db_path = tmp_path / "v7.db"
+@pytest.mark.parametrize("version", [7, 8])
+def test_migration_preserves_bindings_and_room_messages(tmp_path, version):
+    db_path = tmp_path / f"v{version}.db"
     with api(db_path) as client:
         sender = enroll(client, "sender").json()
         path = room(client)
         confirm(client, "sender", path)
         message = send(client, path, "before-upgrade").json()
     with closing(sqlite3.connect(db_path)) as connection, connection:
-        connection.execute("ALTER TABLE members DROP COLUMN retired")
-        connection.execute("PRAGMA user_version = 7")
+        connection.execute("DROP TABLE retired_room_access")
+        connection.execute("DROP TABLE room_departures")
+        if version == 7:
+            connection.execute("ALTER TABLE members DROP COLUMN retired")
+        connection.execute(f"PRAGMA user_version = {version}")
 
     with api(db_path) as client:
         assert get(client, "sender", "/members/me").json() == sender
@@ -345,4 +349,130 @@ def test_v7_migration_preserves_bindings_and_room_messages(tmp_path):
             "messages": [message]
         }
         with closing(sqlite3.connect(db_path)) as connection:
-            assert connection.execute("PRAGMA user_version").fetchone()[0] == 8
+            assert connection.execute("PRAGMA user_version").fetchone()[0] == 9
+
+
+def test_self_retirement_can_be_retried_without_restoring_access(lifecycle):
+    client, store, db_path, owner, member, _ = lifecycle
+    path = "/members/me/retirement"
+    error(get(client, "target", path), 404, "not_found")
+    error(get(client, "unregistered", path), 401, "unauthorized")
+    error(
+        client.post("/v1/members/me/retire", headers=auth(owner)),
+        401,
+        "unauthorized",
+    )
+    expected = {**member, "retired": True}
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        responses = list(
+            pool.map(lambda _: post(client, "target", "/members/me/retire"), range(3))
+        )
+    assert [item.status_code for item in responses] == [200] * 3
+    assert [item.json() for item in responses] == [expected] * 3
+    with api(db_path) as restarted:
+        assert get(restarted, "target", path).json() == expected
+        error(get(restarted, "target", "/members/me"), 401, "unauthorized")
+        error(bind(restarted, owner, "target"), 409, "member_retired")
+        store.disable_account("alice")
+        error(post(restarted, "target", "/members/me/retire"), 401, "unauthorized")
+        error(get(restarted, "target", path), 401, "unauthorized")
+
+
+def test_owner_departure_notice_is_durable_and_recipient_scoped(lifecycle):
+    client, _, db_path, _, member, _ = lifecycle
+    path = room(client)
+    room_id = path.rsplit("/", 1)[-1]
+    join(client, "target", path)
+    confirm(client, "sender", path)
+    confirm(client, "target", path)
+    send(client, path, "pending", target=member["member_id"])
+    url = f"{path}/leave?notify=true"
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        responses = list(pool.map(lambda _: post(client, "target", url), range(3)))
+    assert [item.json() for item in responses] == [{"room_id": room_id}] * 3
+    error(get(client, "target", f"{path}/members"), 404, "not_found")
+
+    with api(db_path) as restarted:
+        assert get(restarted, "target", "/inbox").json() == {"events": []}
+        assert get(restarted, "sender", "/inbox?kinds=room_left").json() == {
+            "events": []
+        }
+        events = get(restarted, "target", "/inbox?kinds=mention,room_left").json()[
+            "events"
+        ]
+        assert len(events) == 1
+        notice = events[0]
+        event_id = notice["event_id"]
+        assert notice == {"event_id": event_id, "kind": "room_left", "room_id": room_id}
+        ack = f"/inbox/{event_id}/ack"
+        error(post(restarted, "sender", ack), 404, "not_found")
+        assert post(restarted, "target", ack).status_code == 200
+        assert post(restarted, "target", ack).status_code == 200
+        assert get(restarted, "target", "/inbox?kinds=room_left").json() == {
+            "events": []
+        }
+
+
+def test_owner_archive_reads_only_pre_retirement_authorized_history(lifecycle):
+    client, _, db_path, owner, member, peer = lifecycle
+    path = room(client)
+    blocked = room(client)
+    left = room(client)
+    for candidate in (path, blocked, left):
+        confirm(client, "sender", candidate)
+        send(client, candidate, "before-joining")
+        join(client, "target", candidate)
+    confirm(client, "target", path)
+    confirm(client, "target", left)
+    post(client, "target", f"{left}/leave")
+    before = send(client, path, "first").json()
+    newest = send(client, path, "second").json()
+    dm_id = post(
+        client, "target", "/dms", json={"member_id": peer["member_id"]}
+    ).json()["dm_id"]
+    dm = post(
+        client,
+        "target",
+        f"/dms/{dm_id}/messages",
+        json={"client_message_id": "dm", "text": "Earlier DM"},
+    ).json()
+    archive = f"/v1/members/{member['member_id']}/archive"
+    owner_headers = auth(owner)
+    error(client.get(archive, headers=owner_headers), 404, "not_found")
+    assert post(client, "target", "/members/me/retire").status_code == 200
+    send(client, path, "after-retirement")
+    with api(db_path) as restarted:
+        result = restarted.get(archive, headers=owner_headers).json()
+        assert {
+            (item["kind"], item["conversation_id"]) for item in result["conversations"]
+        } == {
+            ("room", path.rsplit("/", 1)[-1]),
+            ("dm", dm_id),
+        }
+        other = login_token(restarted, "bob", PASSWORD)
+        error(restarted.get(archive, headers=auth(other)), 404, "not_found")
+        error(
+            restarted.get(archive, headers=auth(credential("target"))),
+            401,
+            "unauthorized",
+        )
+        for missing in (blocked, left):
+            error(
+                restarted.get(
+                    f"{archive}/room/{missing.rsplit('/', 1)[-1]}/messages",
+                    headers=owner_headers,
+                ),
+                404,
+                "not_found",
+            )
+        transcript = f"{archive}/room/{path.rsplit('/', 1)[-1]}/messages"
+        assert restarted.get(f"{transcript}?limit=1", headers=owner_headers).json()[
+            "messages"
+        ] == [newest]
+        assert restarted.get(
+            f"{transcript}?before={newest['message_id']}", headers=owner_headers
+        ).json()["messages"] == [before]
+        dms = restarted.get(
+            f"{archive}/dm/{dm_id}/messages", headers=owner_headers
+        ).json()
+        assert dms["messages"] == [{**dm, "sender_retired": True}]
