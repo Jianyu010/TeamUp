@@ -282,18 +282,20 @@ async function refreshRoom(before) {
   const request = ++state.requestNumber;
   const identity = state.actor;
   const room = state.room;
+  const previous = state.chat;
+  const after = !before && previous?.state === "ready" ? previous.messages.at(-1)?.id ?? "0" : null;
   const valid = () => request === state.requestNumber && room === state.room &&
     identity === state.actor && state.page === "room";
   try {
-    const response = await read("/api/room", {session: identity, room, before});
+    const response = await read("/api/room", {session: identity, room, before, after});
     if (!valid()) return;
-    const previous = state.chat;
     if (response.state === "ready" && previous?.state === "ready") {
       const all = new Map(previous.messages.map((message) => [message.id, message]));
       for (const message of response.messages) all.set(message.id, message);
       response.messages = Array.from(all.values()).sort((a, b) =>
         a.id.length - b.id.length || a.id.localeCompare(b.id));
-      if (!before) response.older = previous.older;
+      if (after !== null) response.older = previous.older;
+      if (before) response.more_recent = previous.more_recent;
     }
     state.chat = response;
     renderChat({prepend: Boolean(before), reset: !previous});
@@ -361,7 +363,7 @@ async function refresh() {
         state.chat = null;
         renderChat();
       }
-      if (boardChanged || active.latest_message_id !== latest || state.chat?.state === "unavailable") refreshRoom();
+      if (boardChanged || active.latest_message_id !== latest || state.chat?.more_recent || state.chat?.state === "unavailable") refreshRoom();
     }
     if (changed) {
       renderWorkspace();

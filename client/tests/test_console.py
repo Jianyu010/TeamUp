@@ -236,3 +236,71 @@ def test_slow_task_observation_keeps_the_workspace_available(monkeypatch):
         )
 
     asyncio.run(scenario())
+
+
+def test_console_catches_up_using_the_last_displayed_message():
+    async def scenario():
+        upstream = Upstream()
+        async with serve_console(ConsoleReader(sessions, upstream)) as url:
+            origin, token = url.split("#")
+            headers = {"Authorization": "Bearer " + token}
+            async with httpx.AsyncClient(trust_env=False) as client:
+                response = await client.get(
+                    origin + "api/room",
+                    headers=headers,
+                    params={"room": ROOM, "session": "primary", "after": "10"},
+                )
+                assert response.status_code == 200
+                assert response.json()["messages"][0]["id"] == "15"
+                assert (
+                    "GET",
+                    f"/rooms/{ROOM}/messages",
+                    "backend-secret",
+                    {"after": 10, "limit": 30},
+                ) in upstream.calls
+                assert response.json()["more_recent"] is False
+
+    asyncio.run(scenario())
+
+
+def test_upstream_oserror_only_marks_the_affected_session_unavailable():
+    async def scenario():
+        upstream = Upstream()
+
+        async def request(method, path, token, *, query=None):
+            if token == "reviewer-secret":
+                raise ConnectionResetError("connection closed")
+            return await upstream(method, path, token, query=query)
+
+        data = await ConsoleReader(sessions, request).workspace()
+        assert {item["id"]: item["state"] for item in data["sessions"]} == {
+            "primary": "ready",
+            "review": "unavailable",
+        }
+        assert [room["id"] for room in data["rooms"]] == [ROOM]
+
+    asyncio.run(scenario())
+
+
+def test_empty_room_still_uses_the_server_board_gate():
+    async def scenario():
+        upstream = Upstream()
+
+        async def request(method, path, token, *, query=None):
+            if path == "/rooms":
+                response = await upstream(method, path, token, query=query)
+                response["rooms"][0]["latest_message_id"] = None
+                return response
+            if path.endswith("/messages"):
+                assert query == {"after": 0, "limit": 30}
+                if token == "reviewer-secret":
+                    raise ClientError("board_ack_required", "Current board needed")
+                return {"messages": []}
+            return await upstream(method, path, token, query=query)
+
+        console = ConsoleReader(sessions, request)
+        assert (await console.room("review", ROOM))["state"] == "board_ack_required"
+        empty = await console.room("primary", ROOM)
+        assert empty["state"] == "ready" and empty["messages"] == []
+
+    asyncio.run(scenario())

@@ -5,12 +5,13 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from ._upstream import unavailable
 from .ipc import ClientError
 
 PAGE = 30
 VISIBLE_WIRE_LIMIT = 20
 TASK_OBSERVATION_SECONDS = 2
-MAX_BEFORE = 1 << 63
+MAX_BEFORE = 1 << 63  # The Server treats this as an unbounded latest-page read.
 
 
 @dataclass(frozen=True)
@@ -50,7 +51,10 @@ class ConsoleReader:
         async with self._reads:
             if self._current(session.id) != session:
                 raise ClientError("not_found", "Local session is unavailable")
-            response = await self._request("GET", path, session.token, query=query)
+            try:
+                response = await self._request("GET", path, session.token, query=query)
+            except OSError:
+                raise unavailable() from None
             if self._current(session.id) != session:
                 raise ClientError("not_found", "Local session is unavailable")
             return response
@@ -195,7 +199,12 @@ class ConsoleReader:
         }
 
     async def room(
-        self, identity: str, room_id: str, before: int | None = None
+        self,
+        identity: str,
+        room_id: str,
+        before: int | None = None,
+        *,
+        after: int | None = None,
     ) -> dict:
         session = self._current(identity)
         if session is None:
@@ -212,13 +221,19 @@ class ConsoleReader:
             "current": selected["current_board_version"],
             "acknowledged": selected["acked_board_version"],
         }
-        if before is None:
+        if after is None and before is None:
             latest = selected["latest_message_id"]
-            before = latest + 1 if latest is not None else MAX_BEFORE
+            if latest is None:
+                after = 0
+            else:
+                before = min(latest + 1, MAX_BEFORE)
+        query = (
+            {"after": after, "limit": PAGE}
+            if after is not None
+            else {"before": before, "limit": PAGE}
+        )
         try:
-            history = await self._read(
-                session, f"/rooms/{room_id}/messages", {"before": before, "limit": PAGE}
-            )
+            history = await self._read(session, f"/rooms/{room_id}/messages", query)
         except ClientError as exc:
             if exc.code in {"not_found", "not_registered", "unauthorized"}:
                 return {"state": exc.code}
@@ -234,7 +249,10 @@ class ConsoleReader:
         return {
             "state": "ready",
             "board": board,
-            "older": str(messages[0]["message_id"]) if len(messages) == PAGE else None,
+            "older": str(messages[0]["message_id"])
+            if after is None and len(messages) == PAGE
+            else None,
+            "more_recent": after is not None and len(messages) == PAGE,
             "messages": [
                 {
                     "id": str(item["message_id"]),
