@@ -129,6 +129,8 @@ class Step:
     reason: str
     repairs: tuple[int, ...] = ()
     """The freeze issues a merge during a freeze relies on the PR still referring to."""
+    freezes: tuple[int, ...] = ()
+    """Every freeze issue open when a repair was planned; the merge must close none of them."""
 
 
 def plan(
@@ -157,7 +159,8 @@ def plan(
             if not repairs or pull.closes & freeze_issues:
                 continue
             reason += f"; repairs freeze #{repairs[0]}"
-        steps.append(Step("merge", pull.number, pull.sha, reason, repairs))
+        frozen_now = tuple(sorted(freeze_issues)) if repairs else ()
+        steps.append(Step("merge", pull.number, pull.sha, reason, repairs, frozen_now))
     return steps
 
 
@@ -207,6 +210,7 @@ def still_mergeable(
     required: list[str] | None = None,
     checks: GitHub | None = None,
     repairs: tuple[int, ...] = (),
+    freezes: tuple[int, ...] = (),
 ) -> str | None:
     """Why a PR planned for merging may no longer merge (``None`` when it still may).
 
@@ -232,8 +236,9 @@ def still_mergeable(
         return "pushed since"
     if repairs:
         named, closing = freeze_refs({**pull, "number": number}, gh.repo)
-        if closing & set(repairs):
-            return f"it would close freeze #{repairs[0]} on merge"
+        closed = sorted(closing & (set(repairs) | set(freezes)))
+        if closed:
+            return f"it would close freeze #{closed[0]} on merge"
         if not named & set(repairs):
             return f"it no longer refers to freeze #{repairs[0]}"
     gate = gate_state(checks, sha)
@@ -329,6 +334,7 @@ def apply(
                     required=required,
                     checks=checks,
                     repairs=step.repairs,
+                    freezes=step.freezes,
                 )
             except Exception as exc:  # noqa: BLE001 - fail closed for this PR, report below
                 # Fail closed for this candidate while processing later PRs. Record a

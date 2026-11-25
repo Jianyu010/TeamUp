@@ -1511,6 +1511,10 @@ def guard(gh: GitHub, event: dict[str, Any], required: list[str], run_url: str) 
             ]
             if failed:
                 gh.status(sha, "failure", f"{failed[0]}{TIER1_FAILED}", run_url)
+        elif {"title", "body"} & set(event.get("changes") or {}):
+            # The linked issue is read from the title and body: judge the PR again, so a removed
+            # reference takes the gate (and `1 · Linked Issue`) back off green.
+            auto(gh, number, required, run_url)
         return False
     if action in ("synchronize", "reopened"):
         gh.status(sha, "pending", WAITING)

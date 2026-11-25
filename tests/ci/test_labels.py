@@ -285,6 +285,13 @@ def test_label_pr_skips_a_reference_whose_lookup_fails() -> None:
     }
     labels.label_pr(gh, pull)
     assert "type/bug" in gh.names and labels.NO_ISSUE not in gh.names
+    # The only reference is unreadable: `pr/no-issue` is neither added nor removed this run.
+    for before in ([], [labels.NO_ISSUE]):
+        gh = Flaky()
+        gh.names = list(before)
+        names = [{"name": n} for n in before]
+        labels.label_pr(gh, {**pull, "labels": names, "body": "Refs #11"})
+        assert (labels.NO_ISSUE in gh.names) == bool(before)
 
 
 def test_label_pr_counts_any_issue_reference_but_not_a_pr() -> None:

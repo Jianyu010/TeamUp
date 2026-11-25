@@ -374,11 +374,18 @@ def test_merge_recheck_failure_skips_only_affected_pr(
         required: list[str] | None = None,
         checks: GitHub | None = None,
         repairs: tuple[int, ...] = (),
+        freezes: tuple[int, ...] = (),
     ) -> str | None:
         if number == 5:
             raise error
         return original(
-            client, number, sha, required=None, checks=checks, repairs=repairs
+            client,
+            number,
+            sha,
+            required=None,
+            checks=checks,
+            repairs=repairs,
+            freezes=freezes,
         )
 
     monkeypatch.setattr(ci_merge, "still_mergeable", recheck)
@@ -487,9 +494,12 @@ def test_a_repair_is_re_checked_against_the_current_body(
         ("Refs #40", None),
         ("No reference any more", "it no longer refers to freeze #40"),
         ("Refs #40, fixes #40", "it would close freeze #40 on merge"),
+        ("Refs #40, closes #41", "it would close freeze #41 on merge"),
+        ("Refs #40, closes #3", None),
     ):
         gh = FakeGitHub([{**_api_pull(5), "body": body}])
-        assert ci_merge.still_mergeable(gh, 5, _sha(5), repairs=(40,)) == why, body
+        got = ci_merge.still_mergeable(gh, 5, _sha(5), repairs=(40,), freezes=(40, 41))
+        assert got == why, body
 
 
 def test_a_freeze_also_lets_a_green_pr_that_refers_to_it_merge() -> None:
@@ -497,8 +507,8 @@ def test_a_freeze_also_lets_a_green_pr_that_refers_to_it_merge() -> None:
     other = Pull(6, "b" * 40, frozenset(), False, "success", refs=frozenset({3}))
     red = Pull(7, "c" * 40, frozenset(), False, "pending", refs=frozenset({40}))
     steps = plan([fix, other, red], frozen=True, freeze_issues=frozenset({40}))
-    assert [(s.number, s.reason, s.repairs) for s in steps] == [
-        (5, "`merge-gate` green; repairs freeze #40", (40,))
+    assert [(s.number, s.reason, s.repairs, s.freezes) for s in steps] == [
+        (5, "`merge-gate` green; repairs freeze #40", (40,), (40,))
     ]
     # Not frozen: the reference changes nothing.
     assert [s.number for s in plan([fix, other, red])] == [5, 6]

@@ -280,19 +280,23 @@ def label_pr(gh: GitHub, pull: dict[str, Any]) -> str:
     refs = [n for n in referenced_numbers(text, gh.repo) if n != number][:20]
     types: list[str] = []
     issues: list[int] = []
+    unread = False
     for n in refs:
         try:
             issue = gh.call("GET", f"/issues/{n}")
-        except (
-            urllib.error.URLError,
-            TimeoutError,
-        ):  # one bad lookup skips only that number
+        except urllib.error.HTTPError as exc:
+            unread |= exc.code not in (404, 410)  # 404/410: no such issue or PR
+            continue
+        except (urllib.error.URLError, TimeoutError):  # skips only that number
+            unread = True
             continue
         if isinstance(issue, dict) and "pull_request" not in issue:
             issues.append(n)
             types += [x for x in _names(issue) if x.startswith("type/")]
     failing = gate_failures(gh.check_runs(sha), gh.review_runs(sha))
-    add, remove = plan_pr(names, failing, types, bool(issues))
+    # A reference that could not be read may be the link: leave `pr/no-issue` as it is this run.
+    linked = bool(issues) or (unread and NO_ISSUE not in names)
+    add, remove = plan_pr(names, failing, types, linked)
     _add(gh, number, add)
     for label in remove:
         _remove(gh, number, label)

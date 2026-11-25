@@ -342,14 +342,22 @@ def test_a_base_change_does_not_hide_a_failed_gate() -> None:
     assert gh.posted == []
 
 
-def test_a_title_or_body_edit_leaves_the_automatic_evidence_valid() -> None:
+def test_a_title_or_body_edit_is_judged_again_for_the_linked_issue() -> None:
     gh = FakeGitHub()
     gh.gates[SHA] = AUTO_SUCCESS
+    edit = _event("edited", changes={"title": {"from": "old"}})
+    assert guard(gh, edit, REQUIRED, "run") is False
+    assert gh.posted == []  # still links #3: the same green verdict is not posted again
+    gh.pr["body"] = "Rewritten without a reference."
     assert (
-        guard(gh, _event("edited", changes={"title": {"from": "old"}}), REQUIRED, "run")
+        guard(
+            gh, _event("edited", changes={"body": {"from": "Refs #3"}}), REQUIRED, "run"
+        )
         is False
     )
-    assert gh.posted == []
+    assert gh.posted[-1][1] == "pending"
+    assert "the PR links no issue" in gh.posted[-1][2]
+    assert gh.layer1[ISSUE][0] == "failure"
 
 
 def test_hold_label_changes_hand_back_to_auto(autos: list[int]) -> None:
