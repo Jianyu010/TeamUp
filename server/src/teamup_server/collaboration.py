@@ -2119,6 +2119,14 @@ class Collaboration:
             ).fetchone()
             if claimed is None:
                 raise CollaborationError("not_found")
+            connection.execute(
+                """
+                DELETE FROM task_reminders
+                WHERE task_id = ? AND member_id = ? AND claimed_at IS NOT NULL
+                    AND reminder_id < ?
+                """,
+                (reminder["task_id"], member_id, reminder_id),
+            )
             return _reminder_projection(reminder)
 
     def inbox(

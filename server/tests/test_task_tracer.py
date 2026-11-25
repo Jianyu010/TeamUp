@@ -169,6 +169,20 @@ def test_stall_and_repeat_use_the_configured_deterministic_interval(tmp_path):
     assert len(repeated) == 1
     assert repeated[0]["reminder_id"] > reminder["reminder_id"]
     assert repeated[0]["stalled_since"] == stalled_since
+    assert (
+        instance.claim_task_reminder(token("target"), repeated[0]["reminder_id"])
+        == repeated[0]
+    )
+    with sqlite3.connect(tmp_path / "team.sqlite3") as connection:
+        retained = connection.execute(
+            "SELECT reminder_id FROM task_reminders WHERE task_id = ? AND member_id = ?",
+            (task["task_id"], members["target"]["member_id"]),
+        ).fetchall()
+    assert retained == [(repeated[0]["reminder_id"],)]
+    assert instance.scan_task_reminders() == []
+    not_found(
+        lambda: instance.claim_task_reminder(token("target"), reminder["reminder_id"])
+    )
 
 
 def test_concurrent_claimers_consume_a_reminder_once(tmp_path):
