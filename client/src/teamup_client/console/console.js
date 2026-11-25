@@ -352,7 +352,7 @@ function renderChat(options = {}) {
   get("chat-status").textContent = !chat ? "Reading room messages…"
     : messagesForState[chat.state] || (chat.messages?.length ? "" : "No messages in this session’s history.");
   renderHistoryBoundary();
-  members.details();
+  members.chatChanged();
   const expanded = new Set(Array.from(get("messages").querySelectorAll("details[open]"), (item) => item.dataset.id));
   const rows = (chat?.messages || []).map((message) => {
     const date = message.created_at ? new Date(message.created_at) : null;
