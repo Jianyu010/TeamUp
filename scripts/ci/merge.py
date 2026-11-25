@@ -53,6 +53,7 @@ from scripts.ci.gate import (
     OVERRIDE_SUCCESS,
     GitHub,
     load_policy,
+    require_ready,
     required_checks,
     tier1_problems,
 )
@@ -433,9 +434,12 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     reader = os.environ.get("CHECKS_TOKEN")
     checks = GitHub(gh.repo, reader) if reader else gh
-    open_freezes = freezes(
-        checks, str(load_policy().get("freeze_label") or "ci/freeze")
-    )
+    policy = load_policy()
+    open_freezes = freezes(checks, str(policy.get("freeze_label") or "ci/freeze"))
+    if open_freezes and not require_ready(policy):
+        titles = "; ".join(title for _n, title in open_freezes)
+        print(f"merge: frozen ({titles}), but `require_ready` is off: merging as usual")
+        open_freezes = []
     if open_freezes:
         titles = "; ".join(title for _n, title in open_freezes)
         numbers = ", ".join(f"#{n}" for n, _t in open_freezes)

@@ -1964,3 +1964,50 @@ def test_the_owners_ready_passes_a_pr_without_an_issue() -> None:
     gh.pr["labels"] = [{"name": LABEL}]
     assert _state(gh) == "success"
     assert gh.layer1[ISSUE] == ("success", "no linked issue; passed by `ready`")
+
+
+# --- `require_ready` off (docs/ci/README.md, "owner 审查开关") -----------------------------------
+
+
+@pytest.mark.usefixtures("owner_review_off")
+def test_with_require_ready_off_a_protected_pr_takes_the_automatic_route() -> None:
+    for paths in (
+        [".github/ci/policy.json", "src/a.py"],
+        [f"src/f{i}.py" for i in range(300)],
+    ):
+        gh = FakeGitHub()
+        gh.paths = paths
+        assert _state(gh) == "success"
+        assert gh.posted[-1][2] == AUTO_SUCCESS
+        assert gh.layer1[ROUTE] == ("success", "automatic route")
+        assert gh.layer1[PROTECTED][0] == "success"
+        assert gh.layer1[LIMITS] == ("success", "within the automation limits")
+    assert "`require_ready` off" in _l1(_protected())[PROTECTED][1]
+
+
+def _protected() -> FakeGitHub:
+    gh = FakeGitHub()
+    gh.paths = [".github/ci/policy.json"]
+    return gh
+
+
+@pytest.mark.usefixtures("owner_review_off")
+def test_with_require_ready_off_the_other_rules_still_hold() -> None:
+    gh = _protected()
+    gh.pr["body"] = "no issue"
+    assert "the PR links no issue" in _reason(gh)
+    gh = _protected()
+    gh.review_list = []
+    assert _state(gh) == "pending"  # still waits for the AI review
+    gh = _protected()
+    gh.pr["labels"] = [{"name": HOLD}]
+    assert _state(gh) != "success"
+
+
+def test_the_policy_on_main_has_require_ready_off() -> None:
+    """The owner's current choice; flip it back in policy.json and this test together."""
+    import json
+    from pathlib import Path
+
+    policy = json.loads(Path(".github/ci/policy.json").read_text(encoding="utf-8"))
+    assert policy["require_ready"] is False

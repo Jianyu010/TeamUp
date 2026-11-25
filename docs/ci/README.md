@@ -8,7 +8,7 @@ TeamUp 的 main 分支只接受合入门禁的自动合入。仓库 owner（`Jia
 
 | 层 | Job | 何时运行 | 失败后果 |
 | --- | --- | --- | --- |
-| 1 · 路由 | 由门禁判定：没有关联 issue；改受保护路径、删除测试、新增 skip/xfail，或改动超过 300 个文件 | 每次判定 | 关联 issue，或等待 owner 审查并加 `ready` |
+| 1 · 路由 | 由门禁判定：没有关联 issue；改受保护路径、删除测试、新增 skip/xfail，或改动超过 300 个文件 | 每次判定 | 关联 issue；`require_ready` 打开时，其余几项还要等待 owner 审查并加 `ready` |
 | 2 · 静态检查 | `2 · Lint`（ruff）、`2 · Architecture`（依赖方向） | 每次推送，草稿也运行 | 门禁红，不合入 |
 | 3 · 运行代码的检查 | `3 · Linux UT`（组件与 CI 单测）、`3 · Linux ST`（全仓 pytest，不含场景）、`3 · AI Review` | PR 标为 ready for review 之后；AI Review 在 CI 通过后由门禁派发 | 门禁红；P0/P1 发现未修复、P2 发现未回复时 `3 · Review Findings` 为红，不合入 |
 | 4 · 端到端 | `4 · Nightly`（免模型场景和性能）、`4 · Weekly`（真实 Agent） | main 上按计划运行 | main 冻结（nightly），或开 `weekly-failure` issue |
@@ -23,7 +23,7 @@ TeamUp 的 main 分支只接受合入门禁的自动合入。仓库 owner（`Jia
 | Job | 层 | runner（标签 = 名称的短横线形式） | 命令或判定 | 必需 | 失败标签 | 状态 |
 | --- | --- | --- | --- | --- | --- | --- |
 | `1 · PR Routing` | 1 | 门禁写入的提交状态（`merge-gate-01`） | 门禁的路由结论：PR 走自动路径还是等待 owner | 否，只报告 | – | 启用 |
-| `1 · Protected Changes` | 1 | 同上 | 改了受保护路径、删除测试或新增 skip/xfail 时为红，owner 加 `ready` 后为绿 | 否，只报告 | – | 启用 |
+| `1 · Protected Changes` | 1 | 同上 | 改了受保护路径、删除测试或新增 skip/xfail 时为红，owner 加 `ready` 后为绿；`require_ready` 关闭时只报告，保持绿色并注明 | 否，只报告 | – | 启用 |
 | `1 · Automation Limits` | 1 | 同上 | 改动超过 300 个文件、PR 作者不受信或审查重跑次数用尽时为红 | 否，只报告 | – | 启用 |
 | `1 · Linked Issue` | 1 | 同上 | PR 的标题或正文没有引用本仓库的 issue（`#N` 或 `Jianyu010/TeamUp#N`，引用的是 PR 不算）时为红；门禁据此拦截，owner 加 `ready` 可放行 | 否，门禁执行 | – | 启用 |
 | `3 · Review Findings` | 3 | 同上 | 按下文"AI 审查发现"判定：有未修复的 P0/P1 或未回复的 P2 时为红；当前 head 还没有审查时为 pending | 否，门禁执行 | – | 启用 |
@@ -51,8 +51,19 @@ TeamUp 的 main 分支只接受合入门禁的自动合入。仓库 owner（`Jia
   - PR 关联了至少一个 issue（改标题或正文后门禁重新判定，删掉引用会让门禁回到 pending）；
   - 第 1 层路由没有拦截。
 - 合入者在 hp-laptop 的 `merge-01` 运行器上执行，令牌是仓库密钥 `TEAMUP_MERGE_TOKEN`。它每次合入一个 PR，用 squash 方式合入。
-- `ready` 只能由 admin 或 maintain 角色添加。PR 在加标签后又推送新提交时，标签会被自动移除。
+- `ready` 只能由 admin 或 maintain 角色添加。见下文的 `require_ready` 开关：关闭时不再有必须加 `ready` 的情况。PR 在加标签后又推送新提交时，标签会被自动移除。
 - `pr/hold` 让 PR 停在门前，直到移除该标签。
+
+### owner 审查开关（`require_ready`）
+
+`.github/ci/policy.json` 的 `require_ready` 决定哪些情况必须由 owner 加 `ready`。当前为 `false`（owner 的决定：`ready` 拖慢合入，暂时取消）。
+
+| 情况 | `require_ready: true` | `require_ready: false`（当前） |
+| --- | --- | --- |
+| 改受保护路径、删除测试、新增 skip/xfail、改动超过 300 个文件 | 等 owner 加 `ready` | 自动路径照常判定；`1 · Protected Changes` 只报告 |
+| main 或 nightly 冻结 | 只合入带 `ready` 或引用冻结 issue 的 PR | 不拦截合入；冻结 issue 照常打开和关闭，用于提醒 |
+
+不受开关影响、仍然生效的规则：必需检查全绿、`3 · AI Review` 通过并按下文处理完发现、关联 issue、`pr/hold`、草稿不合入，以及不受信作者的 PR 等待维护者。`ready` 仍可用作放行（例如未修复的 P0/P1），只是不再是必需的。PR 作者一般就是 owner 的账号（agent 也用它），所以"只豁免 owner"等同于对所有 PR 关闭，开关因此按仓库设置。
 
 ### AI 审查发现
 
@@ -70,7 +81,7 @@ TeamUp 的 main 分支只接受合入门禁的自动合入。仓库 owner（`Jia
 - main 上的 `CI` 推送运行失败；
 - nightly 失败。
 
-冻结期间只合入两种 PR：带 `ready` 的 PR；或在标题、正文里用 `Refs #N`（或 `Ref`、`Part of`）引用了某个打开的冻结 issue 的修复 PR，它仍要门禁全绿，但不必等 owner。用 `Closes`、`Fixes`、`Resolves` 引用冻结 issue 的 PR 不走这条路：那样修复一合入 issue 就被关闭，不会等到 main 真的恢复绿色。合入前合入者会重读 PR，引用被删掉或改成关闭关键字时不合入。main 恢复绿色、nightly 再次通过后，issue 自动关闭。weekly 失败不会冻结 main，只开 `weekly-failure` issue。
+`require_ready` 打开时，冻结期间只合入两种 PR：带 `ready` 的 PR；或在标题、正文里用 `Refs #N`（或 `Ref`、`Part of`）引用了某个打开的冻结 issue 的修复 PR，它仍要门禁全绿，但不必等 owner。用 `Closes`、`Fixes`、`Resolves` 引用冻结 issue 的 PR 不走这条路：那样修复一合入 issue 就被关闭，不会等到 main 真的恢复绿色。合入前合入者会重读 PR，引用被删掉或改成关闭关键字时不合入。main 恢复绿色、nightly 再次通过后，issue 自动关闭。weekly 失败不会冻结 main，只开 `weekly-failure` issue。
 
 ## 运行器
 
@@ -159,7 +170,7 @@ PR 上的 `gate/*-failed`、从 issue 镜像的 `type/*` 和 `pr/no-issue` 由 `
 
 ## 维护者操作
 
-- **放行受保护的改动。** 审查 diff 后加 `ready`。
+- **放行受保护的改动。** `require_ready` 打开时，审查 diff 后加 `ready`；关闭时不需要。
 - **暂停某个 PR。** 加 `pr/hold`。
 - **重新判定。** 在 Actions 手动运行 `Gate queue`，可以填写 PR 编号。
 - **轮换合入令牌。** 换掉密钥 `TEAMUP_MERGE_TOKEN`。它是 fine-grained 令牌，只授权本仓库，权限为：

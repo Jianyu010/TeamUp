@@ -543,3 +543,19 @@ def test_the_merger_reads_the_freeze_issue(
     out = capsys.readouterr().out
     assert "frozen (CI freeze: nightly is red)" in out
     assert "would merge #5" not in out
+
+
+@pytest.mark.usefixtures("owner_review_off")
+def test_with_require_ready_off_a_freeze_does_not_stop_merges(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    gh = FakeGitHub([_api_pull(5)])
+    gh.freeze = [{"title": "CI freeze: main is red", "number": 40}]
+    monkeypatch.setattr(ci_merge, "GitHub", lambda repo, token: gh)
+    monkeypatch.setattr(ci_merge, "hold_label_exists", lambda _gh: True)
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    monkeypatch.setenv("GITHUB_TOKEN", "t")
+    assert ci_merge.main(["--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert "`require_ready` is off: merging as usual" in out
+    assert "would merge #5" in out
