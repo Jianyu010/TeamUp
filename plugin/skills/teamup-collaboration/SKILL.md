@@ -38,7 +38,9 @@ Preserve requirements the user gave explicitly, including their wording for `rul
 
 1. Send relevant group progress or a question with `teamup_send_message`. Use a unique `client_message_id` for each new message and reuse it when retrying that same message. Set `mention_member_id` when a specific teammate needs a notification.
 2. To answer a room mention, use `teamup_notifications` to identify the room and message, then read the room history. Reply in the room when the other participants need the result. A notification indicates delivery to the Client.
-3. Until the task contract tracked as issue #33 is published, treat natural-language task requests as discussion. Share plans, constraints, and results as room messages; do not call or invent task tools.
+3. When the user asks for work to be assigned or tracked, create an explicit task with `teamup_create_task` instead of only discussing it. Read and acknowledge the current room board first. Use a fresh `client_task_id` for each new task and reuse it when retrying. Give the task a clear `title`; use `description` for details and `addressed_member_ids` when specific members should see it.
+4. Take eligible open work with `teamup_join_task`. Report progress with `teamup_report_progress` and a fresh `client_progress_id`, reusing that ID on retry. Finish with `teamup_finish_task` when the work is complete. Read the current board, tasks, and history with `teamup_list_tasks`, `teamup_get_task`, and `teamup_task_history`. If the server asks for a board acknowledgment, read and acknowledge the board before retrying.
+5. Keep task progress and completion in task operations, not as substitute room messages. Room chat and mentions keep their existing behavior.
 
 ## Exchange DMs privately
 

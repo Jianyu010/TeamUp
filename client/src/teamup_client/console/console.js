@@ -1,3 +1,5 @@
+import {taskPanel} from "/console-tasks.js";
+
 const get = (id) => document.getElementById(id);
 const svg = (name) => document.createElementNS("http://www.w3.org/2000/svg", name);
 const stage = get("stage");
@@ -8,6 +10,7 @@ const state = {
   room: null,
   actor: null,
   chat: null,
+  roomView: "chats",
   requestNumber: 0,
   roomRead: null,
   teamNumber: 0,
@@ -28,17 +31,22 @@ function node(tag, text, className) {
   return element;
 }
 
-async function read(path, params) {
+async function read(path, params, action) {
   const url = new URL(path, location.origin);
   for (const [name, value] of Object.entries(params || {})) {
     if (value !== null && value !== undefined) url.searchParams.set(name, value);
   }
   const response = await fetch(url, {
-    headers: {Authorization: "Bearer " + key},
+    method: action ? "POST" : "GET",
+    headers: {
+      Authorization: "Bearer " + key,
+      ...(action?.body ? {"Content-Type": "application/json"} : {}),
+    },
+    body: action?.body ? JSON.stringify(action.body) : undefined,
     cache: "no-store",
     signal: AbortSignal.timeout(21000),
   });
-  if (!response.ok) throw new Error(response.status === 401 ? "access" : "connection");
+  if (!response.ok && !action) throw new Error(response.status === 401 ? "access" : "connection");
   return await response.json();
 }
 
@@ -52,6 +60,25 @@ function sessionFor(id) {
 
 function related(room) {
   return room.memberships.some((join) => join.session === state.focused);
+}
+
+const tasks = taskPanel({
+  request: read,
+  room: () => state.room,
+  actor: () => sessionFor(state.actor),
+  sessions: () => state.workspace.sessions,
+  active: () => state.page === "room" && state.roomView === "tasks",
+});
+
+function setRoomView(view) {
+  state.roomView = view;
+  const isTasks = view === "tasks";
+  get("tasks-tab").setAttribute("aria-pressed", String(isTasks));
+  get("chats-tab").setAttribute("aria-pressed", String(!isTasks));
+  get("actor-label").textContent = isTasks ? "Acting as" : "Viewing as";
+  get("task-board").hidden = !isTasks;
+  get("chat-scroll").hidden = isTasks;
+  if (isTasks) tasks.refresh();
 }
 
 function card(label, description) {
@@ -151,6 +178,7 @@ function drawWires() {
       const bend = Math.max(6, (x2 - x1) * .46);
       const path = svg("path");
       path.dataset.focused = String(Boolean(state.focused));
+      path.dataset.active = String(membership.active_task === true);
       path.setAttribute("d", "M " + x1 + " " + y1 + " C " + (x1 + bend) + " " + y1 +
         " " + (x2 - bend) + " " + y2 + " " + x2 + " " + y2);
       layer.append(path);
@@ -170,6 +198,7 @@ function show(page) {
   get("back").hidden = page !== "room";
   get("team-panel").hidden = page !== "team";
   renderWorkspace();
+  if (page !== "room") tasks.reset();
   if (page === "team") refreshTeam();
   if (page === "workspace") setTimeout(drawWires, 450);
 }
@@ -200,12 +229,14 @@ function openRoom(id) {
   if (state.room === id && state.page === "room") return;
   const room = state.workspace.rooms.find((item) => item.id === id);
   if (!room) return;
+  tasks.reset();
   state.room = id;
   state.actor = room.memberships.find((join) => join.session === state.focused)?.session ?? room.memberships[0].session;
   state.chat = null;
   show("room");
   renderRoomHeader();
   renderChat();
+  setRoomView(state.roomView);
   get("back").focus({preventScroll:true});
   refreshRoom();
 }
@@ -349,6 +380,7 @@ async function refresh() {
       if (state.page === "room") renderRoomHeader();
     }
     if (state.page === "team") refreshTeam();
+    if (state.page === "room" && state.roomView === "tasks") tasks.refresh();
   } catch (error) {
     expire = error.message === "access";
     setConnection(expire ? "Open a fresh console link" : "Reconnecting…", false);
@@ -399,11 +431,14 @@ get("rooms").addEventListener("click", (event) => {
   const clicked = event.target.closest("[data-room]");
   if (clicked) openRoom(clicked.dataset.room);
 });
+get("tasks-tab").addEventListener("click", () => setRoomView("tasks"));
+get("chats-tab").addEventListener("click", () => setRoomView("chats"));
 get("chat-session").addEventListener("change", (event) => {
   state.actor = event.target.value;
   state.chat = null;
   renderRoomHeader();
   renderChat();
+  tasks.refresh({force: true});
   refreshRoom();
 });
 get("copy-room").addEventListener("click", copyId);

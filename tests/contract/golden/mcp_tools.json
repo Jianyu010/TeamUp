@@ -1,5 +1,5 @@
 {
-  "instructions": "Use a DM for two agents. Use a shared room for three or more agents who need the same context. If DM tools are unavailable, ask for an approved private handoff. Register the approved local session with a specific role and responsibility from the task, or ask the user; keep the returned member ID and existing approval requirements. Short examples: 'Backend · Accounts API', 'Frontend · Accounts screen', 'QA · Accounts fixtures'. Avoid bare titles like 'Developer' and do not invent a teammate's role. Before creating a room, write rules and protocol for its purpose, expected roles, progress, handoff, and completion, and preserve requirements the user gave explicitly. After joining or creating a room, read and acknowledge its current board. Reuse teamup_list_rooms for joined-room discovery. Give a short room responsibility introduction only when needed, prefer board role choices, do not repeat it on rejoin, and do not invent a persistent room role. Until the task contract is published, treat natural task requests as discussion and never invent task tools. Open a pair DM with the teammate's member ID; teamup_open_dm returns the same conversation on every repeat. To request someone's attention, pass their member ID as mention_member_id. Use a fresh client_message_id for each new message and keep it on retry. Keep DM text between the two participants and out of logs and rooms. Follow local sharing permissions.",
+  "instructions": "Use a DM for two agents. Use a shared room for three or more agents who need the same context. If DM tools are unavailable, ask for an approved private handoff. Register the approved local session with a specific role and responsibility from the task, or ask the user; keep the returned member ID and existing approval requirements. Short examples: 'Backend · Accounts API', 'Frontend · Accounts screen', 'QA · Accounts fixtures'. Avoid bare titles like 'Developer' and do not invent a teammate's role. Before creating a room, write rules and protocol for its purpose, expected roles, progress, handoff, and completion, and preserve requirements the user gave explicitly. After joining or creating a room, read and acknowledge its current board. Reuse teamup_list_rooms for joined-room discovery. Give a short room responsibility introduction only when needed, prefer board role choices, do not repeat it on rejoin, and do not invent a persistent room role. Turn a natural request to assign work into an explicit room task: read and acknowledge the current board, then call teamup_create_task with a fresh client_task_id and reuse it on retry. Use teamup_join_task to take eligible open work, report progress with teamup_report_progress using a fresh client_progress_id reused on retry, and finish with teamup_finish_task. Read the current room board and task history with teamup_list_tasks, teamup_get_task and teamup_task_history; keep ordinary chat and mentions unchanged. Open a pair DM with the teammate's member ID; teamup_open_dm returns the same conversation on every repeat. To request someone's attention, pass their member ID as mention_member_id. Use a fresh client_message_id for each new message and keep it on retry. Keep DM text between the two participants and out of logs and rooms. Follow local sharing permissions.",
   "tools": {
     "teamup_ack_board": {
       "description": "Acknowledge a board version you have just read.",
@@ -56,6 +56,51 @@
         "type": "object"
       }
     },
+    "teamup_create_task": {
+      "description": "Create an explicit room task after reading and acknowledging the current board. Use a new client_task_id and reuse it when retrying this task.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "addressed_member_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 100,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "client_task_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "description": {
+            "maxLength": 8000,
+            "minLength": 1,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "room_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "room_id",
+          "client_task_id",
+          "title"
+        ],
+        "type": "object"
+      }
+    },
     "teamup_find_members": {
       "description": "Find teammates by a substring of their role description.",
       "inputSchema": {
@@ -67,6 +112,27 @@
           }
         },
         "required": [],
+        "type": "object"
+      }
+    },
+    "teamup_finish_task": {
+      "description": "Finish a task you created or participate in. Finishing is terminal.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "room_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "task_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "room_id",
+          "task_id"
+        ],
         "type": "object"
       }
     },
@@ -82,6 +148,27 @@
         },
         "required": [
           "room_id"
+        ],
+        "type": "object"
+      }
+    },
+    "teamup_get_task": {
+      "description": "Read one authorized room task.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "room_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "task_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "room_id",
+          "task_id"
         ],
         "type": "object"
       }
@@ -102,12 +189,67 @@
         "type": "object"
       }
     },
+    "teamup_join_task": {
+      "description": "Join an open unaddressed task or an open task addressed to you.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "room_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "task_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "room_id",
+          "task_id"
+        ],
+        "type": "object"
+      }
+    },
     "teamup_list_rooms": {
       "description": "List rooms this member created or joined, with the acknowledged and current board versions and the latest message ID.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {},
         "required": [],
+        "type": "object"
+      }
+    },
+    "teamup_list_tasks": {
+      "description": "List authorized room tasks after a task number, optionally filtered by status. Read and acknowledge a stale board first.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "default": 0,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "limit": {
+            "default": 50,
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "room_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "open",
+              "finished"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "room_id"
+        ],
         "type": "object"
       }
     },
@@ -223,6 +365,39 @@
         "type": "object"
       }
     },
+    "teamup_report_progress": {
+      "description": "Record progress on a task you participate in. Use a new client_progress_id and reuse it when retrying this update.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "client_progress_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "note": {
+            "maxLength": 8000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "room_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "task_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "room_id",
+          "task_id",
+          "client_progress_id",
+          "note"
+        ],
+        "type": "object"
+      }
+    },
     "teamup_search_room": {
       "description": "Search readable room messages for a case-insensitive substring.",
       "inputSchema": {
@@ -315,6 +490,38 @@
           "room_id",
           "client_message_id",
           "text"
+        ],
+        "type": "object"
+      }
+    },
+    "teamup_task_history": {
+      "description": "Read a task's created, joined, progress and finished events after an event number.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "default": 0,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "limit": {
+            "default": 50,
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "room_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "task_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "room_id",
+          "task_id"
         ],
         "type": "object"
       }

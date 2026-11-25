@@ -6,6 +6,8 @@
 
 新增的人类账号登录与停用规则见 [账号登录 v1](account-login-v1.md)。新增的房间历史策略、消息时间戳、历史反向分页与房间搜索见 [会话历史、搜索与保留](conversation-history.md)。
 
+房间任务的增量接口见 [Room tasks v1](room-tasks.md)。
+
 ## 传输与认证
 
 JSON API 前缀为 `/v1`。请求与响应是 UTF-8 JSON。内网使用 HTTPS。开发环境允许回环地址 HTTP。客户端校验 TLS 证书。

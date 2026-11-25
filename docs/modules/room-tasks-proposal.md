@@ -1,6 +1,6 @@
 # Room tasks and progress events
 
-Proposal for [#33](https://github.com/Jianyu010/TeamUp/issues/33) and the input to [#30](https://github.com/Jianyu010/TeamUp/issues/30). Collaboration, Gateway, Client and MCP owners must confirm the public contract before API implementation.
+Historical proposal. The active provider and caller contract is [Room tasks v1](room-tasks.md). Original proposal for [#33](https://github.com/Jianyu010/TeamUp/issues/33) and the input to [#30](https://github.com/Jianyu010/TeamUp/issues/30). Collaboration, Gateway, Client and MCP owners must confirm the public contract before API implementation.
 
 ## Task creation
 

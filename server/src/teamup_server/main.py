@@ -17,11 +17,26 @@ from .collaboration import Collaboration
 from .gateway import Gateway
 from .maintenance import MAX_RETENTION_HOURS, Maintenance, retention
 
+_TRACER_MAX_PERIOD_SECONDS = 60
+
 
 def create_app(
-    db_path: str | Path, enrollment_keys: Mapping[str, str] | None = None
+    db_path: str | Path,
+    enrollment_keys: Mapping[str, str] | None = None,
+    *,
+    task_stall_after: int | None = None,
+    task_reminder_interval: int | None = None,
+    clock=None,
 ) -> FastAPI:
-    return _compose(db_path, enrollment_keys or {}, None, None)[0].app
+    return _compose(
+        db_path,
+        enrollment_keys or {},
+        None,
+        None,
+        task_stall_after=task_stall_after,
+        task_reminder_interval=task_reminder_interval,
+        clock=clock,
+    )[0].app
 
 
 def _compose(
@@ -29,9 +44,28 @@ def _compose(
     enrollment_keys: Mapping[str, str],
     room_retention_hours: int | None,
     dm_retention_hours: int | None,
+    *,
+    task_stall_after: int | None = None,
+    task_reminder_interval: int | None = None,
+    clock=None,
 ) -> tuple[Gateway, Maintenance | None]:
-    collaboration = Collaboration(db_path, enrollment_keys)
-    return Gateway(collaboration), retention(
+    collaboration = Collaboration(
+        db_path,
+        enrollment_keys,
+        task_stall_after=task_stall_after,
+        task_reminder_interval=task_reminder_interval,
+        clock=clock,
+    )
+    period = (
+        min(
+            task_stall_after,
+            task_reminder_interval,
+            _TRACER_MAX_PERIOD_SECONDS,
+        )
+        if task_stall_after is not None and task_reminder_interval is not None
+        else None
+    )
+    return Gateway(collaboration, task_tracer_period=period), retention(
         collaboration, room_retention_hours, dm_retention_hours
     )
 
@@ -66,6 +100,16 @@ def _loopback(host: str) -> bool:
         return False
 
 
+def _positive_seconds(value: str) -> int:
+    try:
+        seconds = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("Expected a positive integer") from None
+    if seconds <= 0:
+        raise argparse.ArgumentTypeError("Expected a positive integer")
+    return seconds
+
+
 def _enrollment_keys() -> dict[str, str]:
     try:
         keys = json.loads(os.environ.get("TEAMUP_ENROLLMENT_KEYS", "{}"))
@@ -95,6 +139,8 @@ def main() -> None:
     parser.add_argument("--port", default=8765, type=int)
     parser.add_argument("--tls-cert", type=Path)
     parser.add_argument("--tls-key", type=Path)
+    parser.add_argument("--task-stall-after", type=_positive_seconds)
+    parser.add_argument("--task-reminder-interval", type=_positive_seconds)
     parser.add_argument("--room-retention-hours", type=int)
     parser.add_argument("--dm-retention-hours", type=int)
     args = parser.parse_args()
@@ -114,6 +160,10 @@ def main() -> None:
         )
     if bool(args.tls_cert) != bool(args.tls_key):
         parser.error("--tls-cert and --tls-key are both required to enable TLS")
+    if (args.task_stall_after is None) != (args.task_reminder_interval is None):
+        parser.error(
+            "--task-stall-after and --task-reminder-interval are both required"
+        )
     host = "127.0.0.1" if args.host.lower() == "localhost" else args.host
     if not _loopback(host) and not args.tls_cert:
         parser.error("Non-loopback listeners require TLS")
@@ -123,6 +173,8 @@ def main() -> None:
             _enrollment_keys(),
             args.room_retention_hours,
             args.dm_retention_hours,
+            task_stall_after=args.task_stall_after,
+            task_reminder_interval=args.task_reminder_interval,
         )
     except ValueError as exc:
         parser.error(str(exc))

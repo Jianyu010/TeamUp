@@ -13,13 +13,14 @@ from importlib.resources import files
 from urllib.parse import parse_qs, urlsplit
 
 from ._console_data import MAX_BEFORE, ConsoleReader
-from ._protocol import is_uuid
+from ._protocol import REQUEST_LIMIT, decode_json, is_string, is_uuid
 from .ipc import ClientError
 
 STATIC = {
     "/": ("index.html", "text/html; charset=utf-8"),
     "/console.css": ("console.css", "text/css; charset=utf-8"),
     "/console.js": ("console.js", "text/javascript; charset=utf-8"),
+    "/console-tasks.js": ("console-tasks.js", "text/javascript; charset=utf-8"),
     "/jet-pair.png": ("jet-pair.png", "image/png"),
 }
 CSP = (
@@ -62,10 +63,20 @@ class Handler(BaseHTTPRequestHandler):
             status, "application/json; charset=utf-8", json.dumps(document).encode()
         )
 
-    def do_GET(self):
+    def _origin_allowed(self, *, write=False):
         host = f"127.0.0.1:{self.server.server_address[1]}"
         origin = self.headers.get("Origin")
-        if self.headers.get("Host") != host or origin not in (None, f"http://{host}"):
+        return self.headers.get("Host") == host and (
+            origin == f"http://{host}" or (origin is None and not write)
+        )
+
+    def _authorized(self):
+        return hmac.compare_digest(
+            self.headers.get("Authorization", "").encode("utf-8"), self._secret
+        )
+
+    def do_GET(self):
+        if not self._origin_allowed():
             self._json(403, {"state": "forbidden"})
             return
         try:
@@ -81,9 +92,7 @@ class Handler(BaseHTTPRequestHandler):
                 files("teamup_client").joinpath("console", name).read_bytes(),
             )
             return
-        if not hmac.compare_digest(
-            self.headers.get("Authorization", "").encode("utf-8"), self._secret
-        ):
+        if not self._authorized():
             self._json(401, {"state": "unauthorized"})
             return
         try:
@@ -94,6 +103,59 @@ class Handler(BaseHTTPRequestHandler):
         if operation is None:
             self._json(404, {"state": "not_found"})
             return
+        self._run(operation)
+
+    def do_POST(self):
+        if not self._origin_allowed(write=True):
+            self._json(403, {"state": "forbidden"})
+            return
+        if not self._authorized():
+            self._json(401, {"state": "unauthorized"})
+            return
+        try:
+            target = urlsplit(self.path)
+            parts = target.path.split("/")
+            if len(parts) != 5 or parts[1:3] != ["api", "tasks"]:
+                self._json(404, {"state": "not_found"})
+                return
+            task_id, action = parts[3:]
+            if not is_uuid(task_id) or action not in {"join", "progress", "finish"}:
+                raise ValueError
+            params = self._params(target.query)
+            if set(params) != {"room", "session"} or not is_uuid(params["room"]):
+                raise ValueError
+            data = self._task_body(action)
+        except (KeyError, ValueError, RecursionError, OSError):
+            self._json(400, {"state": "invalid_request"})
+            return
+        self._run(
+            self._reader.task_action(
+                params["session"], params["room"], task_id, action, data
+            ),
+            write=True,
+        )
+
+    def _task_body(self, action):
+        length = int(self.headers.get("Content-Length", "0"))
+        if self.headers.get("Transfer-Encoding") or not 0 <= length <= REQUEST_LIMIT:
+            raise ValueError
+        if action != "progress":
+            if length:
+                raise ValueError
+            return None
+        if not length or self.headers.get_content_type() != "application/json":
+            raise ValueError
+        data = decode_json(self.rfile.read(length))
+        if (
+            not isinstance(data, dict)
+            or set(data) != {"client_progress_id", "note"}
+            or not is_string(data["client_progress_id"], 128)
+            or not is_string(data["note"], 8000)
+        ):
+            raise ValueError
+        return data
+
+    def _run(self, operation, *, write=False):
         future = asyncio.run_coroutine_threadsafe(operation, self._loop)
         try:
             data = future.result(timeout=18)
@@ -110,16 +172,35 @@ class Handler(BaseHTTPRequestHandler):
         ):
             self._json(503, {"state": "unavailable"})
         else:
-            self._json(200, data)
+            status = (
+                {
+                    "ready": 200,
+                    "unauthorized": 401,
+                    "not_registered": 401,
+                    "not_found": 404,
+                    "board_ack_required": 409,
+                    "conflict": 409,
+                    "invalid_request": 422,
+                    "unavailable": 503,
+                }.get(data.get("state"), 503)
+                if write
+                else 200
+            )
+            self._json(status, data)
+
+    @staticmethod
+    def _params(query):
+        values = parse_qs(query, keep_blank_values=True, max_num_fields=4)
+        if any(len(items) != 1 for items in values.values()):
+            raise ValueError
+        return {key: items[0] for key, items in values.items()}
 
     def _operation(self, path, query):
-        params = parse_qs(query, keep_blank_values=True, max_num_fields=3)
-        if any(len(values) != 1 for values in params.values()):
-            raise ValueError
+        params = self._params(query)
         if path == "/api/workspace" and not params:
             return self._reader.workspace()
         if path == "/api/team" and set(params) == {"session"}:
-            return self._reader.team(params["session"][0])
+            return self._reader.team(params["session"])
         if path == "/api/room":
             if (
                 not {"session", "room"}
@@ -127,25 +208,47 @@ class Handler(BaseHTTPRequestHandler):
                 <= {"session", "room", "before", "after"}
             ):
                 raise ValueError
-            identifier = params["room"][0]
+            identifier = params["room"]
             if not is_uuid(identifier):
                 raise ValueError
             before = None
             after = None
             if "after" in params:
-                after = int(params["after"][0])
-                if not 0 <= after < MAX_BEFORE:
-                    raise ValueError
+                after = self._after(params)
             if "before" in params:
                 if after is not None:
                     raise ValueError
-                before = int(params["before"][0])
+                before = int(params["before"])
                 if not 1 <= before <= MAX_BEFORE:
                     raise ValueError
-            return self._reader.room(
-                params["session"][0], identifier, before, after=after
+            return self._reader.room(params["session"], identifier, before, after=after)
+        if path == "/api/tasks":
+            if not {"room"} <= params.keys() <= {"room", "status", "after"}:
+                raise ValueError
+            status = params.get("status", "open")
+            if not is_uuid(params["room"]) or status not in {"open", "finished"}:
+                raise ValueError
+            return self._reader.tasks(params["room"], status, self._after(params))
+        if path == "/api/task-events":
+            if (
+                not {"session", "room", "task"}
+                <= params.keys()
+                <= {"session", "room", "task", "after"}
+            ):
+                raise ValueError
+            if not is_uuid(params["room"]) or not is_uuid(params["task"]):
+                raise ValueError
+            return self._reader.task_events(
+                params["session"], params["room"], params["task"], self._after(params)
             )
         return None
+
+    @staticmethod
+    def _after(params):
+        after = int(params.get("after", "0"))
+        if not 0 <= after < MAX_BEFORE:
+            raise ValueError
+        return after
 
 
 @asynccontextmanager

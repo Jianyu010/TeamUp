@@ -53,13 +53,25 @@
             </div>
           </section>
           <div class="chat-heading">
-            <h2>Chats</h2>
-            <label>Viewing as <select id="chat-session"></select></label>
+            <nav class="room-tabs" aria-label="Room views">
+              <button type="button" id="tasks-tab" aria-pressed="false">Tasks</button>
+              <button type="button" id="chats-tab" aria-pressed="true">Chats</button>
+            </nav>
+            <label><span id="actor-label">Viewing as</span> <select id="chat-session"></select></label>
           </div>
           <section class="scroll-frame" id="chat-scroll" aria-label="Room chat">
             <button type="button" id="older" hidden>Older messages</button>
             <p id="chat-status" role="status"></p>
             <div id="messages"></div>
+          </section>
+          <section id="task-board" class="task-board" aria-label="Room tasks" hidden>
+            <div class="task-toolbar">
+              <div id="task-lane-nav" aria-label="Task panels"></div>
+              <button type="button" id="finished-tasks" aria-pressed="false">Finished</button>
+              <button type="button" id="more-tasks" hidden>More tasks</button>
+            </div>
+            <p id="task-status" class="muted" role="status"></p>
+            <div id="task-lanes" class="task-lanes"></div>
           </section>
         </div>
         <aside class="roster" aria-labelledby="roster-title">

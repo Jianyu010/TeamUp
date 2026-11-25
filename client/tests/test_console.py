@@ -1,6 +1,7 @@
 import asyncio
 
 import httpx
+from teamup_client import _console_data
 from teamup_client._console import serve_console
 from teamup_client._console_data import ConsoleReader, ConsoleSession
 from teamup_client.ipc import ClientError
@@ -33,6 +34,13 @@ class Upstream:
                         "latest_message_id": 15,
                     }
                 ],
+            }
+        if path == f"/rooms/{ROOM}/tasks":
+            if token == "reviewer-secret":
+                raise ClientError("board_ack_required", "Current board needed")
+            return {
+                "tasks": [{"participant_member_ids": [BACKEND]}],
+                "next_after": None,
             }
         if path == f"/rooms/{ROOM}/messages":
             if token == "reviewer-secret":
@@ -71,6 +79,11 @@ def test_workspace_and_room_reads_keep_session_scope_and_board_ack():
             "primary",
             "review",
         }
+        status = {
+            item["session"]: item["active_task"]
+            for item in workspace["rooms"][0]["memberships"]
+        }
+        assert status == {"primary": True, "review": None}
         assert "-secret" not in str(workspace)
         room = await reader.room("primary", ROOM)
         assert [message["text"] for message in room["messages"]] == ["Ready for review"]
@@ -143,6 +156,88 @@ def test_loopback_listener_requires_its_credential_and_serves_bundled_assets():
     asyncio.run(scenario())
 
 
+def test_task_actions_require_same_origin_and_keep_session_scope():
+    task = "2f47cb81-36dc-42eb-8736-8f51a303455a"
+
+    async def scenario():
+        requests = []
+
+        async def upstream(method, path, token, *, query=None, body=None):
+            requests.append((method, path, token, query, body))
+            if method == "POST" and token == "reviewer-secret":
+                raise ClientError("board_ack_required", "Current board needed")
+            if method == "GET":
+                return {
+                    "tasks": [{"task_id": task, "task_number": 1, "version": 1}],
+                    "next_after": None,
+                }
+            return {"task_id": task, "task_number": 1, "status": "open"}
+
+        async with serve_console(ConsoleReader(sessions, upstream)) as url:
+            origin, token = url.split("#")
+            async with httpx.AsyncClient(trust_env=False) as client:
+                auth = {"Authorization": "Bearer " + token}
+                endpoint = origin + f"api/tasks/{task}/join"
+                params = {"session": "review", "room": ROOM}
+                rejected = await client.post(endpoint, headers=auth, params=params)
+                assert rejected.status_code == 403
+                assert requests == []
+                auth["Origin"] = origin.rstrip("/")
+                rejected = await client.post(endpoint, headers=auth, params=params)
+                assert rejected.status_code == 409
+                assert rejected.json()["state"] == "board_ack_required"
+                assert requests[-1][2] == "reviewer-secret"
+                params["session"] = "primary"
+                taken = await client.post(endpoint, headers=auth, params=params)
+                assert (
+                    taken.status_code == 200 and taken.json()["task"]["task_id"] == task
+                )
+                assert requests[-1] == (
+                    "POST",
+                    f"/rooms/{ROOM}/tasks/{task}/join",
+                    "backend-secret",
+                    None,
+                    None,
+                )
+                page = await client.get(
+                    origin + "api/tasks",
+                    headers=auth,
+                    params={"room": ROOM, "status": "open"},
+                )
+                assert page.json()["tasks"] == [
+                    {
+                        "task_id": task,
+                        "task_number": "1",
+                        "version": 1,
+                        "visible_to": ["primary", "review"],
+                    }
+                ]
+                assert "-secret" not in page.text
+
+    asyncio.run(scenario())
+
+
+def test_slow_task_observation_keeps_the_workspace_available(monkeypatch):
+    monkeypatch.setattr(_console_data, "TASK_OBSERVATION_SECONDS", 0.02)
+
+    async def scenario():
+        upstream = Upstream()
+
+        async def request(method, path, token, *, query=None):
+            if path.endswith("/tasks"):
+                await asyncio.Event().wait()
+            return await upstream(method, path, token, query=query)
+
+        result = await asyncio.wait_for(ConsoleReader(sessions, request).workspace(), 1)
+        assert [room["id"] for room in result["rooms"]] == [ROOM]
+        assert all(
+            membership["active_task"] is None
+            for membership in result["rooms"][0]["memberships"]
+        )
+
+    asyncio.run(scenario())
+
+
 def test_console_catches_up_using_the_last_displayed_message():
     async def scenario():
         upstream = Upstream()
@@ -207,5 +302,29 @@ def test_empty_room_still_uses_the_server_board_gate():
         assert (await console.room("review", ROOM))["state"] == "board_ack_required"
         empty = await console.room("primary", ROOM)
         assert empty["state"] == "ready" and empty["messages"] == []
+
+    asyncio.run(scenario())
+
+
+def test_incomplete_task_observation_bounds_upstream_pages():
+    async def scenario():
+        upstream = Upstream()
+        cursors = []
+
+        async def request(method, path, token, *, query=None):
+            if path.endswith("/tasks"):
+                cursors.append(query["after"])
+                return {
+                    "tasks": [{"participant_member_ids": []}],
+                    "next_after": query["after"] + 1 if query["after"] < 5 else None,
+                }
+            return await upstream(method, path, token, query=query)
+
+        data = await ConsoleReader(sessions, request).workspace()
+        assert cursors == [0, 1]
+        assert all(
+            membership["active_task"] is None
+            for membership in data["rooms"][0]["memberships"]
+        )
 
     asyncio.run(scenario())

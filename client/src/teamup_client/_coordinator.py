@@ -3,7 +3,7 @@ import hashlib
 import json
 import secrets
 import sqlite3
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from functools import partial
 
@@ -13,6 +13,7 @@ from ._desktop import PREVIEW_LIMIT, TITLE_LIMIT, clean
 from ._harness import owned_socket, wake_prompt
 from ._notices import binding_scope
 from ._protocol import is_integer, is_string, is_uuid
+from ._task_notices import drain_task_reminders
 from ._upstream import unavailable
 from .ipc import ClientError
 
@@ -28,16 +29,35 @@ LIMIT = partial(is_integer, minimum=1, maximum=100)
 PAGE = {"after": AFTER, "limit": LIMIT}
 HISTORY = {"after": AFTER, "before": BEFORE, "limit": LIMIT}
 ROOM = {"room_id": is_uuid}
+TASK = {**ROOM, "task_id": is_uuid}
 DM = {"dm_id": is_uuid}
 HISTORY_POLICIES = ("retained", "since_joining")
+TASK_STATUSES = ("open", "finished")
 
 
 def _history_policy(value):
     return value in HISTORY_POLICIES
 
 
+def _task_status(value):
+    return value in TASK_STATUSES
+
+
 def _mention(value):
     return value is None or is_uuid(value)
+
+
+def _optional_text(value):
+    return value is None or BOARD_TEXT(value)
+
+
+def _addresses(value):
+    return (
+        isinstance(value, list)
+        and len(value) <= 100
+        and all(is_uuid(item) for item in value)
+        and len({item.lower() for item in value}) == len(value)
+    )
 
 
 @dataclass(frozen=True)
@@ -76,6 +96,29 @@ OPERATIONS = {
     "read_messages": Operation("GET", "/rooms/{room_id}/messages", ROOM, HISTORY),
     "search_room": Operation(
         "GET", "/rooms/{room_id}/search", {**ROOM, "q": QUERY}, PAGE
+    ),
+    "create_task": Operation(
+        "POST",
+        "/rooms/{room_id}/tasks",
+        {**ROOM, "client_task_id": MESSAGE_KEY, "title": ROLE},
+        {"description": _optional_text, "addressed_member_ids": _addresses},
+    ),
+    "list_tasks": Operation(
+        "GET",
+        "/rooms/{room_id}/tasks",
+        ROOM,
+        {**PAGE, "status": _task_status},
+    ),
+    "get_task": Operation("GET", "/rooms/{room_id}/tasks/{task_id}", TASK),
+    "join_task": Operation("POST", "/rooms/{room_id}/tasks/{task_id}/join", TASK),
+    "report_progress": Operation(
+        "POST",
+        "/rooms/{room_id}/tasks/{task_id}/progress",
+        {**TASK, "client_progress_id": MESSAGE_KEY, "note": BOARD_TEXT},
+    ),
+    "finish_task": Operation("POST", "/rooms/{room_id}/tasks/{task_id}/finish", TASK),
+    "task_history": Operation(
+        "GET", "/rooms/{room_id}/tasks/{task_id}/events", TASK, PAGE
     ),
     "open_dm": Operation("POST", "/dms", {"member_id": is_uuid}),
     "send_dm": Operation(
@@ -377,7 +420,9 @@ class Coordinator:
         return tuple(
             ConsoleSession(
                 hashlib.sha256(json.dumps(identity).encode()).hexdigest(),
-                self._leases[identity].kind if identity in self._leases else identity[0],
+                self._leases[identity].kind
+                if identity in self._leases
+                else identity[0],
                 identity[1],
                 session.binding.member_token,
             )
@@ -498,7 +543,11 @@ class Coordinator:
 
     async def _drain_with_hints(self, binding, session, lines):
         wake = session.inbox_changed
-        reader = asyncio.create_task(self._read_hints(lines, wake))
+        reminder_wake = asyncio.Event()
+        reader = asyncio.create_task(self._read_hints(lines, wake, reminder_wake))
+        reminders = asyncio.create_task(
+            self._watch_task_reminders(binding, reminder_wake)
+        )
         try:
             while True:
                 wake.clear()
@@ -513,24 +562,41 @@ class Coordinator:
                 await wake.wait()
         finally:
             reader.cancel()
-            await asyncio.gather(reader, return_exceptions=True)
+            reminders.cancel()
+            await asyncio.gather(reader, reminders, return_exceptions=True)
+
+    async def _watch_task_reminders(self, binding, wake):
+        while True:
+            wake.clear()
+            try:
+                if not await drain_task_reminders(
+                    self._upstream.request, binding.member_token, self._notifier.show
+                ):
+                    return
+            except (ClientError, OSError, OverflowError):
+                with suppress(TimeoutError):
+                    await asyncio.wait_for(wake.wait(), timeout=5)
+            else:
+                await wake.wait()
 
     @staticmethod
-    async def _read_hints(lines, wake):
+    async def _read_hints(lines, *wakes):
         event = ""
         data = False
         try:
             async for line in lines:
                 if not line:
                     if event == "inbox_changed" and data:
-                        wake.set()
+                        for wake in wakes:
+                            wake.set()
                     event, data = "", False
                 elif line.startswith("event:"):
                     event = line.removeprefix("event:").removeprefix(" ")
                 elif line.startswith("data:"):
                     data = True
         finally:
-            wake.set()
+            for wake in wakes:
+                wake.set()
 
     async def _drain(self, token, scope, notices_changed):
         after = 0
