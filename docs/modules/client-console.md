@@ -2,11 +2,15 @@
 
 Local workspace for [#17](https://github.com/Jianyu010/TeamUp/issues/17). Start it with `teamup-client serve --config PATH --console` and open the loopback URL printed during startup. It closes with the Client. The URL fragment is a short-lived credential for this Client process and should be kept local.
 
-## macOS desktop app
+## Desktop apps
 
 TeamUp.app opens one Electron window for the local profile ([#41](https://github.com/Jianyu010/TeamUp/issues/41)). The default profile is `~/.config/teamup/client.json`. The launcher reuses a running console from the same profile and socket or starts the installed Client through `teamup-client serve --config PATH --console`. The Client can continue receiving events and sending notifications after closing TeamUp.app. If the configured socket belongs to a Client started outside the launcher, TeamUp shows a startup error so the operator can choose how to manage that process.
 
 The desktop app ships the Client's console assets and serves them inside the sandboxed window at `teamup://console/`. Its main process gets the loopback address and launch credential from the launcher over a private pipe. It holds that credential and forwards the console's named workspace, room, team, and task requests to the Client listener. The same Client session checks and Server authorization apply to both desktop and browser requests. See the [desktop build and launch instructions](../../client/desktop/README.md).
+
+On Windows x64 the Electron window runs on Windows and the Client runs in WSL2. The launcher calls `wsl.exe` with argument arrays, translates its bundled Python launcher paths with `wslpath`, and uses the selected distribution's Python 3 to enter the installed Client runtime. It uses the same profile, private socket, launcher metadata and public console API as the macOS launcher. Closing the Windows window leaves the Client running. The launch credential stays in the main process and never appears in a renderer URL or environment variable.
+
+Windows defaults are WSL paths: `~/.config/teamup/client.json`, `~/.local/share/teamup/clients/current/.venv/bin`, and `~/.local/state/teamup/launcher`. `TEAMUP_DESKTOP_CONFIG`, `TEAMUP_DESKTOP_RUNTIME`, and `TEAMUP_DESKTOP_STATE_DIR` override those paths inside WSL. Optional `TEAMUP_DESKTOP_WSL_DISTRO` selects an installed distribution; otherwise the user's default distribution is used. Missing WSL, Python, runtime, or an unmanaged existing Client produces a startup error. This Windows adapter does not add Server, IPC or authorization operations. WSL's localhost forwarding must make the Client's IPv4 loopback listener reachable from Windows.
 
 ## Ownership and access
 

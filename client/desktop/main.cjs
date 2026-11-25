@@ -1,21 +1,13 @@
 const { app, BrowserWindow, dialog, protocol, session } = require("electron");
-const { execFile } = require("node:child_process");
-const { homedir } = require("node:os");
-const { join, resolve } = require("node:path");
-const { promisify } = require("node:util");
+const { join } = require("node:path");
 const { CONSOLE_URL, createConsoleHandler, parseConsoleEndpoint } = require("./console-protocol.cjs");
+const { launchConsole } = require("./launcher-command.cjs");
 
-const exec = promisify(execFile);
-const runtime = resolve(process.env.TEAMUP_DESKTOP_RUNTIME ||
-  join(homedir(), ".local/share/teamup/clients/current/.venv/bin"));
-const profile = resolve(process.env.TEAMUP_DESKTOP_CONFIG ||
-  join(homedir(), ".config/teamup/client.json"));
-const stateDirectory = resolve(process.env.TEAMUP_DESKTOP_STATE_DIR ||
-  join(homedir(), "Library/Application Support/TeamUp Launcher"));
 const assetDirectory = app.isPackaged
   ? join(__dirname, "console")
   : join(__dirname, "../src/teamup_client/console");
 const launcher = join(app.isPackaged ? process.resourcesPath : __dirname, "launch.py");
+const windowsLauncher = join(app.isPackaged ? process.resourcesPath : __dirname, "launch-wsl.py");
 
 protocol.registerSchemesAsPrivileged([{
   scheme: "teamup",
@@ -30,14 +22,13 @@ let consoleSession;
 async function prepareConsole() {
   let stdout;
   try {
-    ({ stdout } = await exec(join(runtime, "python"), [
-      "-I", launcher, "--config", profile, "--client", join(runtime, "teamup-client"),
-      "--state-dir", stateDirectory,
-    ], { timeout: 35000, maxBuffer: 4096 }));
+    ({ stdout } = await launchConsole({ launcher, windowsLauncher }));
   } catch (error) {
     const detail = error.code === 1
-      ? error.stderr.trim()
-      : "Check the installed TeamUp Client runtime and try opening TeamUp again.";
+      ? error.stderr?.trim()
+      : process.platform === "win32"
+        ? "Check WSL2, Python 3 and the installed TeamUp Client profile. See the Windows setup instructions."
+        : "Check the installed TeamUp Client runtime and try opening TeamUp again.";
     throw new Error(detail || "TeamUp could not start the local Client console.");
   }
   return parseConsoleEndpoint(stdout);
@@ -60,6 +51,7 @@ async function openConsole() {
   await getEndpoint();
   const consoleWindow = new BrowserWindow({
     title: "TeamUp",
+    icon: join(assetDirectory, "jet-pair.png"),
     width: 1200,
     height: 800,
     minWidth: 720,
@@ -103,6 +95,7 @@ if (!app.requestSingleInstanceLock()) {
     if (process.platform !== "darwin") app.quit();
   });
   app.whenReady().then(() => {
+    if (process.platform === "win32") app.setAppUserModelId("org.teamup.desktop");
     consoleSession = session.fromPartition("teamup-console");
     consoleSession.setPermissionCheckHandler(() => false);
     consoleSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));

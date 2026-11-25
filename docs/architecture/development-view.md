@@ -9,7 +9,7 @@ TeamUp/
 ├── LICENSE
 ├── dashboards/                    # 仓库看板与指标口径
 ├── client/
-│   ├── desktop/                     # macOS Electron 控制台与打包
+│   ├── desktop/                     # macOS / Windows Electron 控制台与打包
 │   └── src/teamup_client/          # 本机 Client 源码
 ├── server/
 │   └── src/teamup_server/          # 团队 Server 源码
@@ -29,7 +29,7 @@ TeamUp/
 | --- | --- |
 | `server/src/teamup_server/` | `gateway`、`collaboration`、`presence` 各有公开入口。业务表与迁移在 `collaboration` 内。Serve 入口是组合根。 |
 | `client/src/teamup_client/` | 会话协调器、本机 IPC、Server API、harness driver 和通知，各有自己的职责。Client 入口是组合根，公开本机协议供 CLI 和 MCP 使用。 |
-| `client/desktop/` | macOS Electron 控制台，打包 Client 的静态界面，通过 [Client 控制台接口](../modules/client-console.md)访问本机 Client。 |
+| `client/desktop/` | macOS / Windows Electron 控制台，打包 Client 的静态界面，通过 [Client 控制台接口](../modules/client-console.md)访问本机 Client；Windows 的 Client 后台运行在 WSL2。 |
 | `plugin/mcp/src/teamup_mcp/` | MCP 入口、工具名称和 schema、调用转换。通过 Client 的公开 IPC 调用封装访问本机服务。 |
 | `plugin/skills/` | 每个工作流一个 `SKILL.md` 目录。工具 schema 和授权逻辑由各自的代码 owner 维护。 |
 | `dashboards/` | 看板和数据来源说明。需要内网状态时使用授权 API。 |
