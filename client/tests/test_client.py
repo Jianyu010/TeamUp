@@ -296,8 +296,9 @@ def write_config(directory, server_url, **overrides):
                 "socket_path": str(socket),
                 "enrollment_key": ENROLLMENT,
                 "bindings": BINDINGS,
-                # Tests never raise real desktop notices.
+                # Tests never raise real desktop notices or wake real Codex threads.
                 "notify_command": [],
+                "codex_command": [],
                 **overrides,
             }
         ),
@@ -1173,6 +1174,111 @@ def test_unsettled_submission_is_never_resent():
     assert [item["event_id"] for item in store.undecided("s")] == [2, 3]
 
 
+def test_codex_driver_runs_the_cli_by_argv_and_maps_its_exit(monkeypatch):
+    from teamup_client import _harness
+
+    thread = "00000000-0000-4000-8000-0000000000aa"
+    with tempfile.TemporaryDirectory() as directory:
+        log = Path(directory) / "argv.json"
+        script = (
+            "import json, sys, time\n"
+            "open(sys.argv[1], 'w').write(json.dumps(sys.argv[2:]))\n"
+            "time.sleep(float(sys.argv[2]))\n"
+            "sys.exit(int(sys.argv[3]))\n"
+        )
+
+        def submit(delay, code, address=thread, text="$(touch x) -- 'hi'"):
+            command = (sys.executable, "-c", script, str(log), delay, code)
+            return asyncio.run(_harness.submit_codex(command, address, None, text))
+
+        assert submit("0", "0") is True
+        assert json.loads(log.read_text()) == [
+            "0",
+            "0",
+            "queue",
+            "--disable",
+            "daemon_auto_start",
+            "--resume",
+            "--thread",
+            thread,
+            "--message",
+            "$(touch x) -- 'hi'",
+        ]
+        assert submit("0", "3") is False
+        log.unlink()
+        # A thread that is not a UUID could name a session or an option: no run.
+        assert submit("0", "0", address="--help") is False
+        assert submit("0", "0", address="my session") is False
+        assert not log.exists()
+        assert asyncio.run(_harness.submit_codex((), thread, None, "x")) is False
+        assert (
+            asyncio.run(
+                _harness.submit_codex((f"{directory}/missing",), thread, None, "x")
+            )
+            is False
+        )
+        # A CLI that does not exit in time is killed; the result is unknown.
+        monkeypatch.setattr(_harness, "CODEX_TIMEOUT", 0.5)
+        started = time.monotonic()
+        assert submit("30", "0") is None
+        assert time.monotonic() - started < 5
+
+
+def test_cancelled_codex_submission_kills_the_cli():
+    from teamup_client import _harness
+
+    thread = "00000000-0000-4000-8000-0000000000aa"
+    with tempfile.TemporaryDirectory() as directory:
+        pid_file = Path(directory) / "pid"
+        script = (
+            "import os, sys, time\n"
+            "open(sys.argv[1], 'w').write(str(os.getpid()))\n"
+            "time.sleep(30)\n"
+        )
+
+        async def run():
+            command = (sys.executable, "-c", script, str(pid_file))
+            task = asyncio.create_task(
+                _harness.submit_codex(command, thread, None, "x")
+            )
+            async with asyncio.timeout(5):
+                while not pid_file.exists() or not pid_file.read_text():
+                    await asyncio.sleep(0.02)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            return int(pid_file.read_text())
+
+        pid = asyncio.run(run())
+        # Killed and reaped: the process no longer exists.
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
+
+
+def test_codex_command_defaults_to_the_bundled_cli_only_on_macos(monkeypatch):
+    from teamup_client import _harness
+
+    monkeypatch.setattr(_harness.os, "access", lambda path, mode: True)
+    assert _harness.default_codex_command("darwin") == (str(_harness.BUNDLED_CODEX),)
+    assert _harness.default_codex_command("linux") == ()
+    monkeypatch.setattr(_harness.os, "access", lambda path, mode: False)
+    assert _harness.default_codex_command("darwin") == ()
+
+
+@pytest.mark.parametrize("command", ["codex", [1], ["co\0dex"], None])
+def test_codex_command_must_be_an_argv_list(command):
+    from teamup_client._config import ConfigError, read_config
+
+    with tempfile.TemporaryDirectory() as directory:
+        config, _ = write_config(Path(directory), "http://127.0.0.1:1")
+        assert read_config(config).codex_command == ()
+        config, _ = write_config(
+            Path(directory), "http://127.0.0.1:1", codex_command=command
+        )
+        with pytest.raises(ConfigError, match="codex_command"):
+            read_config(config)
+
+
 def test_dm_notices_never_enter_the_mention_delivery_pipeline():
     import sqlite3
 
@@ -1285,6 +1391,92 @@ def test_dm_notices_stay_out_of_desktop_wake_and_mention_counts():
                     assert await call(socket, key, "notifications", {"after": 5}) == {
                         "notifications": [mention_notice]
                     }
+
+    asyncio.run(scenario())
+
+
+def test_full_first_page_of_dm_notices_still_surfaces_a_later_mention():
+    from teamup_client.ipc import call
+
+    async def scenario():
+        with tempfile.TemporaryDirectory(dir="/tmp") as name:
+            async with gateway() as (upstream, server_url):
+                config, socket = write_config(Path(name), server_url)
+                token = BINDINGS[0]["member_token"]
+                key = BINDINGS[0]["binding_key"]
+                upstream.registered = {
+                    token: {"member_id": MEMBERS[0], "role_description": "Backend"},
+                    BINDINGS[1]["member_token"]: {
+                        "member_id": MEMBERS[1],
+                        "role_description": "Frontend",
+                    },
+                }
+                # Fifty old DM notices fill the default first page, and the
+                # fresh mention waits just past it in the shared event cursor.
+                dm_events = {
+                    event_id: {
+                        "event_id": event_id,
+                        "kind": "dm",
+                        "message": {
+                            "message_id": event_id,
+                            "dm_id": DM,
+                            "sender_member_id": MEMBERS[1],
+                            "client_message_id": f"dm-{event_id}",
+                            "text": "private dm text",
+                            "created_at": "2026-11-24T12:00:00+00:00",
+                        },
+                    }
+                    for event_id in range(1, 51)
+                }
+                dm_notices = [
+                    {
+                        "event_id": event_id,
+                        "kind": "dm",
+                        "dm_id": DM,
+                        "message_id": event_id,
+                        "sender_member_id": MEMBERS[1],
+                    }
+                    for event_id in range(1, 51)
+                ]
+                mention_notice = {
+                    "event_id": 51,
+                    "room_id": ROOM,
+                    "message_id": 51,
+                    "sender_member_id": MEMBERS[1],
+                }
+                upstream.events[token] = {**dm_events, 51: mention_event(51, 51)}
+                async with daemon(config, socket) as child:
+                    printed = [
+                        json.loads(await asyncio.wait_for(child.stderr.readline(), 5))
+                        for _ in range(51)
+                    ]
+                    assert printed == dm_notices + [mention_notice]
+                    await until(lambda: not upstream.events[token])
+                    # The default page holds only the fifty old DM rows, so
+                    # the mention is still unread behind a full first page.
+                    first = await call(socket, key, "notifications", {})
+                    assert first == {"notifications": dm_notices}
+                    assert await call(socket, key, "mention_status", {}) == {
+                        "unread_mentions": 1
+                    }
+                    # Paging with the last event_id of that page surfaces it.
+                    second = await call(socket, key, "notifications", {"after": 50})
+                    assert second == {"notifications": [mention_notice]}
+                    assert await call(socket, key, "mention_status", {}) == {
+                        "unread_mentions": 0
+                    }
+                    # A short page ends the walk, and every row stays readable
+                    # through the same stateless cursor afterwards.
+                    assert await call(socket, key, "notifications", {"after": 51}) == {
+                        "notifications": []
+                    }
+                    again = await call(socket, key, "notifications", {"after": 50})
+                    assert again == {"notifications": [mention_notice]}
+                    earlier = await call(socket, key, "notifications", {"after": 48})
+                    assert earlier == {
+                        "notifications": dm_notices[48:] + [mention_notice]
+                    }
+                assert await child.stderr.read() == b""
 
     asyncio.run(scenario())
 

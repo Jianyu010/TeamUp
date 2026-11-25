@@ -154,6 +154,8 @@ class GitHub:
         self.deadline: float | None = (
             None  # ``time.monotonic()`` after which no call is made
         )
+        # Reads shared within one judgement (``judging``); None outside one.
+        self.memo: dict[tuple[Any, ...], Any] | None = None
 
     def call(self, method: str, path: str, body: Any = None) -> Any:
         """One REST call; returns parsed JSON (None for an empty body)."""
@@ -397,6 +399,16 @@ class GitHub:
             after = info.get("endCursor")
         return threads  # a finding on an unread page stays unanswered: never a false success
 
+    def issue(self, number: int) -> dict[str, Any] | None:
+        """Issue or PR ``number`` as the issues API returns it (None if it does not exist)."""
+        try:
+            data = self.call("GET", f"/issues/{number}")
+        except urllib.error.HTTPError as exc:
+            if exc.code in (404, 410):
+                return None
+            raise
+        return data if isinstance(data, dict) else None
+
     def issue_comments(self, number: int, since: str) -> list[dict[str, Any]]:
         """Conversation comments since ``since``, for findings without inline threads."""
         return self.pages(
@@ -450,13 +462,32 @@ class GitHub:
         """Comment on the PR."""
         self.call("POST", f"/issues/{number}/comments", {"body": text})
 
+    def status_of(self, sha: str, context: str) -> tuple[str, str]:
+        """The latest (state, description) of commit status ``context`` on ``sha`` ("", "" if none)."""
+        data = _memo(
+            self,
+            ("status", sha),
+            lambda: self.call("GET", f"/commits/{sha}/status?per_page=100") or {},
+        )
+        for status in data.get("statuses") or []:
+            if status.get("context") == context:
+                return str(status.get("state") or ""), str(
+                    status.get("description") or ""
+                )
+        return "", ""
+
     def status(
-        self, sha: str, state: str, description: str, url: str | None = None
+        self,
+        sha: str,
+        state: str,
+        description: str,
+        url: str | None = None,
+        context: str = CONTEXT,
     ) -> None:
-        """Set the ``merge-gate`` commit status on ``sha``."""
+        """Set commit status ``context`` (default ``merge-gate``) on ``sha``."""
         body: dict[str, str] = {
             "state": state,
-            "context": CONTEXT,
+            "context": context,
             "description": description[:140],
         }
         if url:
@@ -638,6 +669,217 @@ def routing_problems(
     return problems
 
 
+# Layer-1 statuses: informational, never required. They say why a PR is held; ``merge-gate`` alone
+# decides. Posted by the gate wherever it judges a head, and only when their text changes.
+ROUTE_STATUS = "1 · PR Routing"
+PROTECTED_STATUS = "1 · Protected Changes"
+LIMITS_STATUS = "1 · Automation Limits"
+ISSUE_STATUS = "1 · Linked Issue"
+FINDINGS_STATUS = "3 · Review Findings"
+NO_LIMIT = 10**9
+
+
+def _short(problem: str) -> str:
+    """A routing problem without its prefix and its instruction to the owner."""
+    return problem.removeprefix(ROUTING).split(";")[0]
+
+
+def _memo(gh: Any, key: tuple[Any, ...], read: Callable[[], Any]) -> Any:
+    """``read()``, shared with the rest of the current judgement (``judging``)."""
+    memo = getattr(gh, "memo", None)
+    if memo is None:
+        return read()
+    if key not in memo:
+        memo[key] = read()
+    return memo[key]
+
+
+class judging:
+    """Within the block, ``gh``'s file, review and status reads are made once.
+
+    One judgement (``auto_problems`` and then ``layer1``) reads the same snapshot; a new
+    judgement, such as a re-judge after GitHub recomputed ``mergeable``, reads afresh.
+    """
+
+    def __init__(self, gh: Any) -> None:
+        self.gh = gh
+
+    def __enter__(self) -> None:
+        self.gh.memo = {}
+
+    def __exit__(self, *_: object) -> None:
+        self.gh.memo = None
+
+
+# ASCII only before `#`: `关联#3` counts; `x#3`, `a/b#3` (another repo) and `&#3;` do not.
+ISSUE_REF = r"(?<![A-Za-z0-9_/&])#([1-9][0-9]*)\b"
+NO_ISSUE = (
+    f"{ROUTING}the PR links no issue; reference one in its title or description "
+    "(`Closes #N`, `Refs #N`)"
+)
+
+
+def referenced_numbers(text: str, repo: str) -> list[int]:
+    """Issue or PR numbers ``text`` refers to in this repository (``#N`` or ``owner/repo#N``)."""
+    found = re.findall(ISSUE_REF, text or "")
+    found += re.findall(rf"(?i)\b{re.escape(repo)}#([1-9][0-9]*)\b", text or "")
+    return sorted({int(n) for n in found})
+
+
+def linked_issue(gh: Any, pull: dict[str, Any]) -> int | None:
+    """The first issue (not a PR) of this repository the PR's title or body refers to."""
+    number = int(pull["number"])
+    text = f"{pull.get('title') or ''}\n{pull.get('body') or ''}"
+    for n in referenced_numbers(text, gh.repo)[:20]:
+        if n == number:
+            continue
+        issue = _memo(gh, ("issue", n), lambda n=n: gh.issue(n))
+        if issue and "pull_request" not in issue:
+            return n
+    return None
+
+
+def _file_entries(gh: Any, number: int) -> list[dict[str, Any]]:
+    return _memo(gh, ("files", number), lambda: gh.file_entries(number))
+
+
+def _reviews(gh: Any, number: int) -> list[dict[str, Any]]:
+    return _memo(gh, ("reviews", number), lambda: gh.reviews(number))
+
+
+def _review_runs(gh: Any, sha: str) -> list[dict[str, Any]]:
+    return _memo(gh, ("review_runs", sha), lambda: gh.review_runs(sha))
+
+
+def _threads(gh: Any, number: int) -> list[dict[str, Any]]:
+    return _memo(gh, ("threads", number), lambda: gh.threads(number))
+
+
+def _issue_comments(gh: Any, number: int, since: str) -> list[dict[str, Any]]:
+    return _memo(
+        gh, ("comments", number, since), lambda: gh.issue_comments(number, since)
+    )
+
+
+def layer1_verdicts(
+    gh: GitHub, pull: dict[str, Any], ready: bool
+) -> dict[str, tuple[str, str]]:
+    """The three layer-1 statuses (context -> (state, description)) for the PR's head.
+
+    ``ready`` is True when a valid maintainer ``ready`` covers the head. Reads the changed files
+    as data; nothing of the PR runs.
+    """
+    number, sha = int(pull["number"]), pull["head"]["sha"]
+    policy = load_policy()
+    entries = _file_entries(gh, number)
+    limit = int(policy.get("max_changed_files") or 300)
+    problems = routing_problems(entries, {**policy, "max_changed_files": NO_LIMIT})
+    issue = linked_issue(gh, pull)
+    paths = sorted({str(e.get("filename") or "") for e in entries})
+    exempt = review_exempt(paths, policy)
+    labels = {label["name"] for label in pull.get("labels", [])}
+
+    limits: list[str] = []
+    if len(entries) >= limit:
+        limits.append(f"the PR changes {len(entries)} files or more (limit {limit})")
+    if not exempt and str(pull.get("author_association") or "") not in TRUSTED_AUTHORS:
+        limits.append("the author is not trusted, so no review is dispatched")
+    if (
+        not exempt
+        and not pull.get("draft")
+        and not _own_reviews(sha, _reviews(gh, number))
+    ):
+        runs = _review_runs(gh, sha)
+        latest = max(
+            runs,
+            key=lambda r: str(r.get("run_started_at") or r.get("created_at") or ""),
+            default=None,
+        )
+        if (
+            latest
+            and latest.get("status") == "completed"
+            and latest.get("conclusion") in ("success", "failure", "timed_out")
+            and int(latest.get("run_attempt") or 1) >= REVIEW_RERUNS
+        ):
+            limits.append(f"the review re-ran {REVIEW_RERUNS} times without a verdict")
+
+    if ready and (problems or limits or issue is None):
+        route = f"owner route: `{LABEL}` accepted"
+    elif ready:
+        route = "automatic route (`ready` set)"
+    elif pull.get("draft"):
+        route = "draft: layer 2 only"
+    elif HOLD_NAMES & labels:
+        route = f"held: the PR is on `{HOLD}`"
+    elif issue is None:
+        route = "waits for a linked issue (`Closes #N` or `Refs #N`)"
+    elif problems or limits:
+        reason = _short((problems + limits)[0])
+        route = f"waits for the owner's `{LABEL}`: {reason}"
+    else:
+        route = "automatic route"
+
+    if not problems:
+        guarded = ("success", "no protected path, deleted test or new skip/xfail")
+    elif ready:
+        guarded = ("success", f"passed by `{LABEL}`: {_short(problems[0])}")
+    else:
+        guarded = ("failure", _short(problems[0]))
+    if limits:
+        capped = ("failure", limits[0])
+    else:
+        capped = ("success", "within the automation limits")
+    if issue is not None:
+        linked = ("success", f"links #{issue}")
+    elif ready:
+        linked = ("success", f"no linked issue; passed by `{LABEL}`")
+    else:
+        linked = ("failure", "no linked issue: add `Closes #N` or `Refs #N`")
+    return {
+        ROUTE_STATUS: ("success", route),
+        PROTECTED_STATUS: guarded,
+        LIMITS_STATUS: capped,
+        ISSUE_STATUS: linked,
+        FINDINGS_STATUS: findings_verdict(gh, pull, ready, exempt),
+    }
+
+
+def findings_verdict(
+    gh: GitHub, pull: dict[str, Any], ready: bool, exempt: bool
+) -> tuple[str, str]:
+    """``3 · Review Findings``: whether the head's OpenCode findings are handled."""
+    if exempt:
+        return "success", "no review needed: only review-exempt paths changed"
+    sha, number = pull["head"]["sha"], int(pull["number"])
+    if not _own_reviews(sha, _reviews(gh, number)):
+        return "pending", "waiting for the OpenCode review of this commit"
+    problems = review_finding_problems(gh, pull, _reviews(gh, number))
+    if not problems:
+        return "success", "every finding is handled"
+    if ready:
+        return "success", f"passed by `{LABEL}`: {_short(problems[0])}"
+    return "failure", _short(problems[0])
+
+
+def layer1(gh: GitHub, pull: dict[str, Any], run_url: str, ready: bool = False) -> None:
+    """Post the layer-1 statuses on the PR's head that differ from what it already shows.
+
+    Informational: a failure here never stops the gate (only the deadline does).
+    """
+    if pull.get("state", "open") != "open":
+        return
+    sha = pull["head"]["sha"]
+    try:
+        for context, (state, description) in layer1_verdicts(gh, pull, ready).items():
+            description = description[:140]
+            if gh.status_of(sha, context) != (state, description):
+                gh.status(sha, state, description, run_url, context=context)
+    except BudgetSpent:
+        raise
+    except Exception as exc:  # noqa: BLE001 - these statuses only report
+        print(f"layer 1: statuses of {sha[:7]} not posted: {exc}")
+
+
 def _epoch(stamp: str) -> float | None:
     """Epoch seconds of a GitHub timestamp (``2026-10-20T04:09:46Z``), None if unreadable."""
     try:
@@ -771,17 +1013,30 @@ def review_problems(
     return []
 
 
-def _open_findings(body: str) -> set[str] | None:
-    """Open finding IDs in the reviewer's bounded, structured ledger.
+# The reviewer's severities as priorities: P0 and P1 must be fixed, P2 must be answered.
+PRIORITY = {"critical": "P0", "high": "P1", "medium": "P2"}
+# Closed for a P0/P1 only when the reviewer says so: a reply or a resolved thread is not a fix.
+MAJOR_HANDLED = frozenset({"fixed", "answered", "gone"})
+MINOR_HANDLED = MAJOR_HANDLED | {"dismissed"}
 
-    None means missing or invalid evidence when the review reported findings. A review with no
-    findings and no ledger has nothing open.
+
+def _priority(finding: dict[str, Any]) -> str:
+    """P0, P1 or P2; an unknown severity counts as P1, so it is never only answered."""
+    return PRIORITY.get(str(finding.get("severity") or "").strip().lower(), "P1")
+
+
+def _open_findings(body: str) -> dict[str, str] | None:
+    """Unhandled findings in the reviewer's bounded, structured ledger (ID -> P0/P1/P2).
+
+    A P0/P1 is handled only once the reviewer marks it fixed or answered (or its file left the
+    diff); a P2 also once its thread is resolved. None means missing or invalid evidence when the
+    review reported findings. A review with no findings and no ledger has nothing open.
     """
     markers = REVIEW_STATE.findall(body)
     if not markers:
         if "New findings:" in body or "Still open from earlier rounds" in body:
             return None
-        return set()
+        return {}
     try:
         encoded = markers[-1].replace("-", "+").replace("_", "/")
         encoded += "=" * (-len(encoded) % 4)
@@ -795,17 +1050,18 @@ def _open_findings(body: str) -> set[str] | None:
         findings = json.loads(raw)["findings"]
         if not isinstance(findings, list) or len(findings) > 200:
             return None
-        ids: set[str] = set()
+        ids: dict[str, str] = {}
         for finding in findings:
             if not isinstance(finding, dict):
                 return None
             fid = finding.get("id")
             if not isinstance(fid, str) or not re.fullmatch(r"F[1-9][0-9]*", fid):
                 return None
-            # An unknown status is outstanding, never silently closed; the author can still
-            # answer it, so a reviewer change cannot deadlock every PR.
-            if finding.get("status") not in {"fixed", "answered", "dismissed", "gone"}:
-                ids.add(fid)
+            # An unknown status is outstanding, never silently closed.
+            priority = _priority(finding)
+            handled = MINOR_HANDLED if priority == "P2" else MAJOR_HANDLED
+            if finding.get("status") not in handled:
+                ids[fid] = priority
         return ids
     except (ValueError, KeyError, TypeError, zlib.error, binascii.Error):
         return None
@@ -814,11 +1070,12 @@ def _open_findings(body: str) -> set[str] | None:
 def review_finding_problems(
     gh: GitHub, pull: dict[str, Any], reviews: list[dict[str, Any]]
 ) -> list[str]:
-    """Require an answer or a resolved thread for every finding the review left open.
+    """Require every P0/P1 finding fixed and every P2 finding answered (docs/ci "AI 审查发现").
 
-    The reviewer's ledger names findings F1, F2, … across rounds, so PR text cannot erase one.
-    A thread reply must come from the PR's author or the repository owner; a finding without a
-    thread is answered by a conversation comment starting ``F2: <fix or reason>``.
+    The reviewer's ledger names findings F1, F2, … across rounds, so PR text cannot erase one. A
+    P0/P1 closes only when a later review marks it fixed or answered. A P2 closes with a thread
+    reply from the PR's author or the repository owner, a resolved thread, or a conversation
+    comment starting ``F2: <fix or reason>``.
     """
     sha, number = pull["head"]["sha"], int(pull["number"])
     own = _own_reviews(sha, reviews)
@@ -832,17 +1089,30 @@ def review_finding_problems(
         ]
     if not outstanding:
         return []
+    order = lambda fid: int(fid[1:])
+    major = sorted((f for f, p in outstanding.items() if p != "P2"), key=order)
+    problems = []
+    if major:
+        listed = ", ".join(f"{fid} ({outstanding[fid]})" for fid in major[:8])
+        problems.append(
+            f"{len(major)} P0/P1 OpenCode finding(s) not fixed: {listed}; push the fix for the "
+            f"next review to confirm (a reply or resolved thread does not close one; the "
+            f"owner's `{LABEL}` does)"
+        )
+    minor = {f for f, p in outstanding.items() if p == "P2"}
+    if not minor:
+        return problems
     author = str((pull.get("user") or {}).get("login") or "").lower()
     actors = {author, gh.repo.split("/")[0].lower()} - {""}
     answered: set[str] = set()
-    for thread in gh.threads(number):
+    for thread in _threads(gh, number):
         if str(thread.get("author") or "").lower() not in {
             REVIEW_AUTHOR,
             "github-actions",
         }:
             continue
         match = REVIEW_FINDING.search(str(thread.get("body") or ""))
-        if not match or match.group(1) not in outstanding:
+        if not match or match.group(1) not in minor:
             continue
         if thread.get("resolved") or any(
             str(reply.get("author") or "").lower() in actors
@@ -850,9 +1120,9 @@ def review_finding_problems(
             for reply in thread.get("replies") or []
         ):
             answered.add(match.group(1))
-    if outstanding - answered:
+    if minor - answered:
         since = str(latest.get("submitted_at") or "")
-        for comment in gh.issue_comments(number, since):
+        for comment in _issue_comments(gh, number, since):
             if (
                 str((comment.get("user") or {}).get("login") or "").lower()
                 not in actors
@@ -862,15 +1132,13 @@ def review_finding_problems(
                 continue
             replies = FINDING_REPLY.findall(str(comment.get("body") or ""))
             answered.update(fid.upper() for fid in replies)
-    missing = sorted(outstanding - answered, key=lambda fid: int(fid[1:]))
-    if not missing:
-        return []
-    return [
-        (
-            f"{len(missing)} unanswered OpenCode finding(s): {', '.join(missing[:8])}; "
+    missing = sorted(minor - answered, key=order)
+    if missing:
+        problems.append(
+            f"{len(missing)} unanswered P2 OpenCode finding(s): {', '.join(missing[:8])}; "
             "reply with the fix or reason, or resolve each inline thread"
         )
-    ]
+    return problems
 
 
 def auto_problems(gh: GitHub, pull: dict[str, Any], required: list[str]) -> list[str]:
@@ -902,13 +1170,15 @@ def auto_problems(gh: GitHub, pull: dict[str, Any], required: list[str]) -> list
         return ["tier 1 ran before the PR's base changed; push to run it again"]
     problems = tier1_problems(runs, required)
     policy = load_policy()
-    entries = gh.file_entries(number)
+    entries = _file_entries(gh, number)
     problems += routing_problems(entries, policy)
+    if linked_issue(gh, pull) is None:
+        problems.append(NO_ISSUE)
     paths = sorted({str(e.get("filename") or "") for e in entries})
     if review_exempt(paths, policy):
         return problems
-    reviews = gh.reviews(number)
-    review_runs = gh.review_runs(sha) if _own_reviews(sha, reviews) else []
+    reviews = _reviews(gh, number)
+    review_runs = _review_runs(gh, sha) if _own_reviews(sha, reviews) else []
     review_issues = review_problems(sha, reviews, review_runs, gh.review_jobs, since)
     if not review_issues:
         review_issues = review_finding_problems(gh, pull, reviews)
@@ -950,9 +1220,11 @@ def _judge(
         and pull.get("mergeable") is None
         and pull.get("state", "open") == "open"
     )
-    problems = auto_problems(
-        gh, {**pull, "mergeable": True} if unknown else pull, required
-    )
+    with judging(gh):
+        problems = auto_problems(
+            gh, {**pull, "mergeable": True} if unknown else pull, required
+        )
+        layer1(gh, pull, run_url)
     routing = [p for p in problems if p.startswith(ROUTING)]
     rest = [p for p in problems if not p.startswith(ROUTING)]
     if rest in ([NO_REVIEW], [UNATTRIBUTED]):
@@ -1173,6 +1445,7 @@ def override(
             gh.status(sha, "pending", description, run_url)
     elif gh.gate_description(sha) != OVERRIDE_SUCCESS:
         gh.status(sha, "success", OVERRIDE_SUCCESS, run_url)
+    layer1(gh, pull, run_url, ready=not problems)
     return problems
 
 
@@ -1202,10 +1475,12 @@ def guard(gh: GitHub, event: dict[str, Any], required: list[str], run_url: str) 
     labels = {label["name"] for label in pr.get("labels", [])}
     if action == "opened":
         gh.status(sha, "pending", WAITING)
+        layer1(gh, pr, run_url)
         return False
     if action in ("synchronize", "reopened", "edited") and LABEL in labels:
         # The override vouched for one title, body, base and head; any change voids it.
         gh.status(sha, "pending", WAITING)
+        layer1(gh, pr, run_url)
         gh.remove_label(number)
         what = (
             "The title, body or base changed"
@@ -1236,9 +1511,14 @@ def guard(gh: GitHub, event: dict[str, Any], required: list[str], run_url: str) 
             ]
             if failed:
                 gh.status(sha, "failure", f"{failed[0]}{TIER1_FAILED}", run_url)
+        elif {"title", "body"} & set(event.get("changes") or {}):
+            # The linked issue is read from the title and body: judge the PR again, so a removed
+            # reference takes the gate (and `1 · Linked Issue`) back off green.
+            auto(gh, number, required, run_url)
         return False
     if action in ("synchronize", "reopened"):
         gh.status(sha, "pending", WAITING)
+        layer1(gh, pr, run_url)
         return False
     if action in ("converted_to_draft", "ready_for_review"):
         auto(gh, number, required, run_url)

@@ -413,6 +413,7 @@ function freshRoom(roomId) {
       denied: false,
       deniedText: "",
       loaded: false,
+      retryBefore: undefined,
     },
   };
 }
@@ -529,6 +530,7 @@ function renderRoomDetail() {
     els.rosterBody.append(row);
   }
   syncChatsGate();
+  renderTimeline();
 }
 
 function memberActivityText(entry) {
@@ -630,6 +632,7 @@ async function loadTimeline(epoch) {
   }
   if (result.status === 403) {
     pane.denied = true;
+    pane.rows = [];
     renderTimeline();
     return;
   }
@@ -670,6 +673,9 @@ function renderTimeline() {
   if (pane.error) {
     els.timelineStatus.className = "pane-status";
     els.timelineStatus.textContent = "";
+    for (const activity of pane.rows) {
+      list.append(timelineRow(room, activity));
+    }
     list.append(errorRow(pane.error, () => loadTimeline(state.epoch)));
     els.timelineMore.hidden = true;
     return;
@@ -695,7 +701,11 @@ function timelineRow(room, activity) {
   li.append(element("span", "row-time", formatTime(activity.at) || "unknown"));
   li.append(element("span", "row-agent", KIND_LABELS[activity.kind] || "activity"));
   const text = element("span", "row-text", activityDetail(activity));
-  if (activity.kind === "message" && room.transcriptAllowed) {
+  if (
+    activity.kind === "message" &&
+    activity.message_id &&
+    room.transcriptAllowed
+  ) {
     const jump = element("button", "linkish", "Open in Chats");
     jump.type = "button";
     jump.addEventListener("click", () => setTab("chats"));
@@ -754,12 +764,14 @@ async function loadChats(epoch, before) {
       "Transcript access is not granted for this room. The console makes no transcript requests.";
     pane.rows = [];
     pane.loaded = false;
+    pane.retryBefore = undefined;
     renderChats();
     return;
   }
   const payload = result.payload;
   if (result.status !== 200 || !payload || !Array.isArray(payload.messages)) {
     pane.error = failureText(result, "Loading messages");
+    pane.retryBefore = before;
     renderChats();
     return;
   }
@@ -769,6 +781,7 @@ async function loadChats(epoch, before) {
     pane.rows = payload.messages.concat(pane.rows);
   }
   pane.hasMore = payload.has_more === true;
+  pane.retryBefore = undefined;
   pane.loaded = true;
   renderChats();
 }
@@ -791,6 +804,9 @@ function renderChats() {
   if (pane.error) {
     els.chatsStatus.className = "pane-status";
     els.chatsStatus.textContent = "";
+    for (const message of pane.rows) {
+      els.chatsList.append(messageRow(message));
+    }
     els.chatsList.append(errorRow(pane.error, retryChats));
     els.chatsMore.hidden = true;
     return;
@@ -818,10 +834,7 @@ function retryChats() {
   if (!room) {
     return;
   }
-  room.chats.rows = [];
-  room.chats.loaded = false;
-  room.chats.error = "";
-  loadChats(state.epoch);
+  loadChats(state.epoch, room.chats.retryBefore);
 }
 
 function messageRow(message) {

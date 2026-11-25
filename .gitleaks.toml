@@ -1,0 +1,8 @@
+# gitleaks configuration (`gitleaks dir . --config .gitleaks.toml --redact --exit-code 1`, job
+# `2 · Secrets`). The default rule set applies; add an [[allowlists]] entry here, with a reason,
+# only for a verified false positive (for example a test fixture that looks like a key). The
+# first scan of the tree found none.
+title = "TeamUp"
+
+[extend]
+useDefault = true

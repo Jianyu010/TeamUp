@@ -39,10 +39,12 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 import urllib.error
 import urllib.parse
 from dataclasses import dataclass
+from typing import Any
 
 from scripts.ci.gate import (
     CONTEXT,
@@ -56,6 +58,33 @@ from scripts.ci.gate import (
 )
 
 BASE = "main"
+# How a PR names the freeze issue it repairs: a plain reference, never a closing keyword, which
+# would close the freeze issue on merge, before main is proven green (docs/ci/README.md, 冻结).
+_REF = r"\s*:?\s+(?:([\w.-]+/[\w.-]+))?#([1-9][0-9]*)\b"
+REPAIR_REF = re.compile(r"(?i)\b(?:refs?|references?|part\s+of|repairs?)" + _REF)
+CLOSING_REF = re.compile(r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)" + _REF)
+
+
+def _named(pattern: re.Pattern[str], text: str, repo: str) -> frozenset[int]:
+    return frozenset(
+        int(n)
+        for where, n in pattern.findall(text)
+        if not where or where.lower() == repo.lower()
+    )
+
+
+def freeze_refs(
+    pull: dict[str, Any], repo: str
+) -> tuple[frozenset[int], frozenset[int]]:
+    """(numbers the PR refers to with ``Refs``/``Part of``, numbers it would close on merge)."""
+    text = f"{pull.get('title') or ''}\n{pull.get('body') or ''}"
+    own = {int(pull.get("number") or 0)}
+    return (
+        _named(REPAIR_REF, text, repo) - own,
+        _named(CLOSING_REF, text, repo) - own,
+    )
+
+
 CONFLICT_MARK = "<!-- ci-merge:conflict sha={sha} -->"
 REFUSED_MARK = "<!-- ci-merge:refused-{action} sha={sha} -->"
 
@@ -73,6 +102,11 @@ class Pull:
     conflicts: bool = False
     override: bool = False
     """The green gate is the owner's ``ready`` (it still merges while auto-merge is frozen)."""
+    refs: frozenset[int] = frozenset()
+    """Numbers its title or body names with ``Refs``/``Part of``: a freeze issue among them is
+    one it repairs."""
+    closes: frozenset[int] = frozenset()
+    """Numbers it would close on merge (``Closes``/``Fixes``/``Resolves``)."""
 
     def blocked(self) -> str | None:
         """Why the merger leaves this PR alone, or ``None`` when it is eligible."""
@@ -93,13 +127,21 @@ class Step:
     number: int
     sha: str
     reason: str
+    repairs: tuple[int, ...] = ()
+    """The freeze issues a merge during a freeze relies on the PR still referring to."""
+    freezes: tuple[int, ...] = ()
+    """Every freeze issue open when a repair was planned; the merge must close none of them."""
 
 
-def plan(pulls: list[Pull], frozen: bool = False) -> list[Step]:
+def plan(
+    pulls: list[Pull], frozen: bool = False, freeze_issues: frozenset[int] = frozenset()
+) -> list[Step]:
     """The steps of one run, in order; see the module docstring.
 
     While ``frozen`` (an open ``ci/freeze`` issue: ``main`` or the nightly is red), only PRs the
-    owner passed with ``ready`` merge, so the fix or revert can land and nothing else piles on.
+    owner passed with ``ready`` merge, and green PRs that refer to an open freeze issue
+    (``freeze_issues``) with ``Refs``, and would close none: the fix or revert can land, and
+    nothing else piles on.
     """
     ordered = sorted(pulls, key=lambda p: p.number)
     steps = [
@@ -108,12 +150,17 @@ def plan(pulls: list[Pull], frozen: bool = False) -> list[Step]:
         if pull.conflicts and not pull.draft and not HOLD_NAMES & pull.labels
     ]
     for pull in ordered:
-        if (
-            pull.blocked() is None
-            and pull.gate == "success"
-            and (pull.override or not frozen)
-        ):
-            steps.append(Step("merge", pull.number, pull.sha, f"`{CONTEXT}` green"))
+        if pull.blocked() is not None or pull.gate != "success":
+            continue
+        reason = f"`{CONTEXT}` green"
+        repairs: tuple[int, ...] = ()
+        if frozen and not pull.override:
+            repairs = tuple(sorted(pull.refs & freeze_issues))
+            if not repairs or pull.closes & freeze_issues:
+                continue
+            reason += f"; repairs freeze #{repairs[0]}"
+        frozen_now = tuple(sorted(freeze_issues)) if repairs else ()
+        steps.append(Step("merge", pull.number, pull.sha, reason, repairs, frozen_now))
     return steps
 
 
@@ -129,13 +176,14 @@ def gate_description(gh: GitHub, sha: str) -> str:
     return str(newest.get("description") or "")
 
 
-def frozen(gh: GitHub, label: str) -> str:
-    """The title of an open freeze issue ("" when auto-merge is not frozen)."""
+def freezes(gh: GitHub, label: str) -> list[tuple[int, str]]:
+    """The open freeze issues as (number, title); empty when auto-merge is not frozen."""
     quoted = urllib.parse.quote(label, safe="")
-    for issue in gh.pages(f"/issues?state=open&labels={quoted}", limit=2):
-        if "pull_request" not in issue:
-            return str(issue.get("title") or label)
-    return ""
+    return [
+        (int(issue.get("number") or 0), str(issue.get("title") or label))
+        for issue in gh.pages(f"/issues?state=open&labels={quoted}", limit=2)
+        if "pull_request" not in issue
+    ]
 
 
 def gate_state(gh: GitHub, sha: str) -> str:
@@ -161,6 +209,8 @@ def still_mergeable(
     *,
     required: list[str] | None = None,
     checks: GitHub | None = None,
+    repairs: tuple[int, ...] = (),
+    freezes: tuple[int, ...] = (),
 ) -> str | None:
     """Why a PR planned for merging may no longer merge (``None`` when it still may).
 
@@ -168,7 +218,8 @@ def still_mergeable(
     PR's turn comes. Any of these since then stops that merge: a ``pr/hold`` or a draft conversion,
     a base other than ``main``, a new push, a gate that is no longer green, or a ``required`` tier-1
     check on the head that is running again or failed (the gate and the check runs are read with
-    ``checks``, as ``facts`` does).
+    ``checks``, as ``facts`` does). A merge during a freeze that rests on the PR referring to the
+    freeze issues ``repairs`` also stops once its title or body no longer does, or would close one.
     """
     checks = checks or gh
     pull = gh.call("GET", f"/pulls/{number}") or {}
@@ -183,6 +234,13 @@ def still_mergeable(
         return f"`{HOLD}` added"
     if (pull.get("head") or {}).get("sha", sha) != sha:
         return "pushed since"
+    if repairs:
+        named, closing = freeze_refs({**pull, "number": number}, gh.repo)
+        closed = sorted(closing & (set(repairs) | set(freezes)))
+        if closed:
+            return f"it would close freeze #{closed[0]} on merge"
+        if not named & set(repairs):
+            return f"it no longer refers to freeze #{repairs[0]}"
     gate = gate_state(checks, sha)
     if gate != "success":
         return f"`{CONTEXT}` is {gate} now"
@@ -206,6 +264,7 @@ def facts(gh: GitHub, required: list[str], checks: GitHub | None = None) -> list
     for item in gh.pages(f"/pulls?state=open&base={BASE}"):
         number, sha = int(item["number"]), str(item["head"]["sha"])
         labels = frozenset(label["name"] for label in item.get("labels", []))
+        refs, closes = freeze_refs(item, gh.repo)
         if item.get("draft") or HOLD_NAMES & labels:
             pulls.append(Pull(number, sha, labels, bool(item.get("draft")), "skipped"))
             continue
@@ -228,6 +287,8 @@ def facts(gh: GitHub, required: list[str], checks: GitHub | None = None) -> list
                 gate,
                 conflicts=pull.get("mergeable") is False,
                 override=gate_description(checks, sha) == OVERRIDE_SUCCESS,
+                refs=refs,
+                closes=closes,
             )
         )
     return pulls
@@ -266,7 +327,15 @@ def apply(
         n = step.number
         if step.action == "merge":
             try:
-                why = still_mergeable(gh, n, step.sha, required=required, checks=checks)
+                why = still_mergeable(
+                    gh,
+                    n,
+                    step.sha,
+                    required=required,
+                    checks=checks,
+                    repairs=step.repairs,
+                    freezes=step.freezes,
+                )
             except Exception as exc:  # noqa: BLE001 - fail closed for this PR, report below
                 # Fail closed for this candidate while processing later PRs. Record a
                 # nonzero job outcome below: repeated auth/API failures must never look
@@ -364,12 +433,21 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     reader = os.environ.get("CHECKS_TOKEN")
     checks = GitHub(gh.repo, reader) if reader else gh
-    freeze = frozen(checks, str(load_policy().get("freeze_label") or "ci/freeze"))
-    if freeze:
+    open_freezes = freezes(
+        checks, str(load_policy().get("freeze_label") or "ci/freeze")
+    )
+    if open_freezes:
+        titles = "; ".join(title for _n, title in open_freezes)
+        numbers = ", ".join(f"#{n}" for n, _t in open_freezes)
         print(
-            f"merge: auto-merge is frozen ({freeze}); only PRs the owner passed with `ready` merge"
+            f"merge: auto-merge is frozen ({titles}); only PRs the owner passed with `ready` "
+            f"or that refer to {numbers} merge"
         )
-    steps = plan(facts(gh, required, checks), frozen=bool(freeze))
+    steps = plan(
+        facts(gh, required, checks),
+        frozen=bool(open_freezes),
+        freeze_issues=frozenset(n for n, _t in open_freezes),
+    )
     for step in steps:
         print(
             f"{'would ' if args.dry_run else ''}{step.action} #{step.number} "

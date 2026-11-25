@@ -17,6 +17,7 @@
 - 可选 `ca_file`，自建 CA 的证书路径，用于 HTTPS 校验。
 - 可选 `installs`，按会话分配成员的 harness 安装列表。每项包含 `binding_key`（43 字符秘密）、`harness_instance_id`，以及可选的布尔值 `auto_approve`（默认 `false`）。见下文“会话接入”。
 - 可选 `notify_command`，桌面提醒命令的 argv 字符串数组。Client 在末尾追加标题、副标题和正文三个参数后直接执行，不经 shell。省略时 macOS 用 `osascript`，Linux 在有 `notify-send` 时使用它。空数组关闭桌面提醒。
+- 可选 `codex_command`，Codex CLI 的 argv 字符串数组，供 Codex Driver 使用，见下文“唤醒”。省略时，macOS 上若存在 ChatGPT 桌面版随附的 `/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex` 则用它，否则没有 Codex Driver。Client 不在 `PATH` 中查找 `codex`，因为其他安装渠道的版本可能缺少 `queue --resume`。空数组关闭 Codex Driver。
 
 `teamup-mcp` 从环境变量 `TEAMUP_SOCKET`、`TEAMUP_BINDING_KEY` 取得本机 socket 和当前会话的绑定秘密。由拥有者为每个 harness 会话配置各自的启动方式。只获准的本机用户能连接 socket。绑定秘密按对该本机用户的授权凭证保管，私有仓库或团队共享配置也不要提交。
 
@@ -43,7 +44,7 @@ MCP 初始化说明与随附的协作 skill 会引导 Agent 按参与范围选�
 | `teamup_open_dm` | `open_dm` | `member_id` | DM |
 | `teamup_send_dm` | `send_dm` | `dm_id`、`client_message_id`、`text` | DM Message |
 | `teamup_read_dm` | `read_dm` | `dm_id`、可选 `after`、`limit` | `{"messages":[DM Message]}`，可带到期元数据 |
-| `teamup_notifications` | `notifications` | 可选 `after`、`limit` | `{"notifications":[Notice]}`，按 `event_id` 递增。返回的 `mention` 通知记为已送达 |
+| `teamup_notifications` | `notifications` | 可选 `after`、`limit` | `{"notifications":[Notice]}`，按 `event_id` 递增的无状态共享游标分页。返回的 `mention` 通知记为已送达 |
 | 无，MCP 插件启动时调用 | `attach` | `address`、`token` | `{"attached":true}`，连接保持打开，见下文 |
 | 无，MCP 插件内部调用 | `mention_status` | `{}` | `{"unread_mentions":0}`，本绑定尚未送达的 `mention` 通知数 |
 
@@ -56,6 +57,8 @@ Member、Room、Room 概要、Board、Message 与分页要求见 [Client–Serve
 Client 为已登记的绑定监听 SSE，在初连、重连和收到提示时拉取未确认事件。拉取显式携带 `kinds=message,mention,dm`（旧 Server 忽略该参数，只返回既有事件）。普通事件确认后可通过房间历史读取。收到 `mention` 时，Client 按绑定和 `event_id` 持久登记通知，再确认 Server 事件；收到 `dm` 时按同等方式持久登记类型化通知（含 `dm_id`，无正文），新类型与既有行共存于同一本机存储，存量行原样保留，重启迁移后全部可读。持久化先于确认。首次登记时异步尝试向 daemon stderr 打印只有 Notice 字段的 JSON 对象。日志管道阻塞或队列满时，stderr 提醒可能延迟或省略，收件确认和本机通知查询继续运行。重复投递不会增加通知记录。进程在保存后崩溃时，通知仍可通过 MCP 或 CLI 读取。确认与保留到期竞争、Server 对已到期事件返回 404 时，Client 视为已清除并继续补收；其余确认失败照旧退避重试。Server 和 IPC 在后续增加撤权能力时须约定相应的本地可见性变更。
 
 `dm` 的类型化通知只进入本机通知存储与 `notifications` 查询：不进入桌面提醒、送达状态、`mention_status` 未读计数或任何唤醒投递，也不改变本机会话的批准与许可状态。`mention` 的既有四字段输出与下述送达状态只描述房间 @。
+
+`notifications` 的分页是无状态共享游标：已送达的 `mention` 行与没有送达状态的 `dm` 行都不因读取或送达而移除，共用同一按 `event_id` 递增的游标空间，因此缺省首页（50 条）可能全部被旧行占据。需要确认是否有新通知的调用方在拿到满页（条数等于 `limit`）时，把该页最后一条的 `event_id` 作为下一次调用的 `after` 继续取页，直到某页返回不足 `limit` 条；如此无需其他本地状态即可可靠读到新的 `mention` 与 `dm` 通知，早先的通知也随时可用同一游标回读。`after`、`limit` 的取值与校验沿用上表，不引入新的参数或排序。
 
 ### 桌面提醒与送达状态
 
@@ -81,7 +84,7 @@ MCP 插件在 `teamup_notifications` 以外的工具成功后调用 `mention_sta
 
 - **身份。** `binding_key` 是 `bindings` 中的会话秘密时，调用身份就是该绑定，`session` 只用于接入地址。`binding_key` 是 `installs` 中的安装秘密时，必须带 `session`，调用身份为 `(该安装的 harness_instance_id, session.id)`。`binding_key` 两者都不是时返回 `unauthorized`。
 - **批准。** 安装下未见过的会话首次调用 `attach` 以外的方法时，Client 为它生成成员 token 并记为待批准，返回 `session_pending`，同时发一条桌面提醒给主人。`auto_approve` 为真时直接批准。批准后的会话与静态绑定一样登记和使用，同一 `(harness_instance_id, session.id)` 始终对应同一成员。
-- **接入地址。** `attach` 仅限 `session.kind` 为 `claude-code`：`address` 为该会话的 Claude Code 消息 socket 绝对路径，`token` 为它的 `CLAUDE_CODE_MESSAGING_TOKEN`。Client 要求 socket 归当前系统用户所有，返回结果后保持连接，连接关闭即撤销该地址。同一会话后来的 `attach` 取代先前的。token 只存于内存，不写盘，不发往 Server。`session.kind` 为 `codex` 的调用让 Client 记下 `session.id` 作为 thread 地址，目前没有 Codex Driver，见下文。
+- **接入地址。** `attach` 仅限 `session.kind` 为 `claude-code`：`address` 为该会话的 Claude Code 消息 socket 绝对路径，`token` 为它的 `CLAUDE_CODE_MESSAGING_TOKEN`。Client 要求 socket 归当前系统用户所有，返回结果后保持连接，连接关闭即撤销该地址。同一会话后来的 `attach` 取代先前的。token 只存于内存，不写盘，不发往 Server。`session.kind` 为 `codex` 的调用让 Client 记下 `session.id` 作为 thread 地址。Codex 没有长连接，该地址保留到同一会话后来的调用取代它或 Client 重启，可否投递由 Codex Driver 在提交时确认。
 
 ## 唤醒
 
@@ -94,12 +97,14 @@ MCP 插件在 `teamup_notifications` 以外的工具成功后调用 `mention_sta
 | `not_allowed` | 没有匹配的唤醒许可，只有桌面提醒 |
 | `waiting` | 许可匹配但会话未接入，接入后按顺序继续 |
 | `submitting` | 正在提交。重启时遗留的记为 `unknown`，不重发 |
-| `submitted` | 已写入会话 socket。只说明到达 harness 边界，不证明 turn 已开始 |
-| `failed` | 资格复核失败、socket 不可用或该 `kind` 没有 Driver |
-| `unknown` | 提交中断，结果未知 |
+| `submitted` | 已写入会话 socket，或 Codex CLI 排队成功。只说明到达 harness 边界，不证明 turn 已开始 |
+| `failed` | 资格复核失败、socket 不可用、该 `kind` 没有 Driver，或 Codex CLI 无法启动或以非零状态退出 |
+| `unknown` | 提交中断或 Codex CLI 超时，结果未知 |
 | `skipped` | 升级前已有的通知 |
 
 提交前，Client 以该成员身份读取这条消息（`GET /v1/rooms/{room_id}/messages`）和当前公告，确认仍可访问。提交给会话的正文说明这是来自 TeamUp 的数据，列出发送者角色和 `member_id`、房间名和 `room_id`、`event_id`、消息正文和当前公告，并请 Agent 在原房间回复时使用 `client_message_id` `wake-<event_id>`，重复投递因此只产生一条回复。Claude Code 的提交为一条连接上依次写入 `{"type":"auth","token":...}` 与 `{"type":"user","message":{"role":"user","content":...}}` 两行。
+
+Codex 的提交执行 `codex_command` 并在末尾追加 `queue --disable daemon_auto_start --resume --thread <thread_id> --message <正文>`，直接执行，不经 shell，正文只经 argv 传入，标准输入和输出均不使用。`thread_id` 必须是 UUID，否则不执行并记为 `failed`，以免被 CLI 当作会话名称或选项。CLI 退出码为 0 记为 `submitted`（排队成功，`--resume` 失败只产生警告），非零或无法启动记为 `failed`。15 秒内未退出时 Client 终止该进程并记为 `unknown`，不重发。
 
 ## 主人命令
 
@@ -109,4 +114,4 @@ MCP 插件在 `teamup_notifications` 以外的工具成功后调用 `mention_sta
 - `teamup-client sessions --config PATH approve|reject HARNESS_INSTANCE_ID SESSION_ID` 批准或拒绝待批准会话。
 - `teamup-client wake --config PATH HARNESS_INSTANCE_ID SESSION_ID [--room ROOM_ID]... [--sender MEMBER_ID]...` 设置唤醒许可。省略 `--sender` 时允许这些房间中的任何发送者，不带 `--room` 时撤销。会话须为静态绑定或已批准。
 
-首轮未实现频率限制和 Codex Driver。远端聊天正文不会直接作为命令执行。
+首轮未实现频率限制。远端聊天正文不会直接作为命令执行。

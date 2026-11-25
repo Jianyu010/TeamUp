@@ -431,7 +431,7 @@ def _rfc3339_to_unix(value: str | None) -> int | None:
 
 
 def _activity_summary(row: sqlite3.Row | None, prefix: str = "") -> dict | None:
-    if row is None:
+    if row is None or row[f"{prefix}kind"] is None:
         return None
     return {
         "kind": row[f"{prefix}kind"],
@@ -965,6 +965,13 @@ class Collaboration:
         _validate_username(username)
         with self._transaction(write=True) as connection:
             owner_id = self._account(connection, username)["owner_id"]
+            if (
+                connection.execute(
+                    "SELECT 1 FROM rooms WHERE room_id = ?", (room_id,)
+                ).fetchone()
+                is None
+            ):
+                raise CollaborationError("not_found")
             connection.execute(
                 """
                 DELETE FROM operator_grants
@@ -1237,16 +1244,30 @@ class Collaboration:
                 """,
                 (room_id,),
             ).fetchall()
-            activity_rows = connection.execute(
+            room_last = connection.execute(
                 """
-                SELECT kind, at, message_id, actor_member_id FROM room_activity
-                WHERE room_id = ? ORDER BY activity_id
+                SELECT kind AS last_kind, at AS last_at, message_id AS last_message_id
+                FROM room_activity
+                WHERE room_id = ? ORDER BY activity_id DESC LIMIT 1
                 """,
                 (room_id,),
-            ).fetchall()
-            latest = {}
-            for row in activity_rows:
-                latest[row["actor_member_id"]] = row
+            ).fetchone()
+            latest = {
+                row["actor_member_id"]: row
+                for row in connection.execute(
+                    """
+                    SELECT a.actor_member_id, a.kind AS last_kind, a.at AS last_at,
+                        a.message_id AS last_message_id
+                    FROM room_activity AS a
+                    JOIN (
+                        SELECT actor_member_id, MAX(activity_id) AS activity_id
+                        FROM room_activity WHERE room_id = ?
+                        GROUP BY actor_member_id
+                    ) AS recent ON recent.activity_id = a.activity_id
+                    """,
+                    (room_id,),
+                )
+            }
             granted = connection.execute(
                 """
                 SELECT 1 FROM operator_grants
@@ -1259,9 +1280,7 @@ class Collaboration:
                     "room_id": room_id,
                     "name": room["name"],
                     "member_count": len(member_rows),
-                    "last_activity": (
-                        _activity_summary(activity_rows[-1]) if activity_rows else None
-                    ),
+                    "last_activity": _activity_summary(room_last, "last_"),
                 },
                 "members": [
                     {
@@ -1273,7 +1292,7 @@ class Collaboration:
                             else "awaiting"
                         ),
                         "last_activity": _activity_summary(
-                            latest.get(row["member_id"])
+                            latest.get(row["member_id"]), "last_"
                         ),
                         "harness_state": "unknown",
                     }
@@ -1305,10 +1324,11 @@ class Collaboration:
         with self._transaction(write=True) as connection:
             owner_id = self._console_operator(connection, token)
             self._require_grant(connection, owner_id, "console_read")
-            self._require_grant(connection, owner_id, "transcript_read", room_id)
             self._console_room(connection, room_id)
-            boundary = "" if before is None else "AND m.message_id < ?"
-            parameters = (room_id,) if before is None else (room_id, before)
+            self._require_grant(connection, owner_id, "transcript_read", room_id)
+            cursor = None if before is None or before > _SQLITE_MAX_ID else before
+            boundary = "" if cursor is None else "AND m.message_id < ?"
+            parameters = (room_id,) if cursor is None else (room_id, cursor)
             rows = connection.execute(
                 f"""
                 SELECT {_MESSAGE}, mem.role_description AS sender_role_description
@@ -1327,7 +1347,7 @@ class Collaboration:
                     owner_id, room_id, action, at, page_before, page_limit
                 ) VALUES (?, ?, 'transcript_read', ?, ?, ?)
                 """,
-                (owner_id, room_id, _rfc3339_utc_now(), before, limit),
+                (owner_id, room_id, _rfc3339_utc_now(), cursor, limit),
             )
             return {
                 "messages": [
@@ -1856,7 +1876,11 @@ class Collaboration:
                 WHERE e.member_id = ? AND e.event_id > ? AND e.acknowledged = 0
                     AND e.kind IN ({", ".join("?" * len(kind_filter))})
                     AND (
-                        m.dm_id IS NOT NULL
+                        EXISTS (
+                            SELECT 1 FROM dms AS d
+                            WHERE d.dm_id = m.dm_id
+                                AND e.member_id IN (d.member_low, d.member_high)
+                        )
                         OR EXISTS (
                             SELECT 1 FROM room_members AS rm
                             JOIN rooms AS r ON r.room_id = rm.room_id
@@ -1903,6 +1927,8 @@ class Collaboration:
             if event["dm_id"] is None:
                 room = _room_member(connection, event["room_id"], member_id)
                 _require_current_board(room)
+            else:
+                _dm_participant(connection, event["dm_id"], member_id)
             if event["acknowledged"]:
                 return
             connection.execute(

@@ -29,10 +29,7 @@ on:
         type: boolean
         default: false
 
-permissions:
-  contents: read
-  issues: read
-  pull-requests: write
+permissions: {}
 
 concurrency:
   group: opencode-review-${{ github.repository }}-${{ inputs.pr }}
@@ -44,6 +41,10 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: [self-hosted, ai-review]
     timeout-minutes: 35
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: write
     steps:
       - name: Review with OpenCode
         env:

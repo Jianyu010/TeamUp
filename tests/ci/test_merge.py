@@ -373,10 +373,20 @@ def test_merge_recheck_failure_skips_only_affected_pr(
         *,
         required: list[str] | None = None,
         checks: GitHub | None = None,
+        repairs: tuple[int, ...] = (),
+        freezes: tuple[int, ...] = (),
     ) -> str | None:
         if number == 5:
             raise error
-        return original(client, number, sha, required=None, checks=checks)
+        return original(
+            client,
+            number,
+            sha,
+            required=None,
+            checks=checks,
+            repairs=repairs,
+            freezes=freezes,
+        )
 
     monkeypatch.setattr(ci_merge, "still_mergeable", recheck)
     steps = [Step("merge", n, _sha(n), "green") for n in (5, 6)]
@@ -450,6 +460,74 @@ def test_a_freeze_lets_only_the_owners_ready_merge() -> None:
     owner = Pull(6, "b" * 40, frozenset(), False, "success", override=True)
     assert [step.number for step in plan([auto, owner])] == [5, 6]
     assert [step.number for step in plan([auto, owner], frozen=True)] == [6]
+
+
+def test_freeze_refs_count_refs_but_not_closing_keywords() -> None:
+    pull = {
+        "number": 9,
+        "title": "Fix the snapshot (refs #40)",
+        "body": "Part of o/r#41. Fixes #42, closes: #43. See other/x#44, mentions #45, #9.",
+    }
+    assert ci_merge.freeze_refs(pull, "o/r") == (
+        frozenset({40, 41}),
+        frozenset({42, 43}),
+    )
+
+
+def test_a_pr_that_would_close_the_freeze_issue_does_not_merge_as_a_repair() -> None:
+    closing = Pull(
+        5,
+        "a" * 40,
+        frozenset(),
+        False,
+        "success",
+        refs=frozenset({40}),
+        closes=frozenset({40}),
+    )
+    assert plan([closing], frozen=True, freeze_issues=frozenset({40})) == []
+
+
+def test_a_repair_is_re_checked_against_the_current_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for body, why in (
+        ("Refs #40", None),
+        ("No reference any more", "it no longer refers to freeze #40"),
+        ("Refs #40, fixes #40", "it would close freeze #40 on merge"),
+        ("Refs #40, closes #41", "it would close freeze #41 on merge"),
+        ("Refs #40, closes #3", None),
+    ):
+        gh = FakeGitHub([{**_api_pull(5), "body": body}])
+        got = ci_merge.still_mergeable(gh, 5, _sha(5), repairs=(40,), freezes=(40, 41))
+        assert got == why, body
+
+
+def test_a_freeze_also_lets_a_green_pr_that_refers_to_it_merge() -> None:
+    fix = Pull(5, "a" * 40, frozenset(), False, "success", refs=frozenset({40}))
+    other = Pull(6, "b" * 40, frozenset(), False, "success", refs=frozenset({3}))
+    red = Pull(7, "c" * 40, frozenset(), False, "pending", refs=frozenset({40}))
+    steps = plan([fix, other, red], frozen=True, freeze_issues=frozenset({40}))
+    assert [(s.number, s.reason, s.repairs, s.freezes) for s in steps] == [
+        (5, "`merge-gate` green; repairs freeze #40", (40,), (40,))
+    ]
+    # Not frozen: the reference changes nothing.
+    assert [s.number for s in plan([fix, other, red])] == [5, 6]
+
+
+def test_the_merger_merges_a_pr_that_refers_to_the_freeze_issue(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    gh = FakeGitHub([{**_api_pull(5), "body": "Refs #40"}, _api_pull(6)])
+    gh.freeze = [{"title": "CI freeze: main is red", "number": 40}]
+    monkeypatch.setattr(ci_merge, "GitHub", lambda repo, token: gh)
+    monkeypatch.setattr(ci_merge, "hold_label_exists", lambda _gh: True)
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    monkeypatch.setenv("GITHUB_TOKEN", "t")
+    assert ci_merge.main(["--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert "or that refer to #40 merge" in out
+    assert "would merge #5" in out and "repairs freeze #40" in out
+    assert "would merge #6" not in out
 
 
 def test_the_merger_reads_the_freeze_issue(

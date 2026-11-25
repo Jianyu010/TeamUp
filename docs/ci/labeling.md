@@ -115,7 +115,7 @@ PR 的标签描述状态，`type/*` 从关联的 issue 继承。
 | --- | --- | --- |
 | `ready` | 仅维护者 | 维护者审过：放行第 1 层的拦截，放行 AI 审查，或在冻结期间放行合入。推送新提交后自动移除 |
 | `pr/hold` | 仅人 | 门禁绿了也不合入 |
-| `pr/no-issue` | 自动化 | 正文没有关联 issue（`Closes #N`）。目前只作提示，不阻止合入 |
+| `pr/no-issue` | 自动化 | 标题和正文都没有引用本仓库的 issue（`#N`、`Closes #N`、`Refs #N` 等，引用 PR 不算）。门禁同时拦截合入（`1 · Linked Issue`），owner 加 `ready` 可放行 |
 | `gate/<检查>-failed` | 自动化 | 该检查失败；重新通过后移除 |
 | `type/*`（镜像） | 自动化 | 从关联 issue 复制，用于发布说明分组 |
 
@@ -165,6 +165,13 @@ PR 的标签描述状态，`type/*` 从关联的 issue 继承。
 | `gate/linux-ut-failed` | `3 · Linux UT` |
 | `gate/linux-st-failed` | `3 · Linux ST` |
 | `gate/ai-review-failed` | `3 · AI Review` 运行失败 |
+| `gate/type-check-failed` | `2 · Type Check`（mypy） |
+| `gate/secrets-failed` | `2 · Secrets`（gitleaks） |
+| `gate/workflow-lint-failed` | `2 · Workflow Lint`（actionlint、zizmor） |
+| `gate/dependencies-failed` | `2 · Dependencies`（锁文件一致性） |
+| `gate/contract-failed` | `3 · Contract` |
+| `gate/install-failed` | `3 · Install` |
+| `gate/linux-st-cross-failed` | `3 · Linux ST · 跨组件` |
 
 ## 清单
 
@@ -226,3 +233,10 @@ PR 的标签描述状态，`type/*` 从关联的 issue 继承。
 | gate/linux-ut-failed | E99695 | Linux 单元测试失败 |
 | gate/linux-st-failed | E99695 | Linux 系统测试失败 |
 | gate/ai-review-failed | E99695 | AI 审查失败 |
+| gate/type-check-failed | E99695 | 类型检查失败 |
+| gate/secrets-failed | E99695 | 密钥扫描发现问题 |
+| gate/workflow-lint-failed | E99695 | 工作流检查失败 |
+| gate/dependencies-failed | E99695 | 锁文件与依赖声明不一致 |
+| gate/contract-failed | E99695 | 契约测试失败 |
+| gate/install-failed | E99695 | 安装冒烟测试失败 |
+| gate/linux-st-cross-failed | E99695 | 跨组件系统测试失败 |

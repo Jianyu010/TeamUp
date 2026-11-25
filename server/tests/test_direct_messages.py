@@ -306,6 +306,61 @@ def test_dm_privacy_is_indistinguishable_and_leaks_no_existence(tmp_path):
         assert {record["member_id"] for record in profiles} >= {sender, target}
 
 
+def test_inbox_rechecks_dm_membership_for_misaddressed_events(tmp_path):
+    db_path = tmp_path / "team.sqlite3"
+    with api(db_path) as client:
+        enroll_team(client)
+        target = member(client, "target")
+        reader = member(client, "reader")
+        dm_id = open_dm(client, "sender", target).json()["dm_id"]
+
+        # The valid recipient claims and acknowledges the event; repeat acks stay
+        # idempotent and the canonical history read keeps working for participants.
+        private = dm_send(client, "sender", dm_id, "dm-1", "a private line").json()
+        claimed = dm_events(client, "target", kinds="dm")
+        assert [event["message"] for event in claimed] == [private]
+        event_id = claimed[0]["event_id"]
+        assert post(client, "target", f"/inbox/{event_id}/ack").json() == {
+            "event_id": event_id
+        }
+        assert post(client, "target", f"/inbox/{event_id}/ack").json() == {
+            "event_id": event_id
+        }
+
+        # A mismatched historical event: the persisted row claims an outsider as
+        # the recipient of the participants' DM message.
+        second = dm_send(client, "sender", dm_id, "dm-2", "second private line").json()
+        misaddressed = dm_events(client, "target", kinds="dm")[0]["event_id"]
+        with closing(sqlite3.connect(db_path)) as connection, connection:
+            connection.execute(
+                "UPDATE inbox_events SET member_id = ? WHERE event_id = ?",
+                (reader, misaddressed),
+            )
+
+        for kinds in ("dm", "message,mention,dm"):
+            assert dm_events(client, "reader", kinds=kinds) == []
+        assert get(client, "reader", "/inbox").json() == {"events": []}
+
+        blocked = post(client, "reader", f"/inbox/{misaddressed}/ack")
+        missing = post(client, "reader", f"/inbox/{misaddressed + 1000}/ack")
+        error(blocked, 404, "not_found")
+        error(missing, 404, "not_found")
+        assert blocked.json() == missing.json()
+
+        with closing(sqlite3.connect(db_path)) as connection:
+            state = connection.execute(
+                "SELECT member_id, acknowledged FROM inbox_events WHERE event_id = ?",
+                (misaddressed,),
+            ).fetchone()
+        assert tuple(state) == (reader, 0)
+        assert dm_read(client, "target", dm_id).json() == {
+            "messages": [private, second]
+        }
+        assert dm_read(client, "sender", dm_id).json() == {
+            "messages": [private, second]
+        }
+
+
 def test_authorized_room_search_never_returns_dm_phrases(tmp_path):
     db_path = tmp_path / "team.sqlite3"
     with api(db_path) as client:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import urllib.error
 from typing import Any
 
 import pytest
@@ -50,10 +51,13 @@ class FakeGitHub(gate.GitHub):
             }
         if method == "GET" and path.startswith("/issues/") and path[8:].isdigit():
             number = int(path[8:])
-            return {
+            found: dict[str, Any] = {
                 "number": number,
                 "labels": [{"name": n} for n in self.linked.get(number, [])],
             }
+            if number in getattr(self, "prs", ()):
+                found["pull_request"] = {}
+            return found
         if (
             method == "POST"
             and path.endswith("/labels")
@@ -260,9 +264,45 @@ def test_sync_creates_missing_fixes_drift_and_deletes_nothing() -> None:
 # ---- pull requests ------------------------------------------------------------------------
 
 
-def test_linked_issues() -> None:
-    body = "Closes #12, fixes: #3 and resolves #12.\nSee #40 (not a closing keyword)."
-    assert labels.linked_issues(body) == [3, 12]
+def test_referenced_numbers() -> None:
+    body = "Closes #12, refs #3; part of o/r#40 and other/x#9.\nSee &#8; or a/b#7."
+    assert labels.referenced_numbers(body, "o/r") == [3, 12, 40]
+
+
+def test_label_pr_skips_a_reference_whose_lookup_fails() -> None:
+    class Flaky(FakeGitHub):
+        def call(self, method: str, path: str, body: Any = None) -> Any:
+            if method == "GET" and path == "/issues/11":
+                raise urllib.error.URLError("timed out")
+            return super().call(method, path, body)
+
+    gh = Flaky(linked={12: ["type/bug"]})
+    pull = {
+        "number": 9,
+        "head": {"sha": "a" * 40},
+        "labels": [],
+        "body": "Refs #11, #12",
+    }
+    labels.label_pr(gh, pull)
+    assert "type/bug" in gh.names and labels.NO_ISSUE not in gh.names
+    # The only reference is unreadable: `pr/no-issue` is neither added nor removed this run.
+    for before in ([], [labels.NO_ISSUE]):
+        gh = Flaky()
+        gh.names = list(before)
+        names = [{"name": n} for n in before]
+        labels.label_pr(gh, {**pull, "labels": names, "body": "Refs #11"})
+        assert (labels.NO_ISSUE in gh.names) == bool(before)
+
+
+def test_label_pr_counts_any_issue_reference_but_not_a_pr() -> None:
+    gh = FakeGitHub(linked={12: ["type/bug"]})
+    pull = {"number": 9, "head": {"sha": "a" * 40}, "labels": [], "title": "x (#12)"}
+    labels.label_pr(gh, pull)
+    assert labels.NO_ISSUE not in gh.names and "type/bug" in gh.names
+    gh = FakeGitHub(linked={12: []})
+    gh.prs = {12}
+    labels.label_pr(gh, {**pull, "labels": []})
+    assert labels.NO_ISSUE in gh.names
 
 
 def test_gate_failures_follow_required_checks_and_the_latest_review() -> None:

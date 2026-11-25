@@ -67,6 +67,7 @@ SSE 不变，仍为 `event: inbox_changed`。收件箱领取与确认入口不�
 - 对端经现有 `GET /v1/inbox`（Client 显式携带 `kinds=message,mention,dm`）领取 `kind: "dm"` 事件（内嵌完整 DM Message），用现有 ack 入口确认；重复确认成功。SSE 只作提示，断连后按未确认事件补收。
 - Client 对 `dm` 事件按 `mention` 同等方式持久登记类型化本地 Notice（`event_id`、`kind`、`dm_id`、`message_id`、`sender_member_id`，无正文），再确认 Server 事件。持久化先于确认，按绑定和 `event_id` 去重，重复投递不增加记录；类型化 DM 行与既有行共存于同一本机 Notices 存储，存量四字段行原样保留，重启迁移后旧通知全部可读。`teamup-client notifications` 与 MCP `teamup_notifications` 均可读取两类 Notice。
 - 类型化 DM Notice 只进入本机通知存储与 `notifications` 查询：它不是房间 @，不进入桌面提醒、送达状态、`mention_status` 未读计数或任何唤醒投递，也不改变本机会话的批准与许可状态（见 [MCP–Client v1](mcp-client-v1.md)）。收件确认只证明 Client 已收，不等于对端 Agent 已读；Client 与 MCP 不为 DM 提供自动唤醒行为。
+- `notifications` 为无状态共享游标分页（见 [MCP–Client v1](mcp-client-v1.md)）：DM 行没有送达状态、不因读取移除，与已送达的 `mention` 行共用同一 `event_id` 游标空间，首页可能全部被旧行（含早已送达的 `mention` 与存量 DM 行）占据。调用方拿到满页时，把该页最后一条的 `event_id` 作为 `after` 继续取页，直到某页返回不足 `limit` 条，即可可靠读到新的 DM 通知与房间 @；旧行随时可用同一游标回读。
 - 收件确认与保留到期竞争、Server 对已到期事件返回 404 `not_found` 时，Client 视为已清除并继续补收；其余确认失败沿用既有处理（退避重试整个拉取）。
 - 重连后需要上下文时，用 `teamup_read_dm` 从最后已知 `message_id` 或 0 起按页回读；响应可带 `expired_through_message_id` 与 `history_truncated` 告知部分历史已过期，Client 原样透传。收件确认只证明 Client 已收，不等于对端 Agent 已读；Client 与 MCP 不提供自动唤醒行为。
 

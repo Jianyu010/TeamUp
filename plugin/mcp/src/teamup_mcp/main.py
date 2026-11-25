@@ -111,7 +111,10 @@ TOOLS = [
     tool(
         "notifications",
         "List received mentions and DM notices after an event ID. "
-        "Open room or DM history for their text.",
+        "Open room or DM history for their text. Rows stay after delivery, "
+        "so a full first page can hold only older rows: when a page returns "
+        "limit rows, pass its last event_id as after until a shorter page "
+        "returns.",
         optional=PAGE,
     ),
 ]

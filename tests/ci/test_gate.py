@@ -118,8 +118,11 @@ class FakeGitHub(GitHub):
             "base": {"sha": OLD, "ref": "main"},
             "user": {"login": "dev"},
             "author_association": "OWNER",
+            "title": "A change",
+            "body": "Refs #3",
             **(pull or {}),
         }
+        self.issue_list: dict[int, dict[str, Any]] = {3: {"number": 3}}
         self.paths = ["src/x/src/lib.rs"]
         self.review_list: list[dict[str, Any]] = [dict(REVIEW)]
         self.review_run_list: list[dict[str, Any]] = [dict(REVIEW_RUN)]
@@ -139,6 +142,8 @@ class FakeGitHub(GitHub):
         self.workflow_run_fail = False
         self.heads = [7]
         self.posted: list[tuple[str, str, str]] = []
+        self.layer1: dict[str, tuple[str, str]] = {}
+        self.layer1_posts: list[tuple[str, str]] = []
         self.base_changed = ""
         self.gates: dict[str, str] = {}
         self.waits: list[bool] = []
@@ -150,6 +155,10 @@ class FakeGitHub(GitHub):
 
     def call(self, method: str, path: str, body: Any = None) -> Any:
         if path.startswith("/statuses/"):
+            if body["context"] != "merge-gate":  # layer-1 reports are kept apart
+                self.layer1[body["context"]] = (body["state"], body["description"])
+                self.layer1_posts.append((body["context"], body["target_url"]))
+                return None
             self.posted.append(
                 (path.removeprefix("/statuses/"), body["state"], body["description"])
             )
@@ -230,6 +239,12 @@ class FakeGitHub(GitHub):
 
     def gate_description(self, sha: str) -> str:
         return self.gates.get(sha, "")
+
+    def status_of(self, sha: str, context: str) -> tuple[str, str]:
+        return self.layer1.get(context, ("", ""))
+
+    def issue(self, number: int) -> dict[str, Any] | None:
+        return self.issue_list.get(number)
 
 
 def _event(
@@ -327,14 +342,22 @@ def test_a_base_change_does_not_hide_a_failed_gate() -> None:
     assert gh.posted == []
 
 
-def test_a_title_or_body_edit_leaves_the_automatic_evidence_valid() -> None:
+def test_a_title_or_body_edit_is_judged_again_for_the_linked_issue() -> None:
     gh = FakeGitHub()
     gh.gates[SHA] = AUTO_SUCCESS
+    edit = _event("edited", changes={"title": {"from": "old"}})
+    assert guard(gh, edit, REQUIRED, "run") is False
+    assert gh.posted == []  # still links #3: the same green verdict is not posted again
+    gh.pr["body"] = "Rewritten without a reference."
     assert (
-        guard(gh, _event("edited", changes={"title": {"from": "old"}}), REQUIRED, "run")
+        guard(
+            gh, _event("edited", changes={"body": {"from": "Refs #3"}}), REQUIRED, "run"
+        )
         is False
     )
-    assert gh.posted == []
+    assert gh.posted[-1][1] == "pending"
+    assert "the PR links no issue" in gh.posted[-1][2]
+    assert gh.layer1[ISSUE][0] == "failure"
 
 
 def test_hold_label_changes_hand_back_to_auto(autos: list[int]) -> None:
@@ -1237,9 +1260,17 @@ def test_no_api_call_is_made_after_the_deadline() -> None:
 # --- the AI review (ADR-0005) ----------------------------------------------------------------
 
 
-def _ledger(*findings: tuple[str, str]) -> str:
-    """A reviewer ledger marker holding ``findings`` as (id, status)."""
-    state = {"findings": [{"id": fid, "status": status} for fid, status in findings]}
+def _ledger(*findings: tuple[str, ...]) -> str:
+    """A reviewer ledger marker holding ``findings`` as (id, status[, severity]).
+
+    The severity defaults to ``medium`` (P2).
+    """
+    state = {
+        "findings": [
+            {"id": f[0], "status": f[1], "severity": f[2] if len(f) > 2 else "medium"}
+            for f in findings
+        ]
+    }
     packed = base64.urlsafe_b64encode(
         zlib.compress(json.dumps(state).encode())
     ).decode()
@@ -1515,7 +1546,7 @@ def test_open_findings_need_an_answer() -> None:
         gh.comment_list = comments
         return gh
 
-    assert "1 unanswered OpenCode finding(s): F1" in _reason(gh_with([]))
+    assert "1 unanswered P2 OpenCode finding(s): F1" in _reason(gh_with([]))
     by_author = {
         "user": {"login": "dev"},
         "created_at": "2026-10-20T04:10:00Z",
@@ -1646,3 +1677,290 @@ def test_the_sweep_leaves_a_ready_pr_alone() -> None:
     gh.gates[SHA] = AUTO_SUCCESS
     sweep(gh, REQUIRED, "run")
     assert gh.posted == []
+
+
+# --- layer-1 statuses (informational; merge-gate alone decides) --------------------------------
+
+ROUTE, PROTECTED, LIMITS, ISSUE, FINDINGS = (
+    "1 · PR Routing",
+    "1 · Protected Changes",
+    "1 · Automation Limits",
+    "1 · Linked Issue",
+    "3 · Review Findings",
+)
+
+
+def _l1(gh: FakeGitHub) -> dict[str, tuple[str, str]]:
+    auto(gh, 7, REQUIRED, "run")
+    return gh.layer1
+
+
+def test_a_plain_pr_reports_the_automatic_route() -> None:
+    gh = FakeGitHub()
+    assert _l1(gh) == {
+        ROUTE: ("success", "automatic route"),
+        PROTECTED: ("success", "no protected path, deleted test or new skip/xfail"),
+        LIMITS: ("success", "within the automation limits"),
+        ISSUE: ("success", "links #3"),
+        FINDINGS: ("success", "every finding is handled"),
+    }
+    assert {u for _c, u in gh.layer1_posts} == {"run"}
+
+
+def test_one_judgement_reads_the_files_and_reviews_once() -> None:
+    class Counting(FakeGitHub):
+        def __init__(self) -> None:
+            super().__init__()
+            self.counts: dict[str, int] = {}
+
+        def _count(self, name: str) -> None:
+            self.counts[name] = self.counts.get(name, 0) + 1
+
+        def file_entries(self, number: int) -> list[dict[str, Any]]:
+            self._count("files")
+            return super().file_entries(number)
+
+        def reviews(self, number: int) -> list[dict[str, Any]]:
+            self._count("reviews")
+            return super().reviews(number)
+
+    gh = Counting()
+    gh.review_list = []  # no review yet: layer 1 also looks at the review runs
+    _l1(gh)
+    assert gh.counts == {"files": 1, "reviews": 1}
+    assert gh.memo is None  # the next judgement reads afresh
+    auto(gh, 7, REQUIRED, "run")
+    assert gh.counts == {"files": 2, "reviews": 2}
+
+
+def test_a_protected_path_fails_the_status_and_names_the_path() -> None:
+    gh = FakeGitHub()
+    gh.paths = [".github/ci/policy.json", "src/a.py"]
+    got = _l1(gh)
+    assert got[PROTECTED][0] == "failure"
+    assert ".github/ci/policy.json" in got[PROTECTED][1]
+    assert got[ROUTE][1].startswith("waits for the owner's `ready`: protected path")
+    assert got[LIMITS][0] == "success"
+    assert all(len(d) <= 140 for _s, d in got.values())
+
+
+def test_a_deleted_test_and_an_added_skip_fail_the_status() -> None:
+    gh = FakeGitHub()
+    gh.entries = [{"filename": "tests/ci/test_x.py", "status": "removed"}]
+    assert _l1(gh)[PROTECTED] == ("failure", "deletes test `tests/ci/test_x.py`")
+    gh = FakeGitHub()
+    patch = "@@\n+@pytest.mark.skip\n"
+    gh.entries = [
+        {"filename": "tests/ci/test_y.py", "status": "modified", "patch": patch}
+    ]
+    got = _l1(gh)[PROTECTED]
+    assert got[0] == "failure" and "tests/ci/test_y.py" in got[1]
+
+
+def test_too_many_files_fail_the_limits_not_the_protected_status() -> None:
+    gh = FakeGitHub()
+    gh.entries = [{"filename": f"src/f{i}.py", "status": "added"} for i in range(300)]
+    got = _l1(gh)
+    assert got[LIMITS][0] == "failure" and "300 files" in got[LIMITS][1]
+    assert got[PROTECTED][0] == "success"
+    assert "waits for the owner's `ready`" in got[ROUTE][1]
+
+
+def test_an_untrusted_author_fails_the_limits() -> None:
+    gh = FakeGitHub({"author_association": "CONTRIBUTOR"})
+    assert _l1(gh)[LIMITS] == (
+        "failure",
+        "the author is not trusted, so no review is dispatched",
+    )
+
+
+def test_an_untrusted_author_of_a_docs_only_pr_is_within_the_limits() -> None:
+    gh = FakeGitHub({"author_association": "CONTRIBUTOR"})
+    gh.paths = ["docs/assets/a.png"]
+    assert _l1(gh)[LIMITS][0] == "success"
+
+
+def test_exhausted_review_reruns_fail_the_limits() -> None:
+    gh = FakeGitHub()
+    gh.review_list = []
+    gh.review_run_list = [{**REVIEW_RUN, "run_attempt": ci_gate.REVIEW_RERUNS}]
+    assert _l1(gh)[LIMITS][0] == "failure"
+    assert "re-ran" in gh.layer1[LIMITS][1]
+    gh = FakeGitHub()
+    gh.review_list = []
+    gh.review_run_list = [{**REVIEW_RUN, "run_attempt": 1}]
+    assert _l1(gh)[LIMITS][0] == "success"
+
+
+def test_a_draft_reports_layer_two_only() -> None:
+    gh = FakeGitHub({"draft": True})
+    assert _l1(gh)[ROUTE] == ("success", "draft: layer 2 only")
+
+
+def test_a_valid_ready_passes_the_protected_status() -> None:
+    gh = FakeGitHub({"labels": [{"name": LABEL}]})
+    gh.paths = [".github/ci/policy.json"]
+    gh.labeler = "maintainer"
+    got = _l1(gh)
+    assert got[PROTECTED][0] == "success"
+    assert got[PROTECTED][1].startswith("passed by `ready`")
+    assert got[ROUTE] == ("success", "owner route: `ready` accepted")
+
+
+def test_a_ready_from_a_non_maintainer_does_not_pass_it() -> None:
+    gh = FakeGitHub({"labels": [{"name": LABEL}]})
+    gh.paths = [".github/ci/policy.json"]
+    gh.labeler = "dev"
+    assert _l1(gh)[PROTECTED][0] == "failure"
+
+
+def test_unchanged_statuses_are_not_posted_again() -> None:
+    gh = FakeGitHub()
+    auto(gh, 7, REQUIRED, "run")
+    first = len(gh.layer1_posts)
+    assert first == 5
+    auto(gh, 7, REQUIRED, "run")
+    assert len(gh.layer1_posts) == first
+
+
+def test_a_changed_verdict_is_posted_again_and_the_gate_is_untouched() -> None:
+    plain, held = FakeGitHub(), FakeGitHub()
+    held.paths = ["scripts/ci/gate.py", ".github/ci/policy.json"]
+    auto(plain, 7, REQUIRED, "run")
+    auto(held, 7, REQUIRED, "run")
+    assert plain.posted[-1][1] == "success"
+    assert held.posted[-1][1] == "pending"
+    assert held.posted[-1][2].startswith(AUTO_PENDING)
+    held.paths = ["src/a.py"]
+    auto(held, 7, REQUIRED, "run")
+    assert held.layer1[PROTECTED][0] == "success"
+    assert held.posted[-1][1] == "success"
+
+
+def test_the_guard_reports_layer_one_on_a_new_head() -> None:
+    gh = FakeGitHub()
+    gh.paths = [".github/ci/policy.json"]
+    guard(gh, _event("synchronize"), REQUIRED, "run")
+    assert [p[1] for p in gh.posted] == ["pending"]
+    assert gh.layer1[PROTECTED][0] == "failure"
+
+
+def test_a_failing_report_never_stops_the_gate() -> None:
+    class Broken(FakeGitHub):
+        def status_of(self, sha: str, context: str) -> tuple[str, str]:
+            raise RuntimeError("statuses unreadable")
+
+    gh = Broken()
+    assert _state(gh) in {"success", "pending"}
+    assert gh.layer1 == {}
+
+
+# --- finding priorities and linked issues (docs/ci/README.md, "AI 审查发现") -------------------
+
+REPLY = {"author": "dev", "body": "Fixed it in a follow-up."}
+
+
+def _with_finding(status: str, severity: str, resolved: bool = False) -> FakeGitHub:
+    gh = FakeGitHub()
+    gh.review_list = [
+        {**REVIEW, "body": CLEAN + "\n" + _ledger(("F1", status, severity))}
+    ]
+    gh.thread_list = [
+        {
+            "resolved": resolved,
+            "author": REVIEW_AUTHOR,
+            "body": "<!-- opencode-review:finding=F1 --> x",
+            "replies": [REPLY],
+        }
+    ]
+    return gh
+
+
+def test_a_p0_or_p1_finding_is_not_closed_by_a_reply_or_a_resolved_thread() -> None:
+    for severity, priority in (("critical", "P0"), ("high", "P1")):
+        for status, resolved in (("open", False), ("open", True), ("dismissed", True)):
+            gh = _with_finding(status, severity, resolved)
+            assert _state(gh) == "pending"
+            assert f"not fixed: F1 ({priority})" in gh.posted[-1][2]
+            assert gh.layer1[FINDINGS][0] == "failure"
+
+
+def test_a_p0_or_p1_finding_closes_once_the_reviewer_says_fixed_or_answered() -> None:
+    for status in ("fixed", "answered", "gone"):
+        gh = _with_finding(status, "critical")
+        assert _state(gh) == "success"
+        assert gh.layer1[FINDINGS] == ("success", "every finding is handled")
+
+
+def test_severity_is_read_case_insensitively() -> None:
+    assert _state(_with_finding("open", " Medium ")) == "success"
+    assert "not fixed: F1 (P0)" in _reason(_with_finding("open", "CRITICAL"))
+
+
+def test_an_unknown_severity_counts_as_p1() -> None:
+    gh = _with_finding("open", "severe", resolved=True)
+    assert _state(gh) == "pending"
+    assert "not fixed: F1 (P1)" in gh.posted[-1][2]
+
+
+def test_a_p2_finding_closes_with_a_reply_or_a_resolved_thread() -> None:
+    assert _state(_with_finding("open", "medium")) == "success"
+    gh = _with_finding("open", "medium", resolved=True)
+    gh.thread_list[0]["replies"] = []
+    assert _state(gh) == "success"
+    gh = _with_finding("open", "medium")
+    gh.thread_list[0]["replies"] = []
+    assert _state(gh) == "pending"
+    assert gh.layer1[FINDINGS] == ("failure", "1 unanswered P2 OpenCode finding(s): F1")
+
+
+def test_findings_wait_for_the_review_of_the_head() -> None:
+    gh = FakeGitHub()
+    gh.review_list = []
+    auto(gh, 7, REQUIRED, "run")
+    assert gh.layer1[FINDINGS][0] == "pending"
+
+
+def test_the_owners_ready_passes_an_unfixed_p0() -> None:
+    gh = _with_finding("dismissed", "critical", resolved=True)
+    gh.pr["labels"] = [{"name": LABEL}]
+    assert _state(gh) == "success"
+    assert gh.posted[-1][2] == OVERRIDE_SUCCESS
+    assert gh.layer1[FINDINGS][0] == "success"
+    assert gh.layer1[FINDINGS][1].startswith("passed by `ready`")
+
+
+def _linked(body: str, title: str = "A change") -> FakeGitHub:
+    gh = FakeGitHub({"body": body, "title": title})
+    gh.issue_list = {3: {"number": 3}, 5: {"number": 5, "pull_request": {}}}
+    return gh
+
+
+def test_a_pr_without_a_linked_issue_waits() -> None:
+    for body in ("", "No issue here.", "Builds on #5.", "See other/repo#3.", "&#3;"):
+        gh = _linked(body)
+        assert _state(gh) == "pending", body
+        assert "the PR links no issue" in gh.posted[-1][2]
+        assert gh.layer1[ISSUE][0] == "failure"
+        assert gh.layer1[ROUTE][1].startswith("waits for a linked issue")
+
+
+def test_any_reference_to_an_issue_links_it() -> None:
+    for body, title in (
+        ("Closes #3", "x"),
+        ("Refs #3.", "x"),
+        ("Second half of o/r#3", "x"),
+        ("", "Fix the gate (#3)"),
+        ("After #5, refs #3", "x"),
+        ("关联#3", "x"),
+    ):
+        gh = _linked(body, title)
+        assert _state(gh) == "success", (body, title)
+        assert gh.layer1[ISSUE] == ("success", "links #3")
+
+
+def test_the_owners_ready_passes_a_pr_without_an_issue() -> None:
+    gh = _linked("")
+    gh.pr["labels"] = [{"name": LABEL}]
+    assert _state(gh) == "success"
+    assert gh.layer1[ISSUE] == ("success", "no linked issue; passed by `ready`")
