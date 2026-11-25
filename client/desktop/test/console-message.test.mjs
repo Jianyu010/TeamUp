@@ -35,7 +35,7 @@ test("room message separates ordered routing, title, and original body", () => {
   assert.equal(routing.className, "message-routing");
   assert.equal(routing.children[0].textContent, "Release Coordinator → Reviewer One, Reviewer Two");
   assert.equal(routing.children.length, 1);
-  assert.equal(title.textContent, "November release");
+  assert.equal(title.textContent, "msg-9007199254740993 · November release");
   assert.equal(text.textContent, body);
 });
 
@@ -66,7 +66,7 @@ test("ordinary messages keep the entire body and display the exact ID as their r
   assert.equal(row.children[0].textContent, "—");
   const [routing, title, body] = row.children[1].children;
   assert.equal(routing.children[0].textContent, "Release Coordinator");
-  assert.equal(title.textContent, "#9007199254740993");
+  assert.equal(title.textContent, "msg-9007199254740993");
   assert.equal(body.textContent, plain);
 });
 
@@ -75,7 +75,7 @@ test("a leading hash reference without the heading separator stays in the body",
   const row = render({text, mentioned: "Single Reviewer"});
   const [routing, title, body] = row.children[1].children;
   assert.equal(routing.children[0].textContent, "Release Coordinator → Single Reviewer");
-  assert.equal(title.textContent, "#9007199254740993");
+  assert.equal(title.textContent, "msg-9007199254740993");
   assert.equal(body.textContent, text);
 });
 
@@ -87,4 +87,29 @@ test("a closed recipient disclosure restores recent hover and focus dismissals",
   const disclosure = row.children[1].children[0].children[1];
   assert.equal(disclosure.children[0].open, false);
   assert.deepEqual(disclosure.dataset, {dismissHover: "", dismissFocus: ""});
+});
+
+test("legacy titles move below compact routing while full recipient labels remain in overflow", () => {
+  const message = {
+    sender: "Coordinator: PR review support",
+    mentioned_recipients: ["Lead：AS decisions", "API: Owner", "Coordinator: Rollbacks"],
+    routing: {
+      sender: "Coordinator (93e57f02)",
+      recipients: ["Lead", "API: Owner"],
+      legacy_titles: ["PR review support", "AS decisions"],
+    },
+  };
+  const row = render({...message, text: "Check #858"});
+  const [routing, title, body] = row.children[1].children;
+  const [labels, disclosure] = routing.children;
+  assert.equal(labels.textContent, "Coordinator (93e57f02) → Lead, API: Owner");
+  assert.equal(disclosure.children[1].textContent, "Lead：AS decisions, API: Owner, Coordinator: Rollbacks");
+  assert.equal(title.textContent, "msg-9007199254740993 · PR review support · AS decisions");
+  assert.equal(body.textContent, "Check #858");
+
+  const titledRow = render({...message, text: "# Handoff status\n\nCheck #858"});
+  const [, authoredTitle, details, authoredBody] = titledRow.children[1].children;
+  assert.equal(authoredTitle.textContent, "msg-9007199254740993 · Handoff status");
+  assert.equal(details.textContent, "PR review support · AS decisions");
+  assert.equal(authoredBody.textContent, "Check #858");
 });

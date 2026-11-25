@@ -10,6 +10,7 @@ Collaboration 在 SQLite 保存规范消息和收件箱引用。Gateway 提供 H
 
 - Server 为每条新消息记录 UTC RFC 3339 `created_at`。升级时保留现有消息 ID、顺序和内容。旧消息没有时间戳，`created_at` 返回 null。
 - 消息 ID 和收件事件 ID 分别全局递增。同一写事务内分配 ID、更新消息和写入相关投递。持久分配器从升级前的最大 ID 开始，删除记录以后仍不复用 ID。
+- 房间与私聊生成的消息引用使用 `msg-N`，例如 `msg-42` 引用 `message_id` 为 42 的消息。数据库和结构化接口仍使用正整数 `message_id`，历史分页仍使用数值游标。消息正文保留原样。回复使用消息所属会话的 `room_id` 或 `dm_id`。
 - 新建房间可明确选择 `retained` 或 `since_joining`。现有房间及省略该字段的旧版建房请求都使用 `since_joining`。新工作流可明确选择 `retained`，并通过 [房间目录](../specs/collaboration-surfaces.md#room-directory) 在加入前展示当前策略。房间建立后，策略在本阶段保持固定。
 - 存储 schema 原为 v3 草稿（`history_policy`、`created_at`、`id_counters`），随后随 [#3 私聊](direct-messages.md) 并入 **v4**（DM 家族表、可空 `messages.room_id`、按家族限定的重试索引、收件 `dm` kind），再随 [控制台 stage 3](control-console.md) 并入 **v5**（`purpose` 会话、`operator_grants`、活动投影与审计表），最终随本期保留增量收敛为 **v6**（rooms 与 dms 的 `expired_through_message_id` 水位列）：迁移次序覆盖 fresh/v1/v2、两种 v3 草稿（#6 历史与 #5 鉴权预览，见控制台契约的判别规则）、#3 DM v4 与已发布控制台 v5（原位补两列水位，控制台数据原样保留）；控制台读路径复用同一规范消息记录与所有权，成员端点形状不变。此前 #6 独立保留工作树的 v5 为未发布集成形态，不设额外兼容分支。 [#45](https://github.com/Jianyu010/TeamUp/issues/45) 随后发布 v7，在同一消息所有者下存储附加目标，目标随房间消息到期清理。
 

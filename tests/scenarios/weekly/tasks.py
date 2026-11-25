@@ -162,7 +162,7 @@ def wake(spec: Spec, count: int, roster: dict[str, str]) -> Task:
             for m in history
         ):
             return
-        parts = [f"Re #{trigger['message_id']}:", *ctx.spec.facts]
+        parts = [f"Re msg-{trigger['message_id']}:", *ctx.spec.facts]
         if ctx.spec.wake_note:
             parts.append(ctx.spec.wake_note)
         parts.append(f"| {trigger['text']}")

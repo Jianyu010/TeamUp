@@ -242,6 +242,7 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
 .message-content { display: grid; gap: 2px; min-width: 0; }
 .message-routing { color: var(--accent); font-size: 12px; overflow-wrap: anywhere; }
 .message-title { overflow-wrap: anywhere; }
+.message-legacy-details { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 .message p { white-space: pre-wrap; overflow-wrap: anywhere; }
 .mention-disclosure { display: inline; }
 .mention-overflow summary {

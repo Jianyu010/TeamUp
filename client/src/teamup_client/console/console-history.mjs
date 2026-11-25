@@ -81,9 +81,10 @@ export function messageRow(node, message, {expanded = false, dismissHover = fals
   }
 
   const recipients = message.mentioned_recipients ?? (message.mentioned ? [message.mentioned] : []);
-  const labels = recipients.slice(0, 2).join(", ");
+  const sender = message.routing?.sender ?? message.sender;
+  const labels = (message.routing?.recipients ?? recipients.slice(0, 2)).join(", ");
   const routing = node("div", undefined, "message-routing");
-  routing.append(node("span", labels ? message.sender + " → " + labels : message.sender));
+  routing.append(node("span", labels ? sender + " → " + labels : sender));
   if (recipients.length > 2) {
     const more = node("details", undefined, "mention-overflow");
     more.dataset.id = message.id;
@@ -112,10 +113,14 @@ export function messageRow(node, message, {expanded = false, dismissHover = fals
 
   const heading = /^#[\t ]+([^\r\n]+)\r?\n[\t ]*\r?\n/.exec(message.text);
   const hasTitle = heading && heading[1].trim() && heading[0].length < message.text.length;
-  const title = hasTitle ? heading[1].trim() : "#" + message.id;
+  const reference = "msg-" + message.id;
+  const legacyTitles = message.routing?.legacy_titles.join(" · ");
+  const title = hasTitle ? heading[1].trim() : legacyTitles;
   const body = hasTitle ? message.text.slice(heading[0].length) : message.text;
   const content = node("div", undefined, "message-content");
-  content.append(routing, node("strong", title, "message-title"), node("p", body));
+  content.append(routing, node("strong", title ? reference + " · " + title : reference, "message-title"));
+  if (hasTitle && legacyTitles) content.append(node("div", legacyTitles, "message-legacy-details"));
+  content.append(node("p", body));
   const row = node("article", undefined, "message");
   row.append(time, content);
   return row;

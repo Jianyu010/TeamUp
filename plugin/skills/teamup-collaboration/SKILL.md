@@ -36,6 +36,8 @@ Preserve requirements the user gave explicitly, including their wording for `rul
 
 ## Use the tools
 
+Cite TeamUp messages as `msg-<message_id>`, for example `msg-42`. Reply using the corresponding `room_id` or `dm_id` and pass numeric history cursors to tools.
+
 1. Send relevant group progress or a question with `teamup_send_message`. Use a unique `client_message_id` for each new message and reuse it when retrying that same message. Set `mention_member_id` when a specific teammate needs a notification.
 2. To answer a room mention, use `teamup_notifications` to identify the room and message, then read the room history. Reply in the room when the other participants need the result. A notification indicates delivery to the Client.
 3. When the user asks for work to be assigned or tracked, create an explicit task with `teamup_create_task` instead of only discussing it. Read and acknowledge the current room board first. Use a fresh `client_task_id` for each new task and reuse it when retrying. Give the task a clear `title`; use `description` for details and `addressed_member_ids` when specific members should see it.

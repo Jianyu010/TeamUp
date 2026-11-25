@@ -303,6 +303,8 @@ def create_mcp(
             "teamup_task_history; keep ordinary chat and mentions unchanged. "
             "Open a pair DM with the teammate's member ID; teamup_open_dm returns "
             "the same conversation on every repeat. "
+            "Cite TeamUp messages as msg-<message_id>, for example msg-42. "
+            "Reply via the corresponding room_id or dm_id and use numeric history cursors. "
             "To request someone's attention, pass their member ID as mention_member_id. "
             "Use mention_member_ids for an ordered list of room recipients. "
             "Use a fresh client_message_id for each new message and keep it on retry. "

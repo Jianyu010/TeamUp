@@ -312,6 +312,68 @@ def test_room_projects_all_structured_recipients_in_server_order():
     asyncio.run(scenario())
 
 
+def test_room_projects_compact_routing_and_retains_full_legacy_labels():
+    async def scenario():
+        upstream = Upstream()
+        sender = "Coordinator: PR review support"
+        first_recipient = "Release Lead：AS decisions and co-signs"
+        structured = "API: Owner"
+        extra_recipient = "Coordinator: Release rollbacks"
+
+        async def request(method, path, token, *, query=None):
+            if path == "/members":
+                return {
+                    "members": [
+                        {"member_id": BACKEND, "role_description": sender},
+                        {"member_id": REVIEWER, "role_description": first_recipient},
+                        {"member_id": REMOTE, "role_description": structured, "name": structured},
+                        {"member_id": OUTSIDER, "role_description": extra_recipient},
+                    ]
+                }
+            response = await upstream(method, path, token, query=query)
+            if path.endswith("/messages"):
+                response["messages"][0].update(
+                    text="Check #858",
+                    mention_member_id=REVIEWER,
+                    mention_member_ids=[REVIEWER, REMOTE, OUTSIDER],
+                )
+            return response
+
+        result = await ConsoleReader(sessions, request).room("primary", ROOM)
+        message = result["messages"][0]
+        assert message["sender"] == sender
+        assert message["sender_member_id"] == BACKEND
+        assert message["mentioned"] == first_recipient
+        assert message["mentioned_recipients"] == [first_recipient, structured, extra_recipient]
+        assert message["recipient_member_ids"] == [REVIEWER, REMOTE, OUTSIDER]
+        assert message["text"] == "Check #858"
+        assert message["routing"] == {
+            "sender": "Coordinator (93e57f02)",
+            "recipients": ["Release Lead", structured],
+            "legacy_titles": ["PR review support", "AS decisions and co-signs"],
+        }
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("label", ["https://example.test", "Shift 09:30", ": Empty name", "Lead: "])
+def test_room_leaves_ambiguous_legacy_sender_labels_intact(label):
+    async def scenario():
+        upstream = Upstream()
+
+        async def request(method, path, token, *, query=None):
+            if path == "/members":
+                return {"members": [{"member_id": BACKEND, "role_description": label}]}
+            return await upstream(method, path, token, query=query)
+
+        result = await ConsoleReader(sessions, request).room("primary", ROOM)
+        message = result["messages"][0]
+        assert message["sender"] == label
+        assert "routing" not in message
+
+    asyncio.run(scenario())
+
+
 def test_room_labels_messages_from_retired_senders():
     async def scenario():
         upstream = Upstream()

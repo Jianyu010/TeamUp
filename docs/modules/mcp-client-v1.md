@@ -39,6 +39,8 @@ MCP 初始化说明与随附的协作 skill 会引导 Agent 按参与范围选�
 
 [#33](https://github.com/Jianyu010/TeamUp/issues/33) 的任务契约发布前，自然语言的任务请求按讨论处理：在房间中交流计划、约束和结果，不调用或杜撰不存在的任务工具。
 
+MCP 初始化说明与随附的协作 skill 指引 Agent 使用 `msg-N` 引用房间或私聊消息，例如 `msg-42`。回复时使用对应的 `room_id` 或 `dm_id`，分页游标仍传数值。见 [会话历史契约](conversation-history.md#记录和迁移)。
+
 ## Unix socket 协议
 
 每次调用使用一条连接和一条以换行结尾的 UTF-8 JSON 请求。请求为 `{"version":1,"binding_key":"...","method":"...","params":{}}`，可另带 `session` 对象 `{"id":"...","kind":"claude-code"|"codex"}`，`id` 非空且最多 128 字符。响应为 `{"result":{}}` 或 `{"error":{"code":"...","message":"..."}}`，以换行结束，随后关闭连接。请求最大 128 KiB，客户端接收单次响应的上限为 16 MiB。IPC 不接受可替代绑定身份的字段。Python 封装位于 `teamup_client.ipc`，公开异步 `call(socket_path, binding_key, method, params, session=None)`、异步上下文管理器 `attach(socket_path, binding_key, session, address, token)` 和异常 `ClientError`（`code`、`message`）。
@@ -125,7 +127,7 @@ MCP 插件在其他工具成功后调用 `mention_status`，但查询通知或�
 | `unknown` | 提交中断或 Codex CLI 超时，结果未知 |
 | `skipped` | 升级前已有的通知 |
 
-提交前，Client 以该成员身份读消息与当前公告（`GET /v1/rooms/{room_id}/messages?delivery=true`），并确认消息是在当前房间成员关系建立后发送的。提交给会话的正文说明这是来自 TeamUp 的数据，列出发送者角色和 `member_id`、房间名和 `room_id`、`event_id`、消息正文和当前公告，并请 Agent 在原房间回复时使用 `client_message_id` `wake-<event_id>`，重复投递因此只产生一条回复。Claude Code 的提交为一条连接上依次写入 `{"type":"auth","token":...}` 与 `{"type":"user","message":{"role":"user","content":...}}` 两行。
+提交前，Client 以该成员身份读消息与当前公告（`GET /v1/rooms/{room_id}/messages?delivery=true`），并确认消息是在当前房间成员关系建立后发送的。提交给会话的正文说明这是来自 TeamUp 的数据，列出发送者角色和 `member_id`、房间名和 `room_id`、`event_id`、`msg-N` 消息引用、消息正文和当前公告，并请 Agent 在原房间回复时使用 `client_message_id` `wake-<event_id>`，重复投递因此只产生一条回复。Claude Code 的提交为一条连接上依次写入 `{"type":"auth","token":...}` 与 `{"type":"user","message":{"role":"user","content":...}}` 两行。
 
 Codex 的提交执行 `codex_command` 并在末尾追加 `queue --disable daemon_auto_start --resume --thread <thread_id> --message <正文>`，直接执行，不经 shell，正文只经 argv 传入，标准输入和输出均不使用。`thread_id` 必须是 UUID，否则不执行并记为 `failed`，以免被 CLI 当作会话名称或选项。CLI 退出码为 0 记为 `submitted`（排队成功，`--resume` 失败只产生警告），非零或无法启动记为 `failed`。15 秒内未退出时 Client 终止该进程并记为 `unknown`，不重发。
 
