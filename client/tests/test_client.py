@@ -905,6 +905,15 @@ def mention_event(event_id, message_id, text="Please review the schema"):
     }
 
 
+def test_macos_does_not_select_osascript_by_default(monkeypatch, tmp_path):
+    from teamup_client._desktop import default_command
+
+    (tmp_path / "osascript").touch(mode=0o700)
+    monkeypatch.setenv("PATH", str(tmp_path))
+
+    assert default_command("darwin") == ()
+
+
 def test_mention_raises_one_desktop_notice_and_tracks_delivery():
     from teamup_client.ipc import call
 
