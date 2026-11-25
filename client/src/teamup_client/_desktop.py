@@ -7,18 +7,6 @@ import sys
 import unicodedata
 from contextlib import suppress
 
-_MACOS = (
-    "osascript",
-    "-e",
-    "on run argv",
-    "-e",
-    (
-        "display notification (item 3 of argv) with title (item 1 of argv) "
-        "subtitle (item 2 of argv)"
-    ),
-    "-e",
-    "end run",
-)
 # notify-send has no subtitle, so the room name leads the body.
 _LINUX = (
     "sh",
@@ -32,8 +20,6 @@ TIMEOUT = 5
 
 
 def default_command(platform=sys.platform):
-    if platform == "darwin" and shutil.which("osascript"):
-        return _MACOS
     if platform.startswith("linux") and shutil.which("notify-send"):
         return _LINUX
     return ()

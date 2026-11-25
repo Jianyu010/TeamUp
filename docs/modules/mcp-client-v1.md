@@ -18,7 +18,7 @@
 - `bindings`，本机批准的会话列表。每项包含 `binding_key`、`member_token`、`harness_instance_id`、`session_key`。每项的秘密与稳定标识对在配置中唯一。
 - 可选 `ca_file`，自建 CA 的证书路径，用于 HTTPS 校验。
 - 可选 `installs`，按会话分配成员的 harness 安装列表。每项包含 `binding_key`（43 字符秘密）、`harness_instance_id`，以及可选的布尔值 `auto_approve`（默认 `false`）。见下文“会话接入”。
-- 可选 `notify_command`，桌面提醒命令的 argv 字符串数组。Client 在末尾追加标题、副标题和正文三个参数后直接执行，不经 shell。省略时 macOS 用 `osascript`，Linux 在有 `notify-send` 时使用它。空数组关闭桌面提醒。
+- 可选 `notify_command`，房间 @、会话审批和任务停滞共用的桌面提醒命令。值为 argv 字符串数组。Client 在末尾追加标题、副标题和正文三个参数后直接执行，不经 shell。macOS 需要显式配置命令才启用桌面提醒。Linux 省略时在有 `notify-send` 的环境中使用它。空数组关闭桌面提醒。
 - 可选 `codex_command`，Codex CLI 的 argv 字符串数组，供 Codex Driver 使用，见下文“唤醒”。省略时，macOS 上若存在 ChatGPT 桌面版随附的 `/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex` 则用它，否则没有 Codex Driver。Client 不在 `PATH` 中查找 `codex`，因为其他安装渠道的版本可能缺少 `queue --resume`。空数组关闭 Codex Driver。
 
 `teamup-mcp` 从环境变量 `TEAMUP_SOCKET`、`TEAMUP_BINDING_KEY` 取得本机 socket 和当前会话的绑定秘密。由拥有者为每个 harness 会话配置各自的启动方式。只获准的本机用户能连接 socket。绑定秘密按对该本机用户的授权凭证保管，私有仓库或团队共享配置也不要提交。
@@ -83,7 +83,7 @@ Client 为已登记的绑定监听 SSE，在初连、重连和收到提示时拉
 
 - 每个绑定按 `event_id` 顺序串行处理 `pending` 的 `mention` 通知，每条最多尝试一次提醒。尝试前先持久记录。重启时，已尝试但未落定的通知记为 `failed`，不重复弹出，尚未尝试的继续按顺序提醒。`dm` 通知不参与这些步骤。
 - 提醒包含发送者角色、房间名和消息开头不超过 140 字符的预览。角色和房间名来自 Client 经本绑定调用 `register`、`find_members`、`create_room`、`join_room` 得到的结果，缺失时 Client 以本绑定身份调用 `GET /v1/members` 补查发送者。仍无法得到时用通用称呼和房间 ID 前缀。这些名称只用于显示，不作授权依据。预览去掉控制字符并截断，只保存在本机通知库中，不出现在 Notice 里。
-- 提醒不启动任何模型 turn。提醒失败不影响收件确认和查询。
+- 提醒不启动任何模型 turn。关闭提醒或提醒失败时，通知仍可经 `teamup_notifications` 查收，且按会话唤醒许可投递。
 - 首版升级前已有的通知记为 `shown`，升级时不补弹提醒，仍计入未送达数。
 
 MCP 插件在 `teamup_notifications` 以外的工具成功后调用 `mention_status`。未送达的 `mention` 数大于 0 时，在工具结果的文本内容末尾追加一行提示，结构化结果保持不变。该调用失败时省略提示。`dm` 通知不计入该未读数，Agent 经 `teamup_notifications` 查收。
@@ -93,7 +93,7 @@ MCP 插件在 `teamup_notifications` 以外的工具成功后调用 `mention_sta
 设计依据见 [Harness 投递设计](harness-delivery.md)。
 
 - **身份。** `binding_key` 是 `bindings` 中的会话秘密时，调用身份就是该绑定，`session` 只用于接入地址。`binding_key` 是 `installs` 中的安装秘密时，必须带 `session`，调用身份为 `(该安装的 harness_instance_id, session.id)`。`binding_key` 两者都不是时返回 `unauthorized`。
-- **批准。** 安装下未见过的会话首次调用 `attach` 以外的方法时，Client 为它生成成员 token 并记为待批准，返回 `session_pending`，同时发一条桌面提醒给主人。`auto_approve` 为真时直接批准。批准后的会话与静态绑定一样登记和使用，同一 `(harness_instance_id, session.id)` 始终对应同一成员。
+- **批准。** 安装下未见过的会话首次调用 `attach` 以外的方法时，Client 为它生成成员 token 并记为待批准，返回 `session_pending`。启用桌面提醒时，同时提醒主人。`auto_approve` 为真时直接批准。批准后的会话与静态绑定一样登记和使用，同一 `(harness_instance_id, session.id)` 始终对应同一成员。
 - **接入地址。** `attach` 仅限 `session.kind` 为 `claude-code`：`address` 为该会话的 Claude Code 消息 socket 绝对路径，`token` 为它的 `CLAUDE_CODE_MESSAGING_TOKEN`。Client 要求 socket 归当前系统用户所有，返回结果后保持连接，连接关闭即撤销该地址。同一会话后来的 `attach` 取代先前的。token 只存于内存，不写盘，不发往 Server。`session.kind` 为 `codex` 的调用让 Client 记下 `session.id` 作为 thread 地址。Codex 没有长连接，该地址保留到同一会话后来的调用取代它或 Client 重启，可否投递由 Codex Driver 在提交时确认。
 
 ## 唤醒
@@ -104,7 +104,7 @@ MCP 插件在 `teamup_notifications` 以外的工具成功后调用 `mention_sta
 
 | `harness_state` | 含义 |
 | --- | --- |
-| `not_allowed` | 没有匹配的唤醒许可，只有桌面提醒 |
+| `not_allowed` | 没有匹配的唤醒许可，通知可经 `teamup_notifications` 查收 |
 | `waiting` | 许可匹配但会话未接入，接入后按顺序继续 |
 | `submitting` | 正在提交。重启时遗留的记为 `unknown`，不重发 |
 | `submitted` | 已写入会话 socket，或 Codex CLI 排队成功。只说明到达 harness 边界，不证明 turn 已开始 |
