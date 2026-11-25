@@ -1370,7 +1370,7 @@ class Collaboration:
             elif version != 7:
                 raise ValueError("Unsupported TeamUp database schema version")
             _migrate_room_tasks(connection)
-            # Keep the shared schema version so older schema-7 Servers can reopen it.
+            # Keep the schema version so Servers at that version can reopen it.
             for statement in _MAINTENANCE_SCHEMA:
                 connection.execute(statement)
 

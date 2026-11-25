@@ -38,6 +38,11 @@ def console_token(owner):
     return owner.login(USERNAME, PASSWORD, "console")["access_token"]
 
 
+def database_version(db_path):
+    with closing(sqlite3.connect(db_path)) as connection:
+        return connection.execute("PRAGMA user_version").fetchone()[0]
+
+
 def members(owner):
     enrollment = owner.login(USERNAME, PASSWORD)["access_token"]
     participants = []
@@ -54,7 +59,7 @@ def members(owner):
     return participants
 
 
-def test_maintenance_health_rechecks_both_grants_on_cached_read(owner):
+def test_maintenance_health_rechecks_both_grants_on_cached_read(owner, db_path):
     token = console_token(owner)
     owner.set_maintenance_grant(USERNAME, "maintenance_read", True)
     with denied("forbidden"):
@@ -68,7 +73,7 @@ def test_maintenance_health_rechecks_both_grants_on_cached_read(owner):
     assert snapshot["stale_after_seconds"] == 45
     assert snapshot["unavailable_after_seconds"] == 90
     assert snapshot["rates"] is None
-    assert snapshot["values"]["schema_version"] == 7
+    assert snapshot["values"]["schema_version"] == database_version(db_path)
     assert snapshot["values"]["db_size_bytes"] > 0
 
     owner.set_maintenance_grant(USERNAME, "maintenance_read", False)
@@ -254,12 +259,13 @@ def test_log_audit_rechecks_grants_and_persists_only_query_metadata(owner, db_pa
     assert datetime.fromisoformat(rows[0]["at"]).utcoffset() == timedelta(0)
 
 
-def test_maintenance_cli_preserves_existing_schema_seven_grants(owner, db_path):
+def test_maintenance_cli_preserves_existing_schema_and_grants(owner, db_path):
     sender, _ = members(owner)
     room_id = owner.create_room(sender[0], "Legacy room", None, None)["room_id"]
     token = console_token(owner)
     owner.grant_console_read(USERNAME)
     owner.grant_transcript_read(USERNAME, room_id)
+    previous_version = database_version(db_path)
     with closing(sqlite3.connect(db_path)) as connection, connection:
         connection.execute("DROP TABLE IF EXISTS operator_maintenance_grants")
         connection.execute("DROP TABLE IF EXISTS log_access_audit")
@@ -284,8 +290,7 @@ def test_maintenance_cli_preserves_existing_schema_seven_grants(owner, db_path):
                 with denied("forbidden"):
                     read()
 
-    with closing(sqlite3.connect(db_path)) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 7
+    assert database_version(db_path) == previous_version
     assert (
         Collaboration(db_path, {}).console_room_detail(token, room_id)[
             "transcript_allowed"
