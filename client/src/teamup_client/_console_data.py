@@ -11,6 +11,7 @@ from .ipc import ClientError
 PAGE = 30
 VISIBLE_WIRE_LIMIT = 20
 TASK_OBSERVATION_SECONDS = 2
+TASK_OBSERVATION_PAGES = 2
 MAX_BEFORE = 1 << 63  # The Server treats this as an unbounded latest-page read.
 
 
@@ -162,7 +163,7 @@ class ConsoleReader:
         after = 0
         try:
             async with asyncio.timeout(TASK_OBSERVATION_SECONDS):
-                while True:
+                for _ in range(TASK_OBSERVATION_PAGES):
                     page = await self._read(
                         session,
                         f"/rooms/{room_id}/tasks",
@@ -179,6 +180,7 @@ class ConsoleReader:
                     if cursor <= after:
                         return None
                     after = cursor
+                return None
         except (ClientError, TimeoutError):
             return None
 

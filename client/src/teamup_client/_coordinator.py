@@ -573,7 +573,7 @@ class Coordinator:
                     self._upstream.request, binding.member_token, self._notifier.show
                 ):
                     return
-            except ClientError:
+            except (ClientError, OSError, OverflowError):
                 with suppress(TimeoutError):
                     await asyncio.wait_for(wake.wait(), timeout=5)
             else:

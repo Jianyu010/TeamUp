@@ -837,9 +837,34 @@ def _reminder_projection(reminder: sqlite3.Row) -> dict:
     }
 
 
+def _task_members(
+    connection: sqlite3.Connection, task_ids: list[str]
+) -> dict[str, tuple[list[str], list[str]]]:
+    members: dict[str, tuple[list[str], list[str]]] = {
+        task_id: ([], []) for task_id in task_ids
+    }
+    if not task_ids:
+        return members
+    placeholders = ", ".join("?" for _ in task_ids)
+    for task_id, member_id, kind in connection.execute(
+        f"""
+        SELECT task_id, member_id, 0 FROM task_addressees
+        WHERE task_id IN ({placeholders})
+        UNION ALL
+        SELECT task_id, member_id, 1 FROM task_participants
+        WHERE task_id IN ({placeholders})
+        ORDER BY member_id
+        """,
+        (*task_ids, *task_ids),
+    ):
+        members[task_id][kind].append(member_id)
+    return members
+
+
 def _task_projection(
-    connection: sqlite3.Connection,
     task: sqlite3.Row,
+    addressed: list[str],
+    participants: list[str],
     *,
     stall_after: int | None,
     now: datetime,
@@ -852,20 +877,8 @@ def _task_projection(
         "creator_member_id": task["creator_member_id"],
         "title": task["title"],
         "description": task["description"],
-        "addressed_member_ids": [
-            row[0]
-            for row in connection.execute(
-                "SELECT member_id FROM task_addressees WHERE task_id = ? ORDER BY member_id",
-                (task_id,),
-            )
-        ],
-        "participant_member_ids": [
-            row[0]
-            for row in connection.execute(
-                "SELECT member_id FROM task_participants WHERE task_id = ? ORDER BY member_id",
-                (task_id,),
-            )
-        ],
+        "addressed_member_ids": addressed,
+        "participant_member_ids": participants,
         "status": task["status"],
         "version": task["version"],
         "created_at": task["created_at"],
@@ -1012,12 +1025,22 @@ class Collaboration:
         return _rfc3339(self._now_datetime())
 
     def _projection(self, connection: sqlite3.Connection, task: sqlite3.Row) -> dict:
-        return _task_projection(
-            connection,
-            task,
-            stall_after=self._task_stall_after,
-            now=self._now_datetime(),
-        )
+        return self._projections(connection, [task])[0]
+
+    def _projections(
+        self, connection: sqlite3.Connection, tasks: list[sqlite3.Row]
+    ) -> list[dict]:
+        members = _task_members(connection, [task["task_id"] for task in tasks])
+        now = self._now_datetime()
+        return [
+            _task_projection(
+                task,
+                *members[task["task_id"]],
+                stall_after=self._task_stall_after,
+                now=now,
+            )
+            for task in tasks
+        ]
 
     def create_account(self, username: str, password: str) -> None:
         _validate_username(username)
@@ -1729,7 +1752,7 @@ class Collaboration:
             ).fetchall()
             next_after = rows[limit - 1]["task_number"] if len(rows) > limit else None
             return {
-                "tasks": [self._projection(connection, task) for task in rows[:limit]],
+                "tasks": self._projections(connection, rows[:limit]),
                 "next_after": next_after,
             }
 
@@ -1947,10 +1970,9 @@ class Collaboration:
                 """,
                 (self._scan_cursor, _TRACER_TASK_BATCH),
             ).fetchall()
-            if len(tasks) < _TRACER_TASK_BATCH:
-                self._scan_cursor = ""
-            elif tasks:
-                self._scan_cursor = tasks[-1]["task_id"]
+            next_cursor = (
+                tasks[-1]["task_id"] if len(tasks) == _TRACER_TASK_BATCH else ""
+            )
             for task in tasks:
                 task_id = task["task_id"]
                 anchor_event_id = _task_anchor_event_id(connection, task)
@@ -2012,6 +2034,7 @@ class Collaboration:
                     ).fetchone()
                     if inserted is not None:
                         notified.add(member_id)
+        self._scan_cursor = next_cursor
         self._notify(sorted(notified))
         return sorted(notified)
 

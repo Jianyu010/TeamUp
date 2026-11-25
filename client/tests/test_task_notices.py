@@ -110,3 +110,31 @@ def test_slow_reminder_does_not_block_the_room_inbox_stream():
             await asyncio.gather(reader, return_exceptions=True)
 
     asyncio.run(scenario())
+
+
+def test_transient_oserror_does_not_end_the_reminder_watcher(monkeypatch):
+    async def scenario():
+        wake = asyncio.Event()
+        calls = 0
+
+        async def drain(*args):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                wake.set()
+                raise ConnectionResetError("transient connection failure")
+            return False
+
+        monkeypatch.setattr("teamup_client._coordinator.drain_task_reminders", drain)
+        coordinator = Coordinator.__new__(Coordinator)
+        coordinator._upstream = SimpleNamespace(request=None)
+        coordinator._notifier = SimpleNamespace(show=None)
+        await asyncio.wait_for(
+            coordinator._watch_task_reminders(
+                SimpleNamespace(member_token="member"), wake
+            ),
+            timeout=1,
+        )
+        assert calls == 2
+
+    asyncio.run(scenario())

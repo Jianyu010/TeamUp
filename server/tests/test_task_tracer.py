@@ -1,6 +1,7 @@
 """Deterministic tests for the opt-in stalled-task reminder owner and routes."""
 
 import asyncio
+import sqlite3
 import sys
 from base64 import urlsafe_b64encode
 from concurrent.futures import ThreadPoolExecutor
@@ -359,3 +360,24 @@ def test_server_flags_must_be_supplied_together(tmp_path, monkeypatch):
     )
     with pytest.raises(SystemExit):
         main()
+
+
+def test_a_rolled_back_reminder_scan_retries_the_same_page(tmp_path, monkeypatch):
+    from teamup_server import collaboration as module
+
+    clock = Clock()
+    instance = collaboration(tmp_path, clock)
+    members, room_id = team(instance)
+    create(instance, room_id)
+    clock.advance(60)
+    monkeypatch.setattr(module, "_TRACER_TASK_BATCH", 1)
+    original = module._task_reminder_recipients
+
+    def fail(*args):
+        raise sqlite3.OperationalError("test scan failure")
+
+    monkeypatch.setattr(module, "_task_reminder_recipients", fail)
+    with pytest.raises(sqlite3.OperationalError):
+        instance.scan_task_reminders()
+    monkeypatch.setattr(module, "_task_reminder_recipients", original)
+    assert instance.scan_task_reminders() == [members["target"]["member_id"]]

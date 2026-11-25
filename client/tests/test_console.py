@@ -304,3 +304,27 @@ def test_empty_room_still_uses_the_server_board_gate():
         assert empty["state"] == "ready" and empty["messages"] == []
 
     asyncio.run(scenario())
+
+
+def test_incomplete_task_observation_bounds_upstream_pages():
+    async def scenario():
+        upstream = Upstream()
+        cursors = []
+
+        async def request(method, path, token, *, query=None):
+            if path.endswith("/tasks"):
+                cursors.append(query["after"])
+                return {
+                    "tasks": [{"participant_member_ids": []}],
+                    "next_after": query["after"] + 1 if query["after"] < 5 else None,
+                }
+            return await upstream(method, path, token, query=query)
+
+        data = await ConsoleReader(sessions, request).workspace()
+        assert cursors == [0, 1]
+        assert all(
+            membership["active_task"] is None
+            for membership in data["rooms"][0]["memberships"]
+        )
+
+    asyncio.run(scenario())
