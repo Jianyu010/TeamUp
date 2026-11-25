@@ -12,7 +12,7 @@ class Element {
   }
 
   addEventListener() {}
-  setAttribute() {}
+  setAttribute(name, value) { this[name] = value; }
 
   matches(selector) {
     assert.equal(selector, ":popover-open");
@@ -20,7 +20,12 @@ class Element {
   }
 
   append(...items) {
+    for (const item of items) item.parentElement = this;
     this.children.push(...items);
+  }
+
+  contains(item) {
+    return this === item || this.children.some((child) => child.contains?.(item));
   }
 
   replaceChildren(...items) {
@@ -38,8 +43,9 @@ class Element {
 
   querySelectorAll(selector) {
     assert.equal(selector, ".presence[data-deadline]");
-    return this.children.flatMap((row) => row.children.filter((badge) =>
-      badge.className === "presence" && Object.hasOwn(badge.dataset, "deadline")));
+    const descendants = (item) => (item.children ?? []).flatMap((child) => [child, ...descendants(child)]);
+    return descendants(this).filter((badge) =>
+      badge.className === "presence" && Object.hasOwn(badge.dataset, "deadline"));
   }
 
   remove() {
@@ -66,6 +72,7 @@ function room(t, members, messages, options = {}) {
   globalThis.document = {
     getElementById: (id) => elements.get(id),
     createElement: () => new Element(),
+    createElementNS: () => new Element(),
     createTextNode: (text) => ({textContent: text}),
     addEventListener() {},
   };
@@ -90,10 +97,13 @@ function room(t, members, messages, options = {}) {
     refresh: roster.refresh,
     reset: roster.reset,
     orderedIds: () => rail.children.map((row) => row.dataset.member),
+    action: (id) => rail.children.find((row) => row.dataset.member === id)?.children
+      .find((child) => child.className === "member-action"),
     focus(id) {
-      document.activeElement = rail.children.find((row) => row.dataset.member === id);
+      const row = rail.children.find((item) => item.dataset.member === id);
+      document.activeElement = row.children[0];
     },
-    focusedId: () => document.activeElement?.dataset.member,
+    focusedId: () => document.activeElement?.parentElement?.dataset.member,
     setTranscript(result) {
       transcript = result;
       roster.chatChanged();
@@ -196,4 +206,25 @@ test("a board refresh preserves known role labels while the roster reloads", asy
 
   assert.deepEqual(updates, [new Map([["member", "Reviewer"]])]);
   assert.deepEqual(roster.orderedIds(), []);
+});
+
+test("the roster renders icon actions only on eligible rows", async (t) => {
+  const called = [];
+  const roster = room(t, [
+    member("mine", "online"), member("target", "online"), member("other", "online"),
+  ], [], {
+    actionFor: ({id}) => ({
+      mine: {kind: "leave", run: () => called.push("mine")},
+      target: {kind: "remove", run: () => called.push("target")},
+    })[id],
+  });
+  await roster.refresh();
+  const leave = roster.action("mine");
+  assert.equal(leave?.title, "Leave this room");
+  assert.equal(leave["aria-label"], leave.title);
+  assert.equal(leave.children.length, 1);
+  assert.equal(roster.action("target")?.title, "Remove from room");
+  assert.equal(roster.action("other"), undefined);
+  leave.onclick();
+  assert.deepEqual(called, ["mine"]);
 });

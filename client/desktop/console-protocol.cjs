@@ -21,7 +21,9 @@ const reads = new Set([
   "/api/room-board", "/api/tasks", "/api/task-events",
 ]);
 const taskAction = /^\/api\/tasks\/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\/(?:join|progress|finish)$/i;
-const sessionActions = new Set(["/api/sessions/leave", "/api/sessions/retire"]);
+const actions = new Set([
+  "/api/sessions/leave", "/api/sessions/retire", "/api/room-board", "/api/room-members/remove",
+]);
 const requestLimit = 128 * 1024;
 const headers = {
   "Cache-Control": "no-store",
@@ -101,8 +103,7 @@ function createConsoleHandler(directory, getEndpoint, resetEndpoint = () => {}) 
     }
     const isRead = request.method === "GET" && reads.has(target.pathname);
     const isAction = request.method === "POST" &&
-      (target.pathname === "/api/room-board" || taskAction.test(target.pathname) ||
-        sessionActions.has(target.pathname));
+      (actions.has(target.pathname) || taskAction.test(target.pathname));
     if (!isRead && !isAction) return failure(404, "not_found");
     if (request.initiatorOrigin !== CONSOLE_ORIGIN) return failure(403, "forbidden");
 

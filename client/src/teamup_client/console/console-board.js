@@ -85,7 +85,8 @@ export function roomBoard({get, request}) {
   }
 
   function select(next) {
-    if (viewer?.id !== next?.id || viewer?.member_id !== next?.member_id) {
+    if (viewer?.id !== next?.id || viewer?.member_id !== next?.member_id ||
+        viewer?.membership_id !== next?.membership_id) {
       clear();
     } else if (viewer && next.current > viewer.current && editingVersion === null) {
       pending = null;

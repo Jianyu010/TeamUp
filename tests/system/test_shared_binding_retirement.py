@@ -322,3 +322,64 @@ def test_console_departure_and_retirement_reach_mcp_and_persist_history(develope
             ]
 
     asyncio.run(asyncio.wait_for(scenario(), 45))
+
+
+def test_creator_removes_using_console_and_mcp_without_sharing_permissions(developer):
+    async def exercise():
+        async with (
+            console_client(developer) as console,
+            developer.agent() as creator,
+            developer.agent(index=1) as sibling,
+        ):
+            owner = await tool(creator, "register", role_description="Creator")
+            guest = await tool(sibling, "register", role_description="Sibling")
+            room = (await tool(creator, "create_room", name="Moderation"))["room_id"]
+            await tool(sibling, "join_room", room_id=room)
+            snapshot = (await console.get("/api/workspace")).json()
+            bindings = {session["member_id"]: session["id"] for session in snapshot["sessions"]}
+            owner_session = bindings[owner["member_id"]]
+            guest_session = bindings[guest["member_id"]]
+            memberships = {row["session"]: row for row in snapshot["rooms"][0]["memberships"]}
+            assert memberships[owner_session]["can_remove_members"] is True
+            assert not memberships[guest_session].get("can_remove_members")
+            roster = (
+                await console.get("/api/room-members", params={"room": room, "session": guest_session})
+            ).json()
+            target = next(row for row in roster["members"] if row["id"] == guest["member_id"])
+            inputs = {"room_id": room, "member_id": guest["member_id"],
+                      "membership_id": target["membership_id"]}
+            board = (
+                await console.get("/api/room-board", params={"room": room, "session": guest_session})
+            ).json()
+            assert board["board"]["can_edit"] is False
+            denied = await console.post(
+                "/api/room-board",
+                params={"room": room, "session": guest_session},
+                json={"version": 1, "rules": "Sibling rules.", "protocol": "Sibling protocol."},
+            )
+            assert denied.status_code == 403
+            await tool(sibling, "remove_room_member", error="forbidden", **inputs)
+            params = {"room": room, "member": guest["member_id"], "session": owner_session}
+            removed = await console.post(
+                "/api/room-members/remove", params=params,
+                json={"membership_id": inputs["membership_id"]},
+            )
+            assert removed.status_code == 200, removed.text
+            assert removed.json()["state"] == "ready"
+            assert removed.json()["departure_event_id"] is not None
+            room_path = {"room": room, "session": guest_session}
+            assert (await console.get("/api/room", params=room_path)).json()["state"] == "not_found"
+            await tool(sibling, "join_room", room_id=room)
+            fresh = await tool(creator, "list_room_members", room_id=room)
+            member = next(row for row in fresh["members"] if row["member_id"] == guest["member_id"])
+            await tool(creator, "remove_room_member", error="membership_changed", **inputs)
+            inputs["membership_id"] = member["membership_id"]
+            assert (await tool(creator, "remove_room_member", **inputs))["member_id"] == guest["member_id"]
+            assert await tool(sibling, "list_rooms") == {"rooms": []}
+            leave = await console.post("/api/sessions/leave", params={"room": room, "session": owner_session})
+            assert leave.status_code == 200
+            (preview,) = (await console.get("/api/workspace")).json()["rooms"]
+            assert preview["memberships"] == []
+            assert preview["latest_message_id"] is None
+
+    asyncio.run(exercise())

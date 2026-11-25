@@ -88,7 +88,20 @@ export function renderTeam(result, requestedAt) {
   scheduleExpiry(list);
 }
 
-export function roomMembers({read, subject, chat, policyChanged, namesChanged}) {
+function actionIcon(kind) {
+  const ns = "http://www.w3.org/2000/svg";
+  const icon = document.createElementNS(ns, "svg");
+  const path = document.createElementNS(ns, "path");
+  icon.setAttribute("viewBox", "0 0 24 24");
+  icon.setAttribute("aria-hidden", "true");
+  path.setAttribute("d", kind === "leave"
+    ? "M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4m7 4 5 5-5 5m5-5H9"
+    : "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M16 9h6M13 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0Z");
+  icon.append(path);
+  return icon;
+}
+
+export function roomMembers({read, subject, chat, policyChanged, namesChanged, actionFor}) {
   const rail = get("roster");
   const panel = get("member-detail");
   let page = null;
@@ -192,22 +205,22 @@ export function roomMembers({read, subject, chat, policyChanged, namesChanged}) 
       }
     }
 
-    const ordered = rows.map(({button, badge}) => ({
-      button,
+    const ordered = rows.map(({row, badge}) => ({
+      row,
       online: Number(badge.dataset.presence === "online"),
-      activity: recentCommunication.get(button.dataset.member)?.index ?? -1,
+      activity: recentCommunication.get(row.dataset.member)?.index ?? -1,
     }));
     ordered.sort((a, b) => b.online - a.online || b.activity - a.activity);
     const focused = document.activeElement;
     let next = null;
     let moved = false;
-    // Place rows from the end so siblings can move around the focused button.
-    for (const {button} of ordered.reverse()) {
-      if (button !== focused && (button.parentElement !== rail || button.nextElementSibling !== next)) {
-        rail.insertBefore(button, next);
+    // Move siblings around the focused row to retain keyboard focus.
+    for (const {row} of ordered.reverse()) {
+      if (!row.contains(focused) && (row.parentElement !== rail || row.nextElementSibling !== next)) {
+        rail.insertBefore(row, next);
         moved = true;
       }
-      next = button;
+      next = row;
     }
     details(moved);
   }
@@ -232,21 +245,54 @@ export function roomMembers({read, subject, chat, policyChanged, namesChanged}) 
     get("roster-title").textContent = ready ? "Members (" + result.members.length + ")" : "Members";
     get("roster-status").textContent = !ready ? "Room members unavailable."
       : !result.members.length ? "No room members." : "";
-    const existing = new Map(Array.from(rail.children, (button) => [button.dataset.member, button]));
+    const existing = new Map(rows.map((entry) => [entry.row.dataset.member, entry]));
     const members = result.members || [];
     const names = memberNames(members);
     rows = members.map((member, index) => {
-      const button = existing.get(member.id) || element("button");
+      let entry = existing.get(member.id);
+      if (!entry) {
+        const row = element("div", undefined, "member-row");
+        const button = element("button", undefined, "member-details");
+        row.dataset.member = member.id;
+        button.type = "button";
+        button.dataset.member = member.id;
+        button.setAttribute("aria-controls", panel.id);
+        row.append(button);
+        entry = {row, button, control: null};
+      }
       existing.delete(member.id);
-      button.type = "button";
-      button.dataset.member = member.id;
-      button.setAttribute("aria-controls", panel.id);
-      button.setAttribute("aria-expanded", String(selected === button));
-      const badge = presenceBadge(member.presence, started);
-      button.replaceChildren(names[index].name, badge);
-      return {button, badge};
+      entry.button.setAttribute("aria-expanded", String(selected === entry.button));
+      entry.badge = presenceBadge(member.presence, started);
+      entry.button.replaceChildren(names[index].name, entry.badge);
+      const action = actionFor?.(member);
+      if (entry.control?.dataset.kind !== action?.kind) {
+        entry.control?.remove();
+        entry.control = null;
+        if (action) {
+          const label = action.kind === "leave" ? "Leave this room" : "Remove from room";
+          entry.control = element("button", undefined, "member-action");
+          entry.control.type = "button";
+          entry.control.title = label;
+          entry.control.setAttribute("aria-label", label);
+          entry.control.dataset.kind = action.kind;
+          entry.control.append(actionIcon(action.kind));
+          entry.row.append(entry.control);
+        }
+      }
+      if (entry.control) {
+        const control = entry.control;
+        control.onclick = async () => {
+          control.disabled = true;
+          try {
+            await action.run();
+          } finally {
+            control.disabled = false;
+          }
+        };
+      }
+      return entry;
     });
-    for (const button of existing.values()) button.remove();
+    for (const {row} of existing.values()) row.remove();
     reorder();
     scheduleExpiry(rail, reorder);
     namesChanged?.(new Map(members.map(({id}, index) => [id, names[index].label])));
@@ -271,12 +317,12 @@ export function roomMembers({read, subject, chat, policyChanged, namesChanged}) 
   }
 
   rail.addEventListener("pointerover", (event) => {
-    const button = event.target.closest("button");
+    const button = event.target.closest(".member-details");
     if (button && event.pointerType !== "touch") open(button);
   });
   rail.addEventListener("pointerleave", delayClose);
   rail.addEventListener("focusin", (event) => {
-    const button = event.target.closest("button");
+    const button = event.target.closest(".member-details");
     if (button) {
       if (selected !== button) pinned = false;
       open(button);
@@ -284,7 +330,7 @@ export function roomMembers({read, subject, chat, policyChanged, namesChanged}) 
   });
   rail.addEventListener("focusout", delayClose);
   rail.addEventListener("click", (event) => {
-    const button = event.target.closest("button");
+    const button = event.target.closest(".member-details");
     if (!button) return;
     if (selected === button && pinned) close();
     else open(button, true);

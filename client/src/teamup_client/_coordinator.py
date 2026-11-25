@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import re
 import secrets
 import sqlite3
 from contextlib import asynccontextmanager, suppress
@@ -34,6 +35,10 @@ DM = {"dm_id": is_uuid}
 HISTORY_POLICIES = ("retained", "since_joining")
 TASK_STATUSES = ("open", "finished")
 PRESENCE_INTERVAL = 15
+
+
+def _membership_id(value):
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{32}", value) is not None
 
 
 def _history_policy(value):
@@ -86,6 +91,12 @@ OPERATIONS = {
     ),
     "join_room": Operation("POST", "/rooms/{room_id}/join", ROOM),
     "leave_room": Operation("POST", "/rooms/{room_id}/leave", ROOM),
+    "list_room_members": Operation("GET", "/rooms/{room_id}/members", ROOM),
+    "remove_room_member": Operation(
+        "POST",
+        "/rooms/{room_id}/members/{member_id}/remove",
+        {**ROOM, "member_id": is_uuid, "membership_id": _membership_id},
+    ),
     "get_board": Operation("GET", "/rooms/{room_id}/board", ROOM),
     "ack_board": Operation(
         "POST", "/rooms/{room_id}/board/ack", {**ROOM, "version": POSITIVE}
@@ -413,6 +424,8 @@ class Coordinator:
             for name, value in params.items()
             if f"{{{name}}}" not in operation.route
         }
+        if method == "list_room_members":
+            fields["include_membership"] = "true"
         try:
             if operation.verb == "GET":
                 result = await self._upstream.request(

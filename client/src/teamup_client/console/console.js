@@ -109,6 +109,7 @@ const tasks = taskPanel({
 const lifecycle = sessionControls({
   request: read,
   changed(session, room, result, membershipId) {
+    if (room?.id === state.room) members.reset({preserveNames: true});
     const snapshot = state.workspace;
     const retired = snapshot.retired_sessions ?? [];
     const sessions = room ? snapshot.sessions : snapshot.sessions.filter((item) => item.id !== session.id);
@@ -139,7 +140,48 @@ const members = roomMembers({
   chat: () => state.chat,
   policyChanged: renderHistoryBoundary,
   namesChanged: tasks.updateMemberNames,
+  actionFor: rosterAction,
 });
+
+function rosterAction(member) {
+  const room = activeRoom();
+  if (!room) return;
+  const joined = readyMemberships(room);
+  const local = joined.find(({session}) => sessionFor(session)?.member_id === member.id);
+  if (local?.membership_id && (!member.membership_id || member.membership_id === local.membership_id)) {
+    const session = sessionFor(local.session);
+    return {kind: "leave", run: () => lifecycle.leave(session, room, local.membership_id)};
+  }
+  const creator = joined.find(({can_remove_members}) => can_remove_members === true);
+  if (creator && !local && member.membership_id) {
+    return {kind: "remove", run: () => removeRoomMember(room, creator.session, member)};
+  }
+}
+
+async function removeRoomMember(room, session, member) {
+  if (!window.confirm("Remove " + member.role + " from this room?")) return;
+  const status = get("session-action-status");
+  try {
+    const result = await read(
+      "/api/room-members/remove", {room: room.id, session, member: member.id},
+      {body: {membership_id: member.membership_id}},
+    );
+    if (result.state === "ready") {
+      status.textContent = member.role + " was removed from the room.";
+      if (state.page === "room" && state.room === room.id) {
+        members.reset({preserveNames: true});
+        members.refresh();
+      }
+    } else {
+      status.textContent = result.state === "membership_changed"
+        ? "The member rejoined. Check the roster before trying again."
+        : "TeamUp could not remove this member.";
+    }
+  } catch {
+    status.textContent = "TeamUp could not confirm the removal.";
+  }
+  await refresh();
+}
 
 function renderRoomView() {
   const joined = Boolean(state.reader);
@@ -315,7 +357,6 @@ function renderRoomHeader() {
   get("compact-room").textContent = room.name;
   get("room-id").value = room.id;
   get("detail").setAttribute("aria-label", room.name);
-  lifecycle.room(room, readyMemberships(room).map(({session}) => sessionFor(session)));
   const chooser = get("task-actor");
   const actors = readyMemberships(room).filter(acknowledged).map(({session}) => sessionFor(session));
   chooser.disabled = actors.length === 0;
@@ -334,6 +375,7 @@ function renderRoomHeader() {
     ...sessionFor(entry.session),
     current: entry.current,
     acknowledged: entry.acknowledged,
+    membership_id: entry.membership_id,
   }));
   boardPanel.setRoom(room.id, boardSessions, state.reader);
   const history = room.history_policy === "retained"

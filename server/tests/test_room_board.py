@@ -117,6 +117,8 @@ def test_upgrade_keeps_rooms_without_a_recorded_creator_readable(tmp_path):
         creator = member(client, "sender")
     with closing(sqlite3.connect(database)) as connection, connection:
         connection.execute("ALTER TABLE rooms DROP COLUMN creator_member_id")
+        connection.execute("PRAGMA user_version = 9")
+        connection.execute("UPDATE room_activity SET at = NULL WHERE room_id = ?", (path.rsplit("/", 1)[1],))
 
     with api(database) as client:
         view = f"{path}/board/view"
@@ -131,3 +133,90 @@ def test_upgrade_keeps_rooms_without_a_recorded_creator_readable(tmp_path):
         assert (
             get(client, "sender", f"{new_room}/board/view").json()["can_edit"] is True
         )
+
+
+def test_creator_moderation_terminates_only_the_selected_join(team):
+    path = room(team)
+    join(team, "target", path)
+    confirm(team, "sender", path)
+    confirm(team, "target", path)
+    target = member(team, "target")
+    removal = f"{path}/members/{target}/remove"
+
+    def current_join():
+        roster = get(team, "sender", f"{path}/members?include_membership=true").json()
+        return next(row["membership_id"] for row in roster["members"] if row["member_id"] == target)
+
+    assert get(team, "sender", "/rooms?include_membership=true").json()["rooms"][0][
+        "can_remove_members"
+    ]
+    assert not get(team, "target", "/rooms?include_membership=true").json()["rooms"][0][
+        "can_remove_members"
+    ]
+    assert "membership_id" not in get(team, "sender", f"{path}/members").json()["members"][0]
+    chosen = {"membership_id": current_join()}
+    error(post(team, "target", removal, json=chosen), 403, "forbidden")
+    error(post(team, "reader", removal, json=chosen), 404, "not_found")
+    error(post(team, "sender", removal, json={}), 422, "invalid_request")
+    pending = post(
+        team, "sender", f"{path}/messages", json={"client_message_id": "queued", "text": "Queued"}
+    )
+    assert pending.is_success
+    sent = post(
+        team, "target", f"{path}/messages", json={"client_message_id": "sent", "text": "Retained"}
+    )
+    assert sent.is_success
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(pool.map(lambda _: post(team, "sender", removal, json=chosen), range(2)))
+    assert all(response.is_success for response in responses)
+    receipts = [response.json() for response in responses]
+    assert all(receipt["member_id"] == target for receipt in receipts)
+    (receipt,) = [receipt for receipt in receipts if receipt["departure_event_id"] is not None]
+    error(get(team, "target", f"{path}/messages"), 404, "not_found")
+    assert post(
+        team, "sender", f"{path}/messages", json={"client_message_id": "later", "text": "Later"}
+    ).is_success
+    assert get(team, "target", "/inbox?kinds=message,room_left").json() == {
+        "events": [{"kind": "room_left", "room_id": receipt["room_id"],
+                    "event_id": receipt["departure_event_id"]}]
+    }
+    assert get(team, "sender", f"{path}/messages").json()["messages"][-2] == sent.json()
+    join(team, "target", path)
+    assert current_join() != chosen["membership_id"]
+    error(post(team, "sender", removal, json=chosen), 409, "membership_changed")
+    assert get(team, "target", f"{path}/members").status_code == 200
+
+
+def test_creator_regains_board_permission_on_rejoin_without_transferring_it(team):
+    path = room(team)
+    join(team, "target", path)
+    board = f"{path}/board"
+    update = {"version": 1, "rules": "Second rules.", "protocol": "Second protocol."}
+    assert post(team, "sender", f"{path}/leave").status_code == 200
+    error(post(team, "sender", board, json=update), 404, "not_found")
+    assert get(team, "target", f"{board}/view").json()["can_edit"] is False
+    error(post(team, "target", board, json=update), 403, "forbidden")
+    join(team, "sender", path)
+    assert get(team, "sender", f"{board}/view").json()["can_edit"] is True
+    assert post(team, "sender", board, json=update).json()["version"] == 2
+
+
+
+def test_upgrade_recovers_only_the_original_timestamped_creator(tmp_path):
+    database = tmp_path / "team.sqlite3"
+    with api(database) as client:
+        enroll(client, "sender")
+        enroll(client, "target", owner="bob")
+        path = room(client)
+        join(client, "target", path)
+        assert post(client, "sender", f"{path}/leave").status_code == 200
+    with closing(sqlite3.connect(database)) as connection, connection:
+        connection.execute("UPDATE rooms SET creator_member_id = NULL")
+        connection.execute("PRAGMA user_version = 9")
+
+    for _ in range(2):
+        with api(database) as client:
+            assert get(client, "target", f"{path}/board/view").json()["can_edit"] is False
+            join(client, "sender", path)
+            assert get(client, "sender", f"{path}/board/view").json()["can_edit"] is True

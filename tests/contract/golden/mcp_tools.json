@@ -226,6 +226,22 @@
         "type": "object"
       }
     },
+    "teamup_list_room_members": {
+      "description": "List current room members with the membership IDs for their current joins.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "room_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "room_id"
+        ],
+        "type": "object"
+      }
+    },
     "teamup_list_rooms": {
       "description": "List rooms this member created or joined, with the acknowledged and current board versions and the latest message ID.",
       "inputSchema": {
@@ -377,6 +393,32 @@
         },
         "required": [
           "role_description"
+        ],
+        "type": "object"
+      }
+    },
+    "teamup_remove_room_member": {
+      "description": "Remove a member from a room you created and are still joined to. Use the target's membership ID from the roster. Reuse it on retry.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "member_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "membership_id": {
+            "pattern": "^[0-9a-f]{32}$",
+            "type": "string"
+          },
+          "room_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "room_id",
+          "member_id",
+          "membership_id"
         ],
         "type": "object"
       }

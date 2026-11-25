@@ -525,7 +525,7 @@ def test_v4_upgrade_adds_dm_watermark_and_prunes_legacy_whole_second_rows(tmp_pa
 
     with api(db_path) as client:
         with closing(sqlite3.connect(db_path)) as connection:
-            assert connection.execute("PRAGMA user_version").fetchone()[0] == 9
+            assert connection.execute("PRAGMA user_version").fetchone()[0] == 10
             assert [
                 row[0]
                 for row in connection.execute(

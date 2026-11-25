@@ -82,6 +82,20 @@ TOOLS = [
     ),
     tool("join_room", "Join a team-visible room.", ROOM),
     tool("leave_room", "Leave a room as this member. You can rejoin later.", ROOM),
+    tool(
+        "list_room_members",
+        "List current room members with the membership IDs for their current joins.",
+        ROOM,
+    ),
+    tool(
+        "remove_room_member",
+        "Remove a member from a room you created and are still joined to. "
+        "Use the target's membership ID from the roster. Reuse it on retry.",
+        ROOM | {
+            "member_id": {"type": "string", "format": "uuid"},
+            "membership_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+        },
+    ),
     tool("get_board", "Read the room's current rules, protocol and version.", ROOM),
     tool(
         "ack_board",

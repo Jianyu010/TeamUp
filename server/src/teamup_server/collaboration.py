@@ -1297,7 +1297,7 @@ class Collaboration:
             connection.execute("PRAGMA journal_mode = WAL")
         with self._transaction(write=True) as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
-            if not 0 <= version <= 9:
+            if not 0 <= version <= 10:
                 raise ValueError("Unsupported TeamUp database schema version")
             if version == 0:
                 for statement in _SCHEMA:
@@ -1362,7 +1362,6 @@ class Collaboration:
             if version < 9:
                 for statement in _LIFECYCLE_SCHEMA:
                     connection.execute(statement)
-                connection.execute("PRAGMA user_version = 9")
             _migrate_room_tasks(connection)
             if "creator_member_id" not in {
                 row["name"] for row in connection.execute("PRAGMA table_info(rooms)")
@@ -1370,6 +1369,22 @@ class Collaboration:
                 connection.execute(
                     "ALTER TABLE rooms ADD COLUMN creator_member_id TEXT REFERENCES members(member_id)"
                 )
+            if version < 10:
+                # Room creation has always logged its initial join since activity tracking
+                # began. The activity migration backfilled earlier rooms without timestamps.
+                connection.execute(
+                    """
+                    UPDATE rooms SET creator_member_id = (
+                        SELECT CASE WHEN kind = 'member_joined' AND at IS NOT NULL
+                            THEN actor_member_id END
+                        FROM room_activity
+                        WHERE room_activity.room_id = rooms.room_id
+                        ORDER BY activity_id LIMIT 1
+                    )
+                    WHERE creator_member_id IS NULL
+                    """
+                )
+                connection.execute("PRAGMA user_version = 10")
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self._db_path, isolation_level=None)
@@ -2225,47 +2240,11 @@ class Collaboration:
         notify: bool = False,
         membership_id: str | None = None,
     ) -> dict:
-        event_id = None
         with self._transaction(write=True) as connection:
             member_id = _member(connection, token)["member_id"]
-            if membership_id is not None:
-                existing = connection.execute(
-                    "SELECT membership_id FROM room_members WHERE room_id = ? AND member_id = ?",
-                    (room_id, member_id),
-                ).fetchone()
-                if existing is not None and existing["membership_id"] != membership_id:
-                    raise CollaborationError("membership_changed")
-            removed = connection.execute(
-                "DELETE FROM room_members WHERE room_id = ? AND member_id = ?",
-                (room_id, member_id),
+            event_id = self._end_room_membership(
+                connection, room_id, member_id, membership_id, notify=notify
             )
-            if removed.rowcount:
-                connection.execute(
-                    """
-                    DELETE FROM inbox_events WHERE member_id = ? AND acknowledged = 0
-                        AND EXISTS (
-                            SELECT 1 FROM messages
-                            WHERE message_id = inbox_events.message_id AND room_id = ?
-                        )
-                    """,
-                    (member_id, room_id),
-                )
-                connection.execute(
-                    """
-                    DELETE FROM task_reminders WHERE member_id = ? AND claimed_at IS NULL
-                        AND task_id IN (SELECT task_id FROM tasks WHERE room_id = ?)
-                    """,
-                    (member_id, room_id),
-                )
-                if notify:
-                    event_id = _next_id(connection, "event_id")
-                    connection.execute(
-                        """
-                        INSERT INTO room_departures (event_id, member_id, room_id)
-                        VALUES (?, ?, ?)
-                        """,
-                        (event_id, member_id, room_id),
-                    )
         if event_id is not None:
             self._notify((member_id,))
         return (
@@ -2273,13 +2252,78 @@ class Collaboration:
             if notify else {"room_id": room_id}
         )
 
+    def remove_room_member(
+        self, token: str, room_id: str, member_id: str, membership_id: str
+    ) -> dict:
+        with self._transaction(write=True) as connection:
+            actor = _member(connection, token)["member_id"]
+            room = _room_member(connection, room_id, actor)
+            if room["creator_member_id"] != actor:
+                raise CollaborationError("forbidden")
+            event_id = self._end_room_membership(
+                connection, room_id, member_id, membership_id, notify=True
+            )
+        if event_id is not None:
+            self._notify((member_id,))
+        return {"room_id": room_id, "member_id": member_id, "departure_event_id": event_id}
+
+    @staticmethod
+    def _end_room_membership(
+        connection: sqlite3.Connection,
+        room_id: str,
+        member_id: str,
+        membership_id: str | None,
+        *,
+        notify: bool,
+    ) -> int | None:
+        existing = connection.execute(
+            "SELECT membership_id FROM room_members WHERE room_id = ? AND member_id = ?",
+            (room_id, member_id),
+        ).fetchone()
+        if existing is None:
+            return None
+        if membership_id is not None and existing["membership_id"] != membership_id:
+            raise CollaborationError("membership_changed")
+        connection.execute(
+            "DELETE FROM room_members WHERE room_id = ? AND member_id = ?",
+            (room_id, member_id),
+        )
+        connection.execute(
+            """
+            DELETE FROM inbox_events WHERE member_id = ? AND acknowledged = 0
+                AND EXISTS (
+                    SELECT 1 FROM messages
+                    WHERE message_id = inbox_events.message_id AND room_id = ?
+                )
+            """,
+            (member_id, room_id),
+        )
+        connection.execute(
+            """
+            DELETE FROM task_reminders WHERE member_id = ? AND claimed_at IS NULL
+                AND task_id IN (SELECT task_id FROM tasks WHERE room_id = ?)
+            """,
+            (member_id, room_id),
+        )
+        if not notify:
+            return None
+        event_id = _next_id(connection, "event_id")
+        connection.execute(
+            """
+            INSERT INTO room_departures (event_id, member_id, room_id)
+            VALUES (?, ?, ?)
+            """,
+            (event_id, member_id, room_id),
+        )
+        return event_id
+
     def list_rooms(self, token: str, *, include_membership: bool = False) -> list[dict]:
         with self._transaction() as connection:
             member_id = _member(connection, token)["member_id"]
             rows = connection.execute(
                 """
                 SELECT r.room_id, r.name, r.version AS current_board_version,
-                    rm.acked_board_version, rm.membership_id, (
+                    rm.acked_board_version, rm.membership_id, r.creator_member_id, (
                         SELECT MAX(m.message_id) FROM messages AS m
                         WHERE m.room_id = r.room_id
                     ) AS latest_message_id
@@ -2290,8 +2334,11 @@ class Collaboration:
                 (member_id,),
             )
             rooms = [dict(record) for record in rows]
-            if not include_membership:
-                for room in rooms:
+            for room in rooms:
+                creator = room.pop("creator_member_id")
+                if include_membership:
+                    room["can_remove_members"] = creator == member_id
+                else:
                     room.pop("membership_id")
             return rooms
 
@@ -2327,19 +2374,25 @@ class Collaboration:
                 "member_count": count,
             }
 
-    def room_members(self, token: str, room_id: str) -> list[dict]:
+    def room_members(
+        self, token: str, room_id: str, *, include_membership: bool = False
+    ) -> list[dict]:
         with self._transaction() as connection:
             member_id = _member(connection, token)["member_id"]
             _room_member(connection, room_id, member_id)
             rows = connection.execute(
                 """
-                SELECT m.member_id, m.role_description, rm.acked_board_version
+                SELECT m.member_id, m.role_description, rm.acked_board_version, rm.membership_id
                 FROM room_members AS rm JOIN members AS m ON m.member_id = rm.member_id
                 WHERE rm.room_id = ? ORDER BY m.member_id
                 """,
                 (room_id,),
             )
-            return [dict(row) for row in rows]
+            members = [dict(row) for row in rows]
+            if not include_membership:
+                for row in members:
+                    row.pop("membership_id")
+            return members
 
     def view_board(self, token: str, room_id: str) -> dict:
         with self._transaction() as connection:
