@@ -1,9 +1,10 @@
 """The public JSON and SSE transport for Collaboration."""
 
 import asyncio
+import logging
 import re
 from collections.abc import AsyncGenerator
-from contextlib import aclosing
+from contextlib import aclosing, asynccontextmanager
 from typing import Annotated, Literal
 from urllib.parse import unquote_to_bytes
 from uuid import UUID
@@ -37,6 +38,7 @@ _ERRORS = {
 }
 _UUID = re.compile(r"[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}")
 _KEEPALIVE_SECONDS = 15
+_LOGGER = logging.getLogger(__name__)
 
 
 def _nonblank(value: str) -> str:
@@ -191,10 +193,50 @@ class _InboxStream(StreamingResponse):
 class Gateway:
     """Maps HTTP requests to Collaboration and owns active streaming connections."""
 
-    def __init__(self, collaboration: Collaboration):
+    def __init__(
+        self,
+        collaboration: Collaboration,
+        *,
+        task_tracer_period: float | None = None,
+    ):
         self._stopping = False
         self._streams: set[asyncio.Event] = set()
-        self.app = app = FastAPI(openapi_url=None, redirect_slashes=False)
+        self._task_tracer_period = task_tracer_period
+
+        @asynccontextmanager
+        async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
+            if self._task_tracer_period is None:
+                yield
+                return
+            stopped = asyncio.Event()
+
+            async def trace() -> None:
+                while not stopped.is_set():
+                    try:
+                        await run_in_threadpool(
+                            collaboration.scan_task_reminders
+                        )
+                    except Exception:
+                        _LOGGER.exception("The task reminder scan failed")
+                    try:
+                        await asyncio.wait_for(
+                            stopped.wait(), timeout=self._task_tracer_period
+                        )
+                    except TimeoutError:
+                        pass
+
+            scanner = asyncio.create_task(trace())
+            try:
+                yield
+            finally:
+                stopped.set()
+                await scanner
+
+        self.app = app = FastAPI(
+            openapi_url=None,
+            redirect_slashes=False,
+            lifespan=lifespan,
+        )
 
         @app.exception_handler(CollaborationError)
         async def collaboration_error(
@@ -363,6 +405,26 @@ class Gateway:
             return collaboration.task_history(
                 token, room_id, task_id, after, limit
             )
+
+        @app.get(
+            "/v1/task-reminders",
+            dependencies=[Depends(_require_query_utf8)],
+        )
+        def task_reminders(
+            token: _Bearer, after: _After = 0, limit: _Limit = 50
+        ) -> dict:
+            return {
+                "reminders": collaboration.task_reminders(token, after, limit)
+            }
+
+        @app.post(
+            "/v1/task-reminders/{reminder_id}/claim",
+            dependencies=[Depends(_reject_body)],
+        )
+        def claim_task_reminder(
+            token: _Bearer, reminder_id: Annotated[int, Path(gt=0)]
+        ) -> dict:
+            return collaboration.claim_task_reminder(token, reminder_id)
 
         @app.get("/v1/inbox")
         def inbox(token: _Bearer, after: _After = 0, limit: _Limit = 50) -> dict:

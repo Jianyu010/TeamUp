@@ -10,7 +10,7 @@ from collections import deque
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import AbstractContextManager, closing, contextmanager, suppress
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from functools import partial
 from hashlib import sha256
 from hmac import compare_digest
@@ -69,6 +69,8 @@ _VISIBLE_TASK = """
         )
     )
 """
+_TRACER_TASK_BATCH = 100
+_REMINDER_PAGE_SCAN = 1000
 
 _SCHEMA = (
     """
@@ -229,6 +231,32 @@ _TASK_SCHEMA = (
         PRIMARY KEY (actor_member_id, retry_kind, client_key)
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS task_reminders (
+        reminder_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        task_id TEXT NOT NULL REFERENCES tasks(task_id),
+        member_id TEXT NOT NULL REFERENCES members(member_id),
+        anchor_event_id INTEGER NOT NULL,
+        stalled_since TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        claimed_at TEXT
+    )
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS task_reminder_pending
+    ON task_reminders (task_id, member_id, anchor_event_id)
+    WHERE claimed_at IS NULL
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS task_reminder_member_page
+    ON task_reminders (member_id, reminder_id)
+    WHERE claimed_at IS NULL
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS task_reminder_anchor
+    ON task_reminders (task_id, member_id, anchor_event_id, reminder_id)
+    """,
+    "CREATE INDEX IF NOT EXISTS task_tracer_scan ON tasks (status, task_id)",
 )
 
 
@@ -261,9 +289,17 @@ def _next_id(connection: sqlite3.Connection, counter: str) -> int:
         (counter,),
     ).fetchone()[0]
 
-
 def _rfc3339_utc_now() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _rfc3339(value: datetime) -> str:
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _parse_rfc3339(value: str) -> datetime:
+    return datetime.fromisoformat(value)
+
 
 ChangeListener = Callable[[], None]
 ObserveInbox = Callable[[ChangeListener], AbstractContextManager[None]]
@@ -484,8 +520,139 @@ def _task_visible(
     )
 
 
-def _task_projection(
+def _task_anchor_event_id(
     connection: sqlite3.Connection, task: sqlite3.Row
+) -> int | None:
+    """The first join or latest progress event that opens an activity period."""
+    if task["last_progress_at"] is not None:
+        query = """
+            SELECT MAX(event_id) FROM task_events
+            WHERE task_id = ? AND kind = 'progress'
+        """
+    else:
+        query = """
+            SELECT MIN(event_id) FROM task_events
+            WHERE task_id = ? AND kind = 'joined'
+        """
+    return connection.execute(query, (task["task_id"],)).fetchone()[0]
+
+
+def _task_stall_at(task: sqlite3.Row, stall_after: int | None) -> datetime | None:
+    if stall_after is None or task["status"] != "open":
+        return None
+    anchor = task["last_progress_at"] or task["started_at"]
+    if anchor is None:
+        return None
+    return _parse_rfc3339(anchor) + timedelta(seconds=stall_after)
+
+
+def _task_stalled_since(
+    task: sqlite3.Row, stall_after: int | None, now: datetime
+) -> str | None:
+    stalled_at = _task_stall_at(task, stall_after)
+    if stalled_at is None or now < stalled_at:
+        return None
+    return _rfc3339(stalled_at)
+
+
+def _reminder_eligible(
+    connection: sqlite3.Connection,
+    task: sqlite3.Row,
+    member_id: str,
+) -> bool:
+    if task["status"] != "open":
+        return False
+    if not _task_visible(connection, task, member_id):
+        return False
+    enabled = connection.execute(
+        """
+        SELECT 1 FROM members AS m
+        WHERE m.member_id = ? AND NOT EXISTS (
+            SELECT 1 FROM accounts AS a
+            WHERE a.owner_id = m.owner_id AND a.disabled = 1
+        )
+        """,
+        (member_id,),
+    ).fetchone()
+    if enabled is None:
+        return False
+    membership = connection.execute(
+        """
+        SELECT 1 FROM room_members AS rm JOIN rooms AS r USING (room_id)
+        WHERE rm.room_id = ? AND rm.member_id = ?
+            AND rm.acked_board_version = r.version
+        """,
+        (task["room_id"], member_id),
+    ).fetchone()
+    if membership is None:
+        return False
+    return (
+        connection.execute(
+            """
+            SELECT 1 FROM task_participants
+            WHERE task_id = ? AND member_id = ?
+            """,
+            (task["task_id"], member_id),
+        ).fetchone()
+        is not None
+    )
+
+
+def _task_reminder_recipients(
+    connection: sqlite3.Connection, task: sqlite3.Row
+) -> list[str]:
+    return [
+        row[0]
+        for row in connection.execute(
+            """
+            SELECT tp.member_id
+            FROM task_participants AS tp
+            JOIN tasks AS t ON t.task_id = tp.task_id
+            JOIN members AS m ON m.member_id = tp.member_id
+            JOIN room_members AS rm
+                ON rm.room_id = ? AND rm.member_id = tp.member_id
+            JOIN rooms AS r ON r.room_id = rm.room_id
+            WHERE tp.task_id = ?
+                AND rm.acked_board_version = r.version
+                AND NOT EXISTS (
+                    SELECT 1 FROM accounts AS a
+                    WHERE a.owner_id = m.owner_id AND a.disabled = 1
+                )
+                AND (
+                    t.creator_member_id = tp.member_id
+                    OR NOT EXISTS (
+                        SELECT 1 FROM task_addressees AS a
+                        WHERE a.task_id = t.task_id
+                    )
+                    OR EXISTS (
+                        SELECT 1 FROM task_addressees AS a
+                        WHERE a.task_id = t.task_id
+                            AND a.member_id = tp.member_id
+                    )
+                )
+            ORDER BY tp.member_id
+            """,
+            (task["room_id"], task["task_id"]),
+        )
+    ]
+
+
+def _reminder_projection(reminder: sqlite3.Row) -> dict:
+    return {
+        "reminder_id": reminder["reminder_id"],
+        "room_id": reminder["room_id"],
+        "task_id": reminder["task_id"],
+        "title": reminder["title"],
+        "stalled_since": reminder["stalled_since"],
+    }
+
+
+def _task_projection(
+    connection: sqlite3.Connection,
+    task: sqlite3.Row,
+    *,
+    stall_after: int | None,
+    now: datetime,
 ) -> dict:
     task_id = task["task_id"]
     return {
@@ -516,7 +683,7 @@ def _task_projection(
         "started_at": task["started_at"],
         "last_progress_at": task["last_progress_at"],
         "finished_at": task["finished_at"],
-        "stalled_since": None,
+        "stalled_since": _task_stalled_since(task, stall_after, now),
     }
 
 
@@ -572,7 +739,27 @@ def _add_task_event(
 class Collaboration:
     """Public operations and post-commit inbox subscriptions."""
 
-    def __init__(self, db_path: str | Path, enrollment_keys: Mapping[str, str]):
+    def __init__(
+        self,
+        db_path: str | Path,
+        enrollment_keys: Mapping[str, str],
+        *,
+        task_stall_after: int | None = None,
+        task_reminder_interval: int | None = None,
+        clock: Callable[[], datetime] | None = None,
+    ):
+        if (task_stall_after is None) != (task_reminder_interval is None):
+            raise ValueError(
+                "task_stall_after and task_reminder_interval are both required"
+            )
+        if task_stall_after is not None and (
+            task_stall_after <= 0 or task_reminder_interval <= 0
+        ):
+            raise ValueError("Task tracing durations must be positive")
+        self._task_stall_after = task_stall_after
+        self._task_reminder_interval = task_reminder_interval
+        self._clock = clock or (lambda: datetime.now(UTC))
+        self._scan_cursor = ""
         self._db_path = Path(db_path).resolve()
         self._enrollment_keys = _enrollment_digests(enrollment_keys)
         self._listeners: dict[str, set[ChangeListener]] = {}
@@ -621,6 +808,25 @@ class Collaboration:
         with closing(self._connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE" if write else "BEGIN")
             yield connection
+
+    def _now_datetime(self) -> datetime:
+        value = self._clock()
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
+
+    def _now(self) -> str:
+        return _rfc3339(self._now_datetime())
+
+    def _projection(
+        self, connection: sqlite3.Connection, task: sqlite3.Row
+    ) -> dict:
+        return _task_projection(
+            connection,
+            task,
+            stall_after=self._task_stall_after,
+            now=self._now_datetime(),
+        )
 
     def create_account(self, username: str, password: str) -> None:
         _validate_username(username)
@@ -1159,11 +1365,11 @@ class Collaboration:
                 task = _task_row(connection, room_id, retry["task_id"])
                 if task is None:
                     raise CollaborationError("not_found")
-                return _task_projection(connection, task)
+                return self._projection(connection, task)
             addressees = _validated_addressees(
                 connection, room_id, raw_addressees
             )
-            now = _rfc3339_utc_now()
+            now = self._now()
             task_id = str(uuid4())
             task_number = connection.execute(
                 """
@@ -1209,7 +1415,7 @@ class Collaboration:
             task = _task_row(connection, room_id, task_id)
             if task is None:
                 raise CollaborationError("not_found")
-            return _task_projection(connection, task)
+            return self._projection(connection, task)
 
     def list_tasks(
         self,
@@ -1248,7 +1454,7 @@ class Collaboration:
             )
             return {
                 "tasks": [
-                    _task_projection(connection, task) for task in rows[:limit]
+                    self._projection(connection, task) for task in rows[:limit]
                 ],
                 "next_after": next_after,
             }
@@ -1256,7 +1462,7 @@ class Collaboration:
     def get_task(self, token: str, room_id: str, task_id: str) -> dict:
         with self._transaction() as connection:
             _, task = _authorized_task(connection, token, room_id, task_id)
-            return _task_projection(connection, task)
+            return self._projection(connection, task)
 
     def join_task(self, token: str, room_id: str, task_id: str) -> dict:
         with self._transaction(write=True) as connection:
@@ -1288,10 +1494,10 @@ class Collaboration:
                 ).fetchone()
                 is not None
             ):
-                return _task_projection(connection, task)
+                return self._projection(connection, task)
             if task["status"] != "open":
                 raise CollaborationError("conflict")
-            now = _rfc3339_utc_now()
+            now = self._now()
             connection.execute(
                 """
                 INSERT INTO task_participants (task_id, member_id, joined_at)
@@ -1313,7 +1519,7 @@ class Collaboration:
             joined = _task_row(connection, room_id, task_id)
             if joined is None:
                 raise CollaborationError("not_found")
-            return _task_projection(connection, joined)
+            return self._projection(connection, joined)
 
     def report_progress(
         self,
@@ -1350,10 +1556,10 @@ class Collaboration:
             if retry is not None:
                 if retry["fingerprint"] != fingerprint:
                     raise CollaborationError("conflict")
-                return _task_projection(connection, task)
+                return self._projection(connection, task)
             if task["status"] != "open":
                 raise CollaborationError("conflict")
-            now = _rfc3339_utc_now()
+            now = self._now()
             connection.execute(
                 """
                 UPDATE tasks SET
@@ -1369,6 +1575,13 @@ class Collaboration:
             )
             connection.execute(
                 """
+                DELETE FROM task_reminders
+                WHERE task_id = ? AND claimed_at IS NULL
+                """,
+                (task_id,),
+            )
+            connection.execute(
+                """
                 INSERT INTO task_retries (
                     actor_member_id, retry_kind, client_key, task_id, fingerprint
                 ) VALUES (?, 'progress', ?, ?, ?)
@@ -1378,7 +1591,7 @@ class Collaboration:
             updated = _task_row(connection, room_id, task_id)
             if updated is None:
                 raise CollaborationError("not_found")
-            return _task_projection(connection, updated)
+            return self._projection(connection, updated)
 
     def finish_task(self, token: str, room_id: str, task_id: str) -> dict:
         with self._transaction(write=True) as connection:
@@ -1398,8 +1611,8 @@ class Collaboration:
             if task["creator_member_id"] != member_id and not participant:
                 raise CollaborationError("not_found")
             if task["status"] == "finished":
-                return _task_projection(connection, task)
-            now = _rfc3339_utc_now()
+                return self._projection(connection, task)
+            now = self._now()
             connection.execute(
                 """
                 UPDATE tasks SET
@@ -1412,10 +1625,13 @@ class Collaboration:
                 (now, now, task_id),
             )
             _add_task_event(connection, task_id, member_id, "finished", now)
+            connection.execute(
+                "DELETE FROM task_reminders WHERE task_id = ?", (task_id,)
+            )
             finished = _task_row(connection, room_id, task_id)
             if finished is None:
                 raise CollaborationError("not_found")
-            return _task_projection(connection, finished)
+            return self._projection(connection, finished)
 
     def task_history(
         self,
@@ -1445,6 +1661,197 @@ class Collaboration:
                 "events": [dict(row) for row in rows[:limit]],
                 "next_after": next_after,
             }
+
+    def scan_task_reminders(self) -> list[str]:
+        """Commit pending reminders for one bounded, indexed page of open tasks."""
+        if self._task_stall_after is None:
+            return []
+        now = self._now_datetime()
+        notified: set[str] = set()
+        with self._transaction(write=True) as connection:
+            tasks = connection.execute(
+                f"""
+                SELECT {_TASK} FROM tasks AS t
+                WHERE t.status = 'open' AND t.started_at IS NOT NULL
+                    AND t.task_id > ?
+                ORDER BY t.task_id
+                LIMIT ?
+                """,
+                (self._scan_cursor, _TRACER_TASK_BATCH),
+            ).fetchall()
+            if len(tasks) < _TRACER_TASK_BATCH:
+                self._scan_cursor = ""
+            elif tasks:
+                self._scan_cursor = tasks[-1]["task_id"]
+            for task in tasks:
+                task_id = task["task_id"]
+                anchor_event_id = _task_anchor_event_id(connection, task)
+                if anchor_event_id is None:
+                    connection.execute(
+                        """
+                        DELETE FROM task_reminders
+                        WHERE task_id = ? AND claimed_at IS NULL
+                        """,
+                        (task_id,),
+                    )
+                    continue
+                connection.execute(
+                    """
+                    DELETE FROM task_reminders
+                    WHERE task_id = ? AND claimed_at IS NULL
+                        AND anchor_event_id != ?
+                    """,
+                    (task_id, anchor_event_id),
+                )
+                stalled_at = _task_stall_at(task, self._task_stall_after)
+                if stalled_at is None or now < stalled_at:
+                    continue
+                stalled_since = _rfc3339(stalled_at)
+                for member_id in _task_reminder_recipients(connection, task):
+                    previous = connection.execute(
+                        """
+                        SELECT claimed_at FROM task_reminders
+                        WHERE task_id = ? AND member_id = ?
+                            AND anchor_event_id = ?
+                        ORDER BY reminder_id DESC LIMIT 1
+                        """,
+                        (task_id, member_id, anchor_event_id),
+                    ).fetchone()
+                    if previous is not None:
+                        if previous["claimed_at"] is None:
+                            continue
+                        due = _parse_rfc3339(previous["claimed_at"]) + timedelta(
+                            seconds=self._task_reminder_interval
+                        )
+                        if now < due:
+                            continue
+                    inserted = connection.execute(
+                        """
+                        INSERT INTO task_reminders (
+                            task_id, member_id, anchor_event_id,
+                            stalled_since, created_at
+                        ) VALUES (?, ?, ?, ?, ?)
+                        ON CONFLICT DO NOTHING
+                        RETURNING reminder_id
+                        """,
+                        (
+                            task_id,
+                            member_id,
+                            anchor_event_id,
+                            stalled_since,
+                            _rfc3339(now),
+                        ),
+                    ).fetchone()
+                    if inserted is not None:
+                        notified.add(member_id)
+        self._notify(sorted(notified))
+        return sorted(notified)
+
+    def _reminder_row_eligible(
+        self,
+        connection: sqlite3.Connection,
+        reminder: sqlite3.Row,
+        member_id: str,
+        now: datetime,
+    ) -> bool:
+        if self._task_stall_after is None or reminder["status"] != "open":
+            return False
+        stalled_at = _task_stall_at(reminder, self._task_stall_after)
+        if stalled_at is None or now < stalled_at:
+            return False
+        if (
+            _task_anchor_event_id(connection, reminder)
+            != reminder["anchor_event_id"]
+        ):
+            return False
+        return _reminder_eligible(connection, reminder, member_id)
+
+    def task_reminders(
+        self, token: str, after: int = 0, limit: int = 50
+    ) -> list[dict]:
+        if self._task_stall_after is None or limit <= 0:
+            return []
+        with self._transaction() as connection:
+            member_id = _member(connection, token)["member_id"]
+            now = self._now_datetime()
+            cursor = min(max(after, 0), _SQLITE_MAX_ID)
+            reminders: list[dict] = []
+            while len(reminders) < limit:
+                rows = connection.execute(
+                    f"""
+                    SELECT r.reminder_id, r.task_id, r.anchor_event_id,
+                        r.stalled_since, {_TASK}
+                    FROM task_reminders AS r
+                    JOIN tasks AS t ON t.task_id = r.task_id
+                    WHERE r.member_id = ? AND r.claimed_at IS NULL
+                        AND r.reminder_id > ?
+                    ORDER BY r.reminder_id
+                    LIMIT ?
+                    """,
+                    (member_id, cursor, _REMINDER_PAGE_SCAN),
+                ).fetchall()
+                if not rows:
+                    break
+                for row in rows:
+                    cursor = row["reminder_id"]
+                    if self._reminder_row_eligible(
+                        connection, row, member_id, now
+                    ):
+                        reminders.append(_reminder_projection(row))
+                        if len(reminders) >= limit:
+                            break
+                if len(rows) < _REMINDER_PAGE_SCAN:
+                    break
+            return reminders
+
+    def claim_task_reminder(self, token: str, reminder_id: int) -> dict:
+        if self._task_stall_after is None:
+            raise CollaborationError("not_found")
+        with self._transaction(write=True) as connection:
+            member_id = _member(connection, token)["member_id"]
+            if not 1 <= reminder_id <= _SQLITE_MAX_ID:
+                raise CollaborationError("not_found")
+            reminder = connection.execute(
+                f"""
+                SELECT r.reminder_id, r.task_id, r.anchor_event_id,
+                    r.stalled_since, {_TASK}
+                FROM task_reminders AS r
+                JOIN tasks AS t ON t.task_id = r.task_id
+                WHERE r.reminder_id = ? AND r.member_id = ?
+                    AND r.claimed_at IS NULL
+                """,
+                (reminder_id, member_id),
+            ).fetchone()
+            if reminder is None:
+                raise CollaborationError("not_found")
+            now = self._now_datetime()
+            if not self._reminder_row_eligible(
+                connection, reminder, member_id, now
+            ):
+                if (
+                    reminder["status"] != "open"
+                    or _task_anchor_event_id(connection, reminder)
+                    != reminder["anchor_event_id"]
+                ):
+                    connection.execute(
+                        """
+                        DELETE FROM task_reminders
+                        WHERE reminder_id = ? AND claimed_at IS NULL
+                        """,
+                        (reminder_id,),
+                    )
+                raise CollaborationError("not_found")
+            claimed = connection.execute(
+                """
+                UPDATE task_reminders SET claimed_at = ?
+                WHERE reminder_id = ? AND claimed_at IS NULL
+                RETURNING reminder_id
+                """,
+                (_rfc3339(now), reminder_id),
+            ).fetchone()
+            if claimed is None:
+                raise CollaborationError("not_found")
+            return _reminder_projection(reminder)
 
     def inbox(self, token: str, after: int, limit: int) -> list[dict]:
         with self._transaction() as connection:

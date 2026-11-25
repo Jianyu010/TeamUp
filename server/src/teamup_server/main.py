@@ -16,15 +16,59 @@ from . import account_cli
 from .collaboration import Collaboration
 from .gateway import Gateway
 
+_TRACER_MAX_PERIOD_SECONDS = 60
+
 
 def create_app(
-    db_path: str | Path, enrollment_keys: Mapping[str, str] | None = None
+    db_path: str | Path,
+    enrollment_keys: Mapping[str, str] | None = None,
+    *,
+    task_stall_after: int | None = None,
+    task_reminder_interval: int | None = None,
+    clock=None,
 ) -> FastAPI:
-    return _compose(db_path, enrollment_keys or {}).app
+    return _compose(
+        db_path,
+        enrollment_keys or {},
+        task_stall_after=task_stall_after,
+        task_reminder_interval=task_reminder_interval,
+        clock=clock,
+    ).app
 
 
-def _compose(db_path: str | Path, enrollment_keys: Mapping[str, str]) -> Gateway:
-    return Gateway(Collaboration(db_path, enrollment_keys))
+def _compose(
+    db_path: str | Path,
+    enrollment_keys: Mapping[str, str],
+    *,
+    task_stall_after: int | None = None,
+    task_reminder_interval: int | None = None,
+    clock=None,
+) -> Gateway:
+    if (task_stall_after is None) != (task_reminder_interval is None):
+        raise ValueError(
+            "task_stall_after and task_reminder_interval are both required"
+        )
+    if task_stall_after is not None and (
+        task_stall_after <= 0 or task_reminder_interval <= 0
+    ):
+        raise ValueError("Task tracing durations must be positive")
+    collaboration = Collaboration(
+        db_path,
+        enrollment_keys,
+        task_stall_after=task_stall_after,
+        task_reminder_interval=task_reminder_interval,
+        clock=clock,
+    )
+    period = (
+        min(
+            task_stall_after,
+            task_reminder_interval,
+            _TRACER_MAX_PERIOD_SECONDS,
+        )
+        if task_stall_after is not None
+        else None
+    )
+    return Gateway(collaboration, task_tracer_period=period)
 
 
 class _Server(uvicorn.Server):
@@ -42,6 +86,16 @@ def _loopback(host: str) -> bool:
         return ip_address(host).is_loopback
     except ValueError:
         return False
+
+
+def _positive_seconds(value: str) -> int:
+    try:
+        seconds = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("Expected a positive integer") from None
+    if seconds <= 0:
+        raise argparse.ArgumentTypeError("Expected a positive integer")
+    return seconds
 
 
 def _enrollment_keys() -> dict[str, str]:
@@ -73,16 +127,27 @@ def main() -> None:
     parser.add_argument("--port", default=8765, type=int)
     parser.add_argument("--tls-cert", type=Path)
     parser.add_argument("--tls-key", type=Path)
+    parser.add_argument("--task-stall-after", type=_positive_seconds)
+    parser.add_argument("--task-reminder-interval", type=_positive_seconds)
     args = parser.parse_args()
     if not 0 <= args.port <= 65535:
         parser.error("--port must be between 0 and 65535")
     if bool(args.tls_cert) != bool(args.tls_key):
         parser.error("--tls-cert and --tls-key are both required to enable TLS")
+    if (args.task_stall_after is None) != (args.task_reminder_interval is None):
+        parser.error(
+            "--task-stall-after and --task-reminder-interval are both required"
+        )
     host = "127.0.0.1" if args.host.lower() == "localhost" else args.host
     if not _loopback(host) and not args.tls_cert:
         parser.error("Non-loopback listeners require TLS")
     try:
-        gateway = _compose(args.db, _enrollment_keys())
+        gateway = _compose(
+            args.db,
+            _enrollment_keys(),
+            task_stall_after=args.task_stall_after,
+            task_reminder_interval=args.task_reminder_interval,
+        )
     except ValueError as exc:
         parser.error(str(exc))
     config = uvicorn.Config(
