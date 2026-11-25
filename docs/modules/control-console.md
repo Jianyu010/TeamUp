@@ -103,6 +103,8 @@ Transcript 翻页不使用 `after`：入口请求省略 `before` 取得最新页
 6. **渲染安全**：所有用户文本一律经 `textContent` 渲染，不使用 `innerHTML` 等注入口；无任何站外 fetch 目标。
 7. **状态与布局**：只读；房间列表（名称、成员数、最近活动时间）、roster（角色、公告确认状态、最近活动、harness **Unknown**）、Timeline 与 Chats 两个独立页签（各自含分页与友好的空态、加载态、错误态、无权限态）；键盘可达、响应式密度；内容与布局遵循 [mockup](../assets/teamup-control-console.excalidraw)。
 
+Timeline 按 `msg-N` 显示活动关联的 `message_id`，例如 `msg-42`。关联 ID 为 null 时省略引用。见 [会话历史契约](conversation-history.md#记录和迁移)。
+
 ## 活动投影（Timeline 数据来源）
 
 - `room_activity` 表：`activity_id` 全局单调递增（SQLite AUTOINCREMENT，删除后不复用）、`room_id`、`kind` ∈ {`member_joined`,`board_acknowledged`,`message`,`delivery`}、`at`（RFC 3339 文本或 null）、`actor_member_id`、`message_id`（消息与投递类活动指向对应消息，加入与确认活动恒为 null）。

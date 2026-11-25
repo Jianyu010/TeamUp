@@ -307,6 +307,12 @@ def test_html_no_implementation_only_or_redundant_copy(html):
         assert token not in html
 
 
+def test_js_timeline_uses_prefixed_message_references(js):
+    detail = function_source(js, "activityDetail")
+    assert "if (activity.message_id)" in detail
+    assert '"message msg-" + String(activity.message_id)' in detail
+
+
 def test_js_referenced_ids_exist(html, js):
     referenced = set(re.findall(r'getElementById\(["\']([^"\']+)["\']\)', js))
     defined = set(re.findall(r'id="([^"]+)"', html))

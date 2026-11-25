@@ -1,6 +1,7 @@
 """Read projections for the local console using existing member authorization."""
 
 import asyncio
+import re
 from collections import Counter
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -21,26 +22,58 @@ VERSION_OBSERVATION_SECONDS = 2
 MAX_BEFORE = 1 << 63  # The Server treats this as an unbounded latest-page read.
 
 
-def _member_labels(members: list[dict]) -> dict[str, str]:
-    roles = {member["member_id"]: member["role_description"] for member in members}
-    counts = Counter(roles.values())
+@dataclass(frozen=True)
+class _MessageMember:
+    label: str
+    route_name: str
+    legacy_title: str | None = None
+
+
+def _message_members(members: list[dict]) -> dict[str, _MessageMember]:
+    profiles = {}
+    for member in members:
+        label = member["role_description"]
+        name = label
+        title = None
+        structured_name = member.get("name")
+        if isinstance(structured_name, str) and is_string(structured_name):
+            name = structured_name
+        else:
+            parts = [part.strip() for part in re.split(r":(?=\s)|：", label, maxsplit=1)]
+            if len(parts) == 2 and all(parts):
+                name, title = parts
+        profiles[member["member_id"]] = _MessageMember(label, name, title)
+    labels = Counter(profile.label for profile in profiles.values())
+    route_names = Counter(profile.route_name for profile in profiles.values())
     return {
-        identifier: f"{role} ({identifier[:8]})" if counts[role] > 1 else role
-        for identifier, role in roles.items()
+        identifier: _MessageMember(
+            f"{profile.label} ({identifier[:8]})"
+            if labels[profile.label] > 1 else profile.label,
+            f"{profile.route_name} ({identifier[:8]})"
+            if route_names[profile.route_name] > 1 else profile.route_name,
+            profile.legacy_title,
+        )
+        for identifier, profile in profiles.items()
     }
 
 
-def _message(item: dict, labels: dict[str, str]) -> dict:
+def _message(item: dict, members: dict[str, _MessageMember]) -> dict:
+    def member_for(identifier: str) -> _MessageMember:
+        short_id = identifier[:8]
+        return members.get(identifier) or _MessageMember(short_id, short_id)
+
     sender = item["sender_member_id"]
-    sender_label = labels.get(sender, sender[:8])
+    sender_profile = member_for(sender)
     if item.get("sender_retired") is True:
-        sender_label = f"Retired member ({sender[:8]})"
+        label = f"Retired member ({sender[:8]})"
+        sender_profile = _MessageMember(label, label)
     first_target = item["mention_member_id"]
     targets = item.get("mention_member_ids", [first_target] if first_target else [])
-    mentioned = [labels.get(target, target[:8]) for target in targets]
+    target_profiles = [member_for(target) for target in targets]
+    mentioned = [profile.label for profile in target_profiles]
     result = {
         "id": str(item["message_id"]),
-        "sender": sender_label,
+        "sender": sender_profile.label,
         "sender_member_id": sender,
         "text": item["text"],
         "created_at": item.get("created_at"),
@@ -49,6 +82,15 @@ def _message(item: dict, labels: dict[str, str]) -> dict:
     }
     if len(mentioned) > 1:
         result["mentioned_recipients"] = mentioned
+    visible_targets = target_profiles[:2]
+    displayed_profiles = [sender_profile, *visible_targets]
+    legacy_titles = [profile.legacy_title for profile in displayed_profiles if profile.legacy_title]
+    if legacy_titles or any(profile.route_name != profile.label for profile in displayed_profiles):
+        result["routing"] = {
+            "sender": sender_profile.route_name,
+            "recipients": [profile.route_name for profile in visible_targets],
+            "legacy_titles": legacy_titles,
+        }
     return result
 
 
@@ -617,7 +659,7 @@ class ConsoleReader:
             return {"state": exc.code, "board": board, "messages": [], "older": None}
 
         messages = history["messages"]
-        labels: dict[str, str] = {}
+        members: dict[str, _MessageMember] = {}
         if messages:
             try:
                 directory = await self._read(session, "/members")
@@ -627,7 +669,7 @@ class ConsoleReader:
                 if exc.code in {"not_found", "not_registered", "unauthorized"}:
                     return {"state": exc.code}
             else:
-                labels = _member_labels(directory["members"])
+                members = _message_members(directory["members"])
         result = {
             "state": "ready",
             "board": board,
@@ -635,7 +677,7 @@ class ConsoleReader:
             if after is None and len(messages) == PAGE
             else None,
             "more_recent": after is not None and len(messages) == PAGE,
-            "messages": [_message(item, labels) for item in messages],
+            "messages": [_message(item, members) for item in messages],
         }
         if "expired_through_message_id" in history:
             result["expired_through_message_id"] = str(

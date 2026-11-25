@@ -277,6 +277,12 @@ def test_collaboration_skill_covers_dm_handoff_and_privacy():
     assert "wake automatically" in lowered
 
 
+def test_collaboration_skill_names_teamup_message_references():
+    skill = (ROOT / "plugin/skills/teamup-collaboration/SKILL.md").read_text()
+    assert "`msg-<message_id>`" in skill
+    assert "`msg-42`" in skill
+
+
 def test_retired_claude_attachment_does_not_retry(monkeypatch):
     from contextlib import asynccontextmanager
 

@@ -721,7 +721,7 @@ function activityDetail(activity) {
     parts.push("actor " + shortId(activity.actor_member_id));
   }
   if (activity.message_id) {
-    parts.push("message #" + String(activity.message_id));
+    parts.push("message msg-" + String(activity.message_id));
   }
   if (parts.length === 0) {
     parts.push("no details");
