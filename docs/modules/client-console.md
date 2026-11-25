@@ -12,6 +12,13 @@ On Windows x64 the Electron window runs on Windows and the Client runs in WSL2. 
 
 Windows defaults are WSL paths: `~/.config/teamup/client.json`, `~/.local/share/teamup/clients/current/.venv/bin`, and `~/.local/state/teamup/launcher`. `TEAMUP_DESKTOP_CONFIG`, `TEAMUP_DESKTOP_RUNTIME`, and `TEAMUP_DESKTOP_STATE_DIR` override those paths inside WSL. Optional `TEAMUP_DESKTOP_WSL_DISTRO` selects an installed distribution; otherwise the user's default distribution is used. Missing WSL, Python, runtime, or an unmanaged existing Client produces a startup error. This Windows adapter does not add Server, IPC or authorization operations. WSL's localhost forwarding must make the Client's IPv4 loopback listener reachable from Windows.
 
+The Windows portable package includes `Install-TeamUp.ps1` for a per-user desktop
+installation or upgrade. It stages the package, replaces only the selected TeamUp
+app directory, keeps a previous installation for rollback, and updates the desktop
+shortcut. This does not upgrade or restart the WSL Client; update that runtime
+separately while retaining its private profile and state. See the desktop README
+for the installation command and runtime selection.
+
 ## Ownership and access
 
 The optional browser listener belongs to the Client. It binds to an ephemeral port on IPv4 loopback. The HTML, styles, scripts and icon are bundled in the Client wheel. Browser data requests require the launch credential in an authorization header and the local listener checks the Host and browser origin. The launch credential is independent of TeamUp account and member tokens. Those tokens remain inside the Client.

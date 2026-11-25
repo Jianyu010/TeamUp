@@ -18,6 +18,26 @@ npm --prefix client/desktop run package:win
 
 The output is `client/desktop/dist/TeamUp-win32-x64/TeamUp.exe`. Keep the whole directory when copying or zipping the app. The local preview is unsigned. Open it twice to bring the existing window forward. Closing the window leaves the Client receiving events.
 
+To install or upgrade the desktop window for the current Windows user, extract the
+portable package outside the installed app and run its bundled installer:
+
+```powershell
+& '.\TeamUp-win32-x64\Install-TeamUp.ps1' -Start
+```
+
+The installer stages the complete package, closes only TeamUp processes from the
+destination, installs into `%LOCALAPPDATA%\Programs\TeamUp`, and creates or updates
+the desktop shortcut. An existing installation is retained beside it as
+`TeamUp.previous-<id>` for manual rollback. An incomplete package is rejected before
+the installed app is changed. The installer does not request administrator rights
+or change execution policy; a managed policy that prohibits scripts must be respected.
+
+The installer updates the Windows app only. Upgrade the WSL Client runtime using
+the Client setup instructions as well to use new console APIs. Retain the private
+profile and Client state, point `clients/current` at the new runtime, and restart
+the existing Client through its service or launcher. Installing new UI assets while
+reusing an older running Client does not upgrade that Client.
+
 Optional PowerShell settings select **WSL paths**, not Windows paths:
 
 ```powershell

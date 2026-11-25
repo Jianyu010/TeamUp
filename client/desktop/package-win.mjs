@@ -48,7 +48,10 @@ try {
     win32metadata: { CompanyName: "TeamUp", FileDescription: "TeamUp desktop console", ProductName: "TeamUp" },
     overwrite: true, prune: false,
   });
-  for (const bundle of bundles) console.log(join(bundle, "TeamUp.exe"));
+  for (const bundle of bundles) {
+    await copyFile(join(desktop, "install-win.ps1"), join(bundle, "Install-TeamUp.ps1"));
+    console.log(join(bundle, "TeamUp.exe"));
+  }
 } finally {
   const temporaryRoot = resolve(tmpdir()) + sep;
   if (!resolve(staging).startsWith(temporaryRoot) || !basename(staging).startsWith("teamup-desktop-win-")) {
