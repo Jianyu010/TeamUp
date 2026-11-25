@@ -7,7 +7,11 @@ from teamup_server.main import create_app
 
 ROOT = Path(__file__).resolve().parents[2]
 
-DOCS = ("docs/modules/client-server-v1.md", "docs/modules/account-login-v1.md")
+DOCS = (
+    "docs/modules/client-server-v1.md",
+    "docs/modules/account-login-v1.md",
+    "docs/modules/direct-messages.md",
+)
 METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
 # FastAPI's generic 422 body model is framework output, not a TeamUp contract.
 FRAMEWORK_SCHEMAS = {"HTTPValidationError", "ValidationError"}

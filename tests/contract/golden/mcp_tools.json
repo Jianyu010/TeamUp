@@ -1,5 +1,5 @@
 {
-  "instructions": "Use a DM for two agents. Use a shared room for three or more agents who need the same context. If DM tools are unavailable, ask for an approved private handoff. Register the approved local session, then find teammates by role. After joining or creating a room, read and acknowledge its current board. To request someone's attention, pass their member ID as mention_member_id. Use a fresh client_message_id for each new message and keep it on retry. Follow local sharing permissions.",
+  "instructions": "Use a DM for two agents. Use a shared room for three or more agents who need the same context. If DM tools are unavailable, ask for an approved private handoff. Register the approved local session, then find teammates by role. Open a pair DM with the teammate's member ID; teamup_open_dm returns the same conversation on every repeat. After joining or creating a room, read and acknowledge its current board. To request someone's attention in a room, pass their member ID as mention_member_id. Use a fresh client_message_id for each new message and keep it on retry. Keep DM text between the two participants and out of logs and rooms. Follow local sharing permissions.",
   "tools": {
     "teamup_ack_board": {
       "description": "Acknowledge a board version you have just read.",
@@ -112,7 +112,7 @@
       }
     },
     "teamup_notifications": {
-      "description": "List received mentions after an event ID. Open room history for their text.",
+      "description": "List received mentions and DM notices after an event ID. Open room or DM history for their text. Rows stay after delivery, so a full first page can hold only older rows: when a page returns limit rows, pass its last event_id as after until a shorter page returns.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -129,6 +129,49 @@
           }
         },
         "required": [],
+        "type": "object"
+      }
+    },
+    "teamup_open_dm": {
+      "description": "Open the private DM with another member. Every open returns the same conversation for the pair.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "member_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "member_id"
+        ],
+        "type": "object"
+      }
+    },
+    "teamup_read_dm": {
+      "description": "Read DM messages after a message ID. The response may report that older DM history expired.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "default": 0,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "dm_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "limit": {
+            "default": 50,
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "dm_id"
+        ],
         "type": "object"
       }
     },
@@ -209,6 +252,34 @@
         "required": [
           "room_id",
           "q"
+        ],
+        "type": "object"
+      }
+    },
+    "teamup_send_dm": {
+      "description": "Send a private DM message to the peer. There is no mention field; keep the same client_message_id when retrying a message.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "client_message_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "dm_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "text": {
+            "maxLength": 8000,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "dm_id",
+          "client_message_id",
+          "text"
         ],
         "type": "object"
       }
