@@ -224,8 +224,9 @@ async def hold_attachment(
             ) as closed:
                 delay = 0.5
                 await closed.wait()
-        except ClientError:
-            pass
+        except ClientError as exc:
+            if exc.code == "member_retired":
+                return
         await asyncio.sleep(delay)
         delay = min(delay * 2, 10)
 

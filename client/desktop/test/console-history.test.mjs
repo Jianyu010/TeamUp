@@ -39,7 +39,7 @@ test("older pages and polls preserve survivors under a stable expiration waterma
   assert.deepEqual(calls, [{after: id(0)}, {after: id(30)}, {after: id(61)}, {after: id(90)}]);
 });
 
-test("polling refreshes retired sender labels on all loaded pages", async () => {
+test("polling rotates through loaded pages to update sender labels with two reads per poll", async () => {
   const messages = Array.from({length: 60}, (_, index) => ({
     id: String(index + 1),
     sender: index === 48 ? "Backend" : "Reviewer",
@@ -49,11 +49,20 @@ test("polling refreshes retired sender labels on all loaded pages", async () => 
   const current = messages.map((message) => message.id === "49"
     ? {...message, sender: "Retired member (93e57f02)"}
     : message);
-  const {page, reset} = await readTranscript(previous, null, async ({after}) => {
+  const calls = [];
+  async function fetchPage({after}) {
+    calls.push(after);
     const messages = current.filter((message) => Number(message.id) > Number(after)).slice(0, 30);
     return {state: "ready", board, messages, more_recent: messages.length === 30};
-  });
+  }
 
+  const first = await readTranscript(previous, null, fetchPage);
+  assert.deepEqual(first.page.messages, messages);
+  assert.deepEqual(calls, ["0", "60"]);
+
+  calls.length = 0;
+  const {page, reset} = await readTranscript(first.page, null, fetchPage);
+  assert.deepEqual(calls, ["30", "60"]);
   assert.equal(reset, false);
   assert.equal(page.older, "1");
   assert.deepEqual(page.messages, current);

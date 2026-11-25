@@ -526,6 +526,9 @@ class Coordinator:
             self._archive_session(session, receipt)
         except ClientError:
             return False
+        except sqlite3.Error:
+            # The Server confirmed retirement. The watcher can retry the local archive.
+            return True
         return True
 
     async def _retire(self, session):
@@ -776,9 +779,9 @@ class Coordinator:
                 delay = 0.25
             except ClientError as exc:
                 if exc.code == "not_registered":
-                    with suppress(sqlite3.Error):
-                        if await self._sync_retirement(session):
-                            return
+                    await self._sync_retirement(session)
+                    if session.identity in self._retired:
+                        return
             except (OSError, OverflowError, sqlite3.Error):
                 pass
             try:

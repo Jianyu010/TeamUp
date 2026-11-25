@@ -267,3 +267,25 @@ def test_collaboration_skill_covers_dm_handoff_and_privacy():
     assert "do not use a room as a substitute" in lowered
     assert "logs" in lowered
     assert "wake automatically" in lowered
+
+
+def test_retired_claude_attachment_does_not_retry(monkeypatch):
+    from contextlib import asynccontextmanager
+
+    from teamup_client.ipc import ClientError
+    from teamup_mcp import main
+
+    @asynccontextmanager
+    async def retired(*_args):
+        raise ClientError("member_retired", "This identity has retired")
+        yield
+
+    monkeypatch.setattr(main, "attach", retired)
+
+    async def run():
+        await asyncio.wait_for(
+            main.hold_attachment("socket", "key", {"kind": "claude-code", "id": "one"}, "address", "token"),
+            timeout=0.1,
+        )
+
+    asyncio.run(run())
