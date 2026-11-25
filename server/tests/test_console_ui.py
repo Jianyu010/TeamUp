@@ -10,6 +10,11 @@ sign-out, session expiry, room switch, and access loss, and the
 transient next-Timeline / older-Chat page semantics of #12 F3: loaded
 rows survive retryable failures, retry re-issues the failed page's
 cursor, and only denial, room change, or sign-out clear private rows.
+They also lock the #12 F6 jump semantics: rendering a valid room detail
+re-renders the already loaded Timeline so the "Open in Chats" control
+follows the detail's ``transcript_allowed`` verdict whichever response
+arrives first, and the control requires a live ``message_id`` because
+retention-cleared message activities have no jump target.
 """
 
 import re
@@ -258,6 +263,35 @@ def test_js_transient_page_failure_preserves_rows_and_retries_same_cursor(js):
     timeline_error = render_timeline.split("if (pane.error)")[1].split("return;")[0]
     assert "for (const activity of pane.rows)" in timeline_error
     assert "errorRow(" in timeline_error
+
+
+def test_js_timeline_jump_follows_late_detail_grant_and_live_message_id(js):
+    """#12 F6: the Timeline->Chats jump follows the room-detail verdict.
+
+    Room detail is the sole authority for ``transcript_allowed`` and its
+    response may arrive after the first timeline page, so rendering a
+    valid detail must re-render the already loaded timeline rows from
+    pane state (no extra timeline fetch): the control is granted when
+    the late detail allows transcripts and removed when it does not,
+    whichever response lands first. The jump itself also requires a live
+    ``message_id``: retention-cleared message activities link to null
+    and have no jump target per the Timeline contract.
+    """
+    load_detail = function_source(js, "loadRoomDetail")
+    assert "room.transcriptAllowed = payload.transcript_allowed === true" in load_detail
+    assert load_detail.index("room.transcriptAllowed =") < load_detail.index(
+        "renderRoomDetail()"
+    )
+    render_detail = function_source(js, "renderRoomDetail")
+    assert "renderTimeline()" in render_detail
+    assert "api(" not in render_detail
+    render_timeline = function_source(js, "renderTimeline")
+    assert "api(" not in render_timeline
+    timeline_row = function_source(js, "timelineRow")
+    gate = timeline_row.split('"Open in Chats"')[0]
+    assert 'activity.kind === "message"' in gate
+    assert "activity.message_id" in gate
+    assert "room.transcriptAllowed" in gate
 
 
 def test_html_no_implementation_only_or_redundant_copy(html):

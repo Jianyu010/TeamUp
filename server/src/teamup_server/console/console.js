@@ -530,6 +530,7 @@ function renderRoomDetail() {
     els.rosterBody.append(row);
   }
   syncChatsGate();
+  renderTimeline();
 }
 
 function memberActivityText(entry) {
@@ -700,7 +701,11 @@ function timelineRow(room, activity) {
   li.append(element("span", "row-time", formatTime(activity.at) || "unknown"));
   li.append(element("span", "row-agent", KIND_LABELS[activity.kind] || "activity"));
   const text = element("span", "row-text", activityDetail(activity));
-  if (activity.kind === "message" && room.transcriptAllowed) {
+  if (
+    activity.kind === "message" &&
+    activity.message_id &&
+    room.transcriptAllowed
+  ) {
     const jump = element("button", "linkish", "Open in Chats");
     jump.type = "button";
     jump.addEventListener("click", () => setTab("chats"));
