@@ -711,7 +711,8 @@ class judging:
         self.gh.memo = None
 
 
-ISSUE_REF = r"(?<![\w/&])#([1-9][0-9]*)\b"
+# ASCII only before `#`: `关联#3` counts; `x#3`, `a/b#3` (another repo) and `&#3;` do not.
+ISSUE_REF = r"(?<![A-Za-z0-9_/&])#([1-9][0-9]*)\b"
 NO_ISSUE = (
     f"{ROUTING}the PR links no issue; reference one in its title or description "
     "(`Closes #N`, `Refs #N`)"
@@ -1021,7 +1022,7 @@ MINOR_HANDLED = MAJOR_HANDLED | {"dismissed"}
 
 def _priority(finding: dict[str, Any]) -> str:
     """P0, P1 or P2; an unknown severity counts as P1, so it is never only answered."""
-    return PRIORITY.get(str(finding.get("severity") or ""), "P1")
+    return PRIORITY.get(str(finding.get("severity") or "").strip().lower(), "P1")
 
 
 def _open_findings(body: str) -> dict[str, str] | None:

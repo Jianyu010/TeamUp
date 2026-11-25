@@ -1884,6 +1884,11 @@ def test_a_p0_or_p1_finding_closes_once_the_reviewer_says_fixed_or_answered() ->
         assert gh.layer1[FINDINGS] == ("success", "every finding is handled")
 
 
+def test_severity_is_read_case_insensitively() -> None:
+    assert _state(_with_finding("open", " Medium ")) == "success"
+    assert "not fixed: F1 (P0)" in _reason(_with_finding("open", "CRITICAL"))
+
+
 def test_an_unknown_severity_counts_as_p1() -> None:
     gh = _with_finding("open", "severe", resolved=True)
     assert _state(gh) == "pending"
@@ -1939,6 +1944,7 @@ def test_any_reference_to_an_issue_links_it() -> None:
         ("Second half of o/r#3", "x"),
         ("", "Fix the gate (#3)"),
         ("After #5, refs #3", "x"),
+        ("关联#3", "x"),
     ):
         gh = _linked(body, title)
         assert _state(gh) == "success", (body, title)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import urllib.error
 from typing import Any
 
 import pytest
@@ -266,6 +267,24 @@ def test_sync_creates_missing_fixes_drift_and_deletes_nothing() -> None:
 def test_referenced_numbers() -> None:
     body = "Closes #12, refs #3; part of o/r#40 and other/x#9.\nSee &#8; or a/b#7."
     assert labels.referenced_numbers(body, "o/r") == [3, 12, 40]
+
+
+def test_label_pr_skips_a_reference_whose_lookup_fails() -> None:
+    class Flaky(FakeGitHub):
+        def call(self, method: str, path: str, body: Any = None) -> Any:
+            if method == "GET" and path == "/issues/11":
+                raise urllib.error.URLError("timed out")
+            return super().call(method, path, body)
+
+    gh = Flaky(linked={12: ["type/bug"]})
+    pull = {
+        "number": 9,
+        "head": {"sha": "a" * 40},
+        "labels": [],
+        "body": "Refs #11, #12",
+    }
+    labels.label_pr(gh, pull)
+    assert "type/bug" in gh.names and labels.NO_ISSUE not in gh.names
 
 
 def test_label_pr_counts_any_issue_reference_but_not_a_pr() -> None:

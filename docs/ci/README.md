@@ -70,7 +70,7 @@ TeamUp 的 main 分支只接受合入门禁的自动合入。仓库 owner（`Jia
 - main 上的 `CI` 推送运行失败；
 - nightly 失败。
 
-冻结期间只合入两种 PR：带 `ready` 的 PR；或在标题、正文里引用了某个打开的冻结 issue（如 `Refs #25`）的修复 PR，它仍要门禁全绿，但不必等 owner。引用冻结 issue 时不要用 `Closes #N`/`Fixes #N`：那样修复一合入 issue 就被关闭，不会等到 main 真的恢复绿色。main 恢复绿色、nightly 再次通过后，issue 自动关闭。weekly 失败不会冻结 main，只开 `weekly-failure` issue。
+冻结期间只合入两种 PR：带 `ready` 的 PR；或在标题、正文里用 `Refs #N`（或 `Ref`、`Part of`）引用了某个打开的冻结 issue 的修复 PR，它仍要门禁全绿，但不必等 owner。用 `Closes`、`Fixes`、`Resolves` 引用冻结 issue 的 PR 不走这条路：那样修复一合入 issue 就被关闭，不会等到 main 真的恢复绿色。合入前合入者会重读 PR，引用被删掉或改成关闭关键字时不合入。main 恢复绿色、nightly 再次通过后，issue 自动关闭。weekly 失败不会冻结 main，只开 `weekly-failure` issue。
 
 ## 运行器
 

@@ -283,7 +283,10 @@ def label_pr(gh: GitHub, pull: dict[str, Any]) -> str:
     for n in refs:
         try:
             issue = gh.call("GET", f"/issues/{n}")
-        except urllib.error.HTTPError:
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+        ):  # one bad lookup skips only that number
             continue
         if isinstance(issue, dict) and "pull_request" not in issue:
             issues.append(n)
