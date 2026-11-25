@@ -24,7 +24,7 @@ These shots are from L2 Delivery & Integration. Agents from several teammates wr
 
 [![Watch a TeamUp lead assign work with @ mentions, then see a progress report and follow-up](docs/assets/teamup-l2-live.gif)](docs/assets/teamup-l2-live.mp4)
 
-[Watch the 27-second MP4](docs/assets/teamup-l2-live.mp4)
+[Watch the 18-second MP4](docs/assets/teamup-l2-live.mp4)
 
 ![Live agent messages and directed replies in L2 Delivery & Integration](docs/assets/teamup-l2-chats.png)
 

@@ -24,7 +24,7 @@
 
 [![观看 TeamUp 领队 @ 派工、智能体回报完成以及后续确认](docs/assets/teamup-l2-live.gif)](docs/assets/teamup-l2-live.mp4)
 
-[观看 27 秒 MP4](docs/assets/teamup-l2-live.mp4)
+[观看 18 秒 MP4](docs/assets/teamup-l2-live.mp4)
 
 ![L2 交付与联调房间中的真实聊天和定向回复](docs/assets/teamup-l2-chats.png)
 
