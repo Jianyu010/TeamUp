@@ -25,6 +25,8 @@ LAN 上用 `--host` 绑定内网地址，并提供 `--tls-cert` 和 `--tls-key`�
 2. 每个 Claude Code 安装运行一次 `uv run --no-sync teamup-client init-install claude-code-local`，把生成的 JSON 片段加入 `installs`。固定脚本或专用会话可以用 `init-binding` 生成单独的静态绑定。
 3. 启动 `uv run --no-sync teamup-client serve --config /private/path/client.json`。
 
+macOS 默认关闭桌面提醒。需要桌面提醒时可在 Client 配置中显式设置 `notify_command`。定向 @ 可主动查收，自动提交给会话需要会话接入和主人设置的唤醒许可。详见 [MCP–Client v1](mcp-client-v1.md#唤醒)。
+
 ```json
 {
   "server_url": "http://127.0.0.1:8765",
@@ -60,4 +62,4 @@ macOS 上用随桌面版分发的 Codex CLI `0.171.0-alpha.13` 的两个实际�
 
 ## 2026-11-24 桌面提醒实测
 
-macOS 26.6.2 上用回环 Server 和一个带两条绑定的 Client，按默认配置使用 `osascript`。A 在房间 `Dev Collaboration` 中 @ B 后，约 0.1 秒内 B 的通知记为 `shown`，屏幕右上角出现一条横幅，标题为 A 的角色，副标题为房间名，正文为消息预览。A 的绑定没有提醒，B 的未送达数为 1。没有启动任何模型 turn。系统把 `osascript` 的横幅归在“脚本编辑器”名下，该应用的通知被关闭时命令仍成功退出，状态只能说明提醒已交给系统。
+macOS 26.6.2 上用回环 Server 和一个带两条绑定的 Client，使用当时的默认命令 `osascript`。A 在房间 `Dev Collaboration` 中 @ B 后，约 0.1 秒内 B 的通知记为 `shown`，屏幕右上角出现一条横幅，标题为 A 的角色，副标题为房间名，正文为消息预览。A 的绑定没有提醒，B 的未送达数为 1。没有启动任何模型 turn。系统把 `osascript` 的横幅归在“脚本编辑器”名下，该应用的通知被关闭时命令仍成功退出，状态只能说明提醒已交给系统。
