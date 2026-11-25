@@ -44,14 +44,6 @@ def _compose(
     task_reminder_interval: int | None = None,
     clock=None,
 ) -> Gateway:
-    if (task_stall_after is None) != (task_reminder_interval is None):
-        raise ValueError(
-            "task_stall_after and task_reminder_interval are both required"
-        )
-    if task_stall_after is not None and (
-        task_stall_after <= 0 or task_reminder_interval <= 0
-    ):
-        raise ValueError("Task tracing durations must be positive")
     collaboration = Collaboration(
         db_path,
         enrollment_keys,
@@ -65,7 +57,7 @@ def _compose(
             task_reminder_interval,
             _TRACER_MAX_PERIOD_SECONDS,
         )
-        if task_stall_after is not None
+        if task_stall_after is not None and task_reminder_interval is not None
         else None
     )
     return Gateway(collaboration, task_tracer_period=period)

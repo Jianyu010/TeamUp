@@ -289,6 +289,7 @@ def _next_id(connection: sqlite3.Connection, counter: str) -> int:
         (counter,),
     ).fetchone()[0]
 
+
 def _rfc3339_utc_now() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
@@ -543,7 +544,11 @@ def _task_stall_at(task: sqlite3.Row, stall_after: int | None) -> datetime | Non
     anchor = task["last_progress_at"] or task["started_at"]
     if anchor is None:
         return None
-    return _parse_rfc3339(anchor) + timedelta(seconds=stall_after)
+    try:
+        return _parse_rfc3339(anchor) + timedelta(seconds=stall_after)
+    except OverflowError:
+        # An interval beyond the representable calendar cannot have elapsed.
+        return None
 
 
 def _task_stalled_since(
@@ -752,8 +757,10 @@ class Collaboration:
             raise ValueError(
                 "task_stall_after and task_reminder_interval are both required"
             )
-        if task_stall_after is not None and (
-            task_stall_after <= 0 or task_reminder_interval <= 0
+        if (
+            task_stall_after is not None
+            and task_reminder_interval is not None
+            and min(task_stall_after, task_reminder_interval) <= 0
         ):
             raise ValueError("Task tracing durations must be positive")
         self._task_stall_after = task_stall_after
@@ -818,9 +825,7 @@ class Collaboration:
     def _now(self) -> str:
         return _rfc3339(self._now_datetime())
 
-    def _projection(
-        self, connection: sqlite3.Connection, task: sqlite3.Row
-    ) -> dict:
+    def _projection(self, connection: sqlite3.Connection, task: sqlite3.Row) -> dict:
         return _task_projection(
             connection,
             task,
@@ -1366,9 +1371,7 @@ class Collaboration:
                 if task is None:
                     raise CollaborationError("not_found")
                 return self._projection(connection, task)
-            addressees = _validated_addressees(
-                connection, room_id, raw_addressees
-            )
+            addressees = _validated_addressees(connection, room_id, raw_addressees)
             now = self._now()
             task_id = str(uuid4())
             task_number = connection.execute(
@@ -1449,13 +1452,9 @@ class Collaboration:
                 """,
                 values,
             ).fetchall()
-            next_after = (
-                rows[limit - 1]["task_number"] if len(rows) > limit else None
-            )
+            next_after = rows[limit - 1]["task_number"] if len(rows) > limit else None
             return {
-                "tasks": [
-                    self._projection(connection, task) for task in rows[:limit]
-                ],
+                "tasks": [self._projection(connection, task) for task in rows[:limit]],
                 "next_after": next_after,
             }
 
@@ -1466,9 +1465,7 @@ class Collaboration:
 
     def join_task(self, token: str, room_id: str, task_id: str) -> dict:
         with self._transaction(write=True) as connection:
-            member_id, task = _authorized_task(
-                connection, token, room_id, task_id
-            )
+            member_id, task = _authorized_task(connection, token, room_id, task_id)
             addressed = connection.execute(
                 "SELECT 1 FROM task_addressees WHERE task_id = ? LIMIT 1",
                 (task_id,),
@@ -1530,9 +1527,7 @@ class Collaboration:
         note: str,
     ) -> dict:
         with self._transaction(write=True) as connection:
-            member_id, task = _authorized_task(
-                connection, token, room_id, task_id
-            )
+            member_id, task = _authorized_task(connection, token, room_id, task_id)
             if (
                 connection.execute(
                     """
@@ -1570,9 +1565,7 @@ class Collaboration:
                 """,
                 (now, now, task_id),
             )
-            _add_task_event(
-                connection, task_id, member_id, "progress", now, note
-            )
+            _add_task_event(connection, task_id, member_id, "progress", now, note)
             connection.execute(
                 """
                 DELETE FROM task_reminders
@@ -1595,9 +1588,7 @@ class Collaboration:
 
     def finish_task(self, token: str, room_id: str, task_id: str) -> dict:
         with self._transaction(write=True) as connection:
-            member_id, task = _authorized_task(
-                connection, token, room_id, task_id
-            )
+            member_id, task = _authorized_task(connection, token, room_id, task_id)
             participant = (
                 connection.execute(
                     """
@@ -1664,7 +1655,9 @@ class Collaboration:
 
     def scan_task_reminders(self) -> list[str]:
         """Commit pending reminders for one bounded, indexed page of open tasks."""
-        if self._task_stall_after is None:
+        stall_after = self._task_stall_after
+        repeat = self._task_reminder_interval
+        if stall_after is None or repeat is None:
             return []
         now = self._now_datetime()
         notified: set[str] = set()
@@ -1703,7 +1696,7 @@ class Collaboration:
                     """,
                     (task_id, anchor_event_id),
                 )
-                stalled_at = _task_stall_at(task, self._task_stall_after)
+                stalled_at = _task_stall_at(task, stall_after)
                 if stalled_at is None or now < stalled_at:
                     continue
                 stalled_since = _rfc3339(stalled_at)
@@ -1720,10 +1713,10 @@ class Collaboration:
                     if previous is not None:
                         if previous["claimed_at"] is None:
                             continue
-                        due = _parse_rfc3339(previous["claimed_at"]) + timedelta(
-                            seconds=self._task_reminder_interval
-                        )
-                        if now < due:
+                        elapsed = (
+                            now - _parse_rfc3339(previous["claimed_at"])
+                        ).total_seconds()
+                        if elapsed < repeat:
                             continue
                     inserted = connection.execute(
                         """
@@ -1759,20 +1752,15 @@ class Collaboration:
         stalled_at = _task_stall_at(reminder, self._task_stall_after)
         if stalled_at is None or now < stalled_at:
             return False
-        if (
-            _task_anchor_event_id(connection, reminder)
-            != reminder["anchor_event_id"]
-        ):
+        if _task_anchor_event_id(connection, reminder) != reminder["anchor_event_id"]:
             return False
         return _reminder_eligible(connection, reminder, member_id)
 
-    def task_reminders(
-        self, token: str, after: int = 0, limit: int = 50
-    ) -> list[dict]:
-        if self._task_stall_after is None or limit <= 0:
-            return []
+    def task_reminders(self, token: str, after: int = 0, limit: int = 50) -> list[dict]:
         with self._transaction() as connection:
             member_id = _member(connection, token)["member_id"]
+            if self._task_stall_after is None or limit <= 0:
+                return []
             now = self._now_datetime()
             cursor = min(max(after, 0), _SQLITE_MAX_ID)
             reminders: list[dict] = []
@@ -1794,9 +1782,7 @@ class Collaboration:
                     break
                 for row in rows:
                     cursor = row["reminder_id"]
-                    if self._reminder_row_eligible(
-                        connection, row, member_id, now
-                    ):
+                    if self._reminder_row_eligible(connection, row, member_id, now):
                         reminders.append(_reminder_projection(row))
                         if len(reminders) >= limit:
                             break
@@ -1805,11 +1791,9 @@ class Collaboration:
             return reminders
 
     def claim_task_reminder(self, token: str, reminder_id: int) -> dict:
-        if self._task_stall_after is None:
-            raise CollaborationError("not_found")
         with self._transaction(write=True) as connection:
             member_id = _member(connection, token)["member_id"]
-            if not 1 <= reminder_id <= _SQLITE_MAX_ID:
+            if self._task_stall_after is None or not 1 <= reminder_id <= _SQLITE_MAX_ID:
                 raise CollaborationError("not_found")
             reminder = connection.execute(
                 f"""
@@ -1825,21 +1809,7 @@ class Collaboration:
             if reminder is None:
                 raise CollaborationError("not_found")
             now = self._now_datetime()
-            if not self._reminder_row_eligible(
-                connection, reminder, member_id, now
-            ):
-                if (
-                    reminder["status"] != "open"
-                    or _task_anchor_event_id(connection, reminder)
-                    != reminder["anchor_event_id"]
-                ):
-                    connection.execute(
-                        """
-                        DELETE FROM task_reminders
-                        WHERE reminder_id = ? AND claimed_at IS NULL
-                        """,
-                        (reminder_id,),
-                    )
+            if not self._reminder_row_eligible(connection, reminder, member_id, now):
                 raise CollaborationError("not_found")
             claimed = connection.execute(
                 """

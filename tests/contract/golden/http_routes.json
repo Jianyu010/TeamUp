@@ -7,11 +7,20 @@
   "GET /v1/rooms/{room_id}/board",
   "GET /v1/rooms/{room_id}/messages",
   "GET /v1/rooms/{room_id}/search",
+  "GET /v1/rooms/{room_id}/tasks",
+  "GET /v1/rooms/{room_id}/tasks/{task_id}",
+  "GET /v1/rooms/{room_id}/tasks/{task_id}/events",
+  "GET /v1/task-reminders",
   "POST /v1/auth/login",
   "POST /v1/inbox/{event_id}/ack",
   "POST /v1/members",
   "POST /v1/rooms",
   "POST /v1/rooms/{room_id}/board/ack",
   "POST /v1/rooms/{room_id}/join",
-  "POST /v1/rooms/{room_id}/messages"
+  "POST /v1/rooms/{room_id}/messages",
+  "POST /v1/rooms/{room_id}/tasks",
+  "POST /v1/rooms/{room_id}/tasks/{task_id}/finish",
+  "POST /v1/rooms/{room_id}/tasks/{task_id}/join",
+  "POST /v1/rooms/{room_id}/tasks/{task_id}/progress",
+  "POST /v1/task-reminders/{reminder_id}/claim"
 ]

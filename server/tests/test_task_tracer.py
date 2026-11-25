@@ -77,9 +77,7 @@ def team(instance, labels=("sender", "target")):
 
 
 def create(instance, room_id, labels=("target",), key="task-1"):
-    task = instance.create_task(
-        token("sender"), room_id, key, "Check API", None, None
-    )
+    task = instance.create_task(token("sender"), room_id, key, "Check API", None, None)
     for label in labels:
         instance.join_task(token(label), room_id, task["task_id"])
     return task
@@ -105,6 +103,13 @@ def test_disabled_policy_never_exposes_or_issues_reminders(tmp_path):
     assert instance.scan_task_reminders() == []
     assert instance.task_reminders(token("target")) == []
     not_found(lambda: instance.claim_task_reminder(token("target"), 1))
+    for request in (
+        lambda: instance.task_reminders(token("unenrolled")),
+        lambda: instance.claim_task_reminder(token("unenrolled"), 1),
+    ):
+        with pytest.raises(CollaborationError) as raised:
+            request()
+        assert raised.value.code == "unauthorized"
 
 
 def test_stall_and_repeat_use_the_configured_deterministic_interval(tmp_path):
@@ -147,16 +152,12 @@ def test_stall_and_repeat_use_the_configured_deterministic_interval(tmp_path):
     assert instance.task_reminders(token("sender")) == []
 
     not_found(
-        lambda: instance.claim_task_reminder(
-            token("reader"), reminder["reminder_id"]
-        )
+        lambda: instance.claim_task_reminder(token("reader"), reminder["reminder_id"])
     )
     claimed = instance.claim_task_reminder(token("target"), reminder["reminder_id"])
     assert claimed == reminder
     not_found(
-        lambda: instance.claim_task_reminder(
-            token("target"), reminder["reminder_id"]
-        )
+        lambda: instance.claim_task_reminder(token("target"), reminder["reminder_id"])
     )
 
     clock.advance(119)
@@ -182,14 +183,14 @@ def test_concurrent_claimers_consume_a_reminder_once(tmp_path):
     def claim():
         barrier.wait()
         try:
-            return "claimed", instance.claim_task_reminder(
-                token("target"), reminder_id
-            )
+            return "claimed", instance.claim_task_reminder(token("target"), reminder_id)
         except CollaborationError as exc:
             return "error", exc.code
 
     with ThreadPoolExecutor(max_workers=2) as pool:
-        outcomes = [future.result() for future in (pool.submit(claim), pool.submit(claim))]
+        outcomes = [
+            future.result() for future in (pool.submit(claim), pool.submit(claim))
+        ]
 
     assert sorted(outcome[0] for outcome in outcomes) == ["claimed", "error"]
     assert [outcome[1] for outcome in outcomes if outcome[0] == "error"] == [
@@ -213,9 +214,7 @@ def test_progress_and_finish_invalidate_the_previous_anchor(tmp_path):
         token("target"), room_id, path, "progress-1", "Still working"
     )
     assert progressed["stalled_since"] is None
-    not_found(
-        lambda: instance.claim_task_reminder(token("target"), old["reminder_id"])
-    )
+    not_found(lambda: instance.claim_task_reminder(token("target"), old["reminder_id"]))
     assert instance.task_reminders(token("target")) == []
     assert instance.scan_task_reminders() == []
 
@@ -224,16 +223,12 @@ def test_progress_and_finish_invalidate_the_previous_anchor(tmp_path):
     current = instance.task_reminders(token("target"))
     assert len(current) == 1
     assert current[0]["reminder_id"] > old["reminder_id"]
-    assert current[0]["stalled_since"] == stamp(
-        progress_at + timedelta(seconds=60)
-    )
+    assert current[0]["stalled_since"] == stamp(progress_at + timedelta(seconds=60))
 
     finished = instance.finish_task(token("sender"), room_id, path)
     assert finished["stalled_since"] is None
     not_found(
-        lambda: instance.claim_task_reminder(
-            token("target"), current[0]["reminder_id"]
-        )
+        lambda: instance.claim_task_reminder(token("target"), current[0]["reminder_id"])
     )
     assert instance.task_reminders(token("target")) == []
     assert instance.scan_task_reminders() == []
@@ -271,9 +266,7 @@ def test_anchor_and_claim_state_survive_restart(tmp_path):
     assert restarted.task_reminders(token("target")) == []
     assert restarted.task_reminders(token("reader")) == [pending["reader"]]
     not_found(
-        lambda: restarted.claim_task_reminder(
-            token("target"), claimed["reminder_id"]
-        )
+        lambda: restarted.claim_task_reminder(token("target"), claimed["reminder_id"])
     )
 
     clock.advance(300)
@@ -318,9 +311,9 @@ def test_reminder_routes_are_owner_scoped_paged_and_atomic(tmp_path):
                 params={"after": reminders[0]["reminder_id"], "limit": 10},
             )
             assert after.json() == {"reminders": reminders[1:]}
-            assert (
-                await client.get("/v1/task-reminders", headers=other)
-            ).json() == {"reminders": []}
+            assert (await client.get("/v1/task-reminders", headers=other)).json() == {
+                "reminders": []
+            }
 
             reminder_id = reminders[0]["reminder_id"]
             path = f"/v1/task-reminders/{reminder_id}/claim"
