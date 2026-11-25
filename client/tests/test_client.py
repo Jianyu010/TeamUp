@@ -81,6 +81,7 @@ class TeamupGateway:
         self.dm_history = []
         self.dm_expiry = None
         self.dm_open_error = None
+        self.heartbeat_reply = None
 
     async def respond(self, reader, writer):
         try:
@@ -149,6 +150,11 @@ class TeamupGateway:
                 await self.json_response(
                     writer, {"members": list(self.registered.values())}
                 )
+            elif path == "/v1/presence/heartbeat" and method == "POST":
+                if self.heartbeat_reply is None:
+                    await self.json_response(writer, {"detail": "Not Found"}, 404)
+                else:
+                    await self.heartbeat_reply(writer, token)
             elif path == "/v1/events":
                 assert headers["accept"] == "text/event-stream"
                 writer.write(
@@ -637,6 +643,28 @@ def test_ipc_enforces_binding_and_maps_contract_operations():
                             await call(socket, key, method, params)
                         assert error.value.code == code
                         assert token_b not in error.value.message
+
+                    for invalid in (
+                        {"mention_member_ids": []},
+                        {"mention_member_ids": [MEMBERS[0], MEMBERS[0].upper()]},
+                        {
+                            "mention_member_id": MEMBERS[0],
+                            "mention_member_ids": [MEMBERS[1]],
+                        },
+                    ):
+                        with pytest.raises(ClientError) as error:
+                            await call(
+                                socket,
+                                key_a,
+                                "send_message",
+                                {
+                                    "room_id": ROOM,
+                                    "client_message_id": "invalid",
+                                    "text": "hello",
+                                    **invalid,
+                                },
+                            )
+                        assert error.value.code == "invalid_request"
 
                     response = await raw_request(socket, b'{"version":true}\n')
                     assert response["error"]["code"] == "invalid_request"
@@ -1189,6 +1217,136 @@ def test_owner_methods_and_attach_reject_agent_credentials():
     asyncio.run(scenario())
 
 
+def test_presence_heartbeats_are_isolated_and_require_approved_registered_bindings(
+    tmp_path, monkeypatch
+):
+    from teamup_client import _coordinator
+    from teamup_client._config import owner_key, read_config
+    from teamup_client._desktop import DesktopNotifier
+    from teamup_client._notice_output import NoticeOutput
+    from teamup_client._notices import open_store
+    from teamup_client._upstream import connect
+    from teamup_client.ipc import ClientError
+
+    monkeypatch.setattr(_coordinator, "PRESENCE_INTERVAL", 0.05, raising=False)
+    binding_b = BINDINGS[1]
+    token_b = binding_b["member_token"]
+    install = {"binding_key": "G" * 42 + "A", "harness_instance_id": "codex@presence"}
+    session_ref = {"id": BINDINGS[0]["session_key"], "kind": "codex"}
+
+    async def scenario():
+        counts = Counter()
+        received_a = asyncio.Event()
+        release_a = asyncio.Event()
+
+        async with gateway() as (upstream, server_url):
+            config_path, socket = write_config(
+                tmp_path, server_url, bindings=[binding_b], installs=[install]
+            )
+            config = read_config(config_path)
+            owner = owner_key(config)
+            upstream.registered[token_b] = {
+                "member_id": MEMBERS[1],
+                "role_description": "Existing member",
+            }
+
+            async def heartbeat_reply(writer, token):
+                counts[token] += 1
+                if token != token_b and counts[token] == 1:
+                    received_a.set()
+                    await release_a.wait()
+                await upstream.json_response(
+                    writer, {"observed_at": "2026-11-25T00:00:00Z"}
+                )
+
+            upstream.heartbeat_reply = heartbeat_reply
+            with open_store(socket) as notices:
+                async with connect(config) as server:
+                    coordinator = _coordinator.Coordinator(
+                        config, server, notices, NoticeOutput(), DesktopNotifier([]), {}
+                    )
+
+                    async def decide(state):
+                        return await coordinator.execute(
+                            owner,
+                            "decide_session",
+                            {
+                                "harness_instance_id": install["harness_instance_id"],
+                                "session_key": session_ref["id"],
+                                "state": state,
+                            },
+                        )
+
+                    async def register():
+                        return await coordinator.execute(
+                            install["binding_key"],
+                            "register",
+                            {"role_description": "New member"},
+                            session_ref,
+                        )
+
+                    def heartbeat(token):
+                        return ("POST", "/v1/presence/heartbeat", {}, token, None)
+
+                    try:
+                        async with coordinator.watching_inboxes():
+                            with pytest.raises(ClientError) as pending:
+                                await register()
+                            assert pending.value.code == "session_pending"
+                            token_a = notices.session(
+                                install["harness_instance_id"], session_ref["id"]
+                            )["member_token"]
+                            request_a = heartbeat(token_a)
+
+                            await until(lambda: counts[token_b] >= 2)
+                            assert request_a not in upstream.calls
+                            await decide("approved")
+                            member_check = ("GET", "/v1/members/me", {}, token_a, None)
+                            await until(lambda: member_check in upstream.calls)
+                            assert request_a not in upstream.calls
+
+                            await register()
+                            await asyncio.wait_for(received_a.wait(), 2)
+                            assert request_a in upstream.calls
+                            assert heartbeat(token_b) in upstream.calls
+                            await until(lambda: token_a in upstream.streams)
+                            start_b = counts[token_b]
+                            await until(lambda: counts[token_b] >= start_b + 2)
+                            assert counts[token_a] == 1
+
+                            release_a.set()
+                            await until(lambda: counts[token_a] >= 2)
+                            del upstream.registered[token_a]
+                            start_a = upstream.calls.count(request_a)
+                            await until(
+                                lambda: upstream.calls.count(request_a) > start_a
+                            )
+                            start_b = counts[token_b]
+                            await until(lambda: counts[token_b] >= start_b + 2)
+                            assert upstream.calls.count(request_a) == start_a + 1
+
+                            start_a = counts[token_a]
+                            await register()
+                            await until(lambda: counts[token_a] > start_a)
+
+                            await decide("rejected")
+                            start_a = counts[token_a]
+                            start_b = counts[token_b]
+                            await until(lambda: counts[token_b] >= start_b + 2)
+                            assert counts[token_a] == start_a
+
+                            await decide("approved")
+                            await until(lambda: counts[token_a] > start_a)
+                    finally:
+                        release_a.set()
+
+                    after_shutdown = counts.copy()
+                    await asyncio.sleep(0.1)
+                    assert counts == after_shutdown
+
+    asyncio.run(scenario())
+
+
 def test_unsettled_submission_is_never_resent():
     import sqlite3
 
@@ -1661,11 +1819,17 @@ def test_old_server_ignores_kinds_and_lacks_dm_routes():
                         "mention_member_id": MEMBERS[0],
                     },
                 }
-                upstream.events[token_a] = {5: mention}
                 async with daemon(config, socket):
                     with pytest.raises(ClientError) as error:
                         await call(socket, key_a, "open_dm", {"member_id": MEMBERS[1]})
                     assert error.value.code == "not_found"
+                    heartbeat = ("POST", "/v1/presence/heartbeat", {}, token_a, None)
+                    await until(lambda: heartbeat in upstream.calls)
+                    await until(lambda: token_a in upstream.streams)
+                    upstream.events[token_a] = {5: mention}
+                    stream = upstream.streams[token_a]
+                    stream.write(b"event: inbox_changed\ndata: {}\n\n")
+                    await stream.drain()
                     await until(lambda: not upstream.events[token_a])
                     assert (
                         "GET",

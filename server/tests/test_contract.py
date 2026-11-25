@@ -462,6 +462,161 @@ def test_message_retry_allocates_one_message_and_one_event_per_recipient(team):
     error(response, 422, "invalid_mention")
 
 
+def test_ordered_room_mentions_survive_concurrent_retry_and_restart(tmp_path):
+    db_path = tmp_path / "team.sqlite3"
+    labels = ("sender", "first", "second", "third", "reader")
+    with api(db_path) as client:
+        for label in labels:
+            assert enroll(client, label).status_code == 200
+        path = room(client)
+        for label in labels:
+            if label != "sender":
+                join(client, label, path)
+            confirm(client, label, path)
+        targets = [member(client, label) for label in ("third", "first", "second")]
+        body = {
+            "client_message_id": "ordered",
+            "text": "Hello @reader",
+            "mention_member_ids": targets,
+            "mention_member_id": None,
+        }
+        with ThreadPoolExecutor(max_workers=4) as workers:
+            responses = list(
+                workers.map(
+                    lambda _: post(client, "sender", f"{path}/messages", json=body),
+                    range(8),
+                )
+            )
+        for response in responses:
+            assert response.status_code == 200, response.text
+        message = responses[0].json()
+        assert all(response.json() == message for response in responses)
+        assert message["mention_member_ids"] == targets
+        assert message["mention_member_id"] == targets[0]
+
+    with api(db_path) as client:
+        assert post(client, "sender", f"{path}/messages", json=body).json() == message
+        for changed in (targets[::-1], targets[:2], [targets[0]]):
+            error(
+                post(
+                    client,
+                    "sender",
+                    f"{path}/messages",
+                    json={**body, "mention_member_ids": changed},
+                ),
+                409,
+                "conflict",
+            )
+        for label in labels:
+            assert get(client, label, f"{path}/messages").json() == {
+                "messages": [message]
+            }
+            events = get(client, label, "/inbox").json()["events"]
+            if label == "sender":
+                assert events == []
+            else:
+                assert [(e["kind"], e["message"]) for e in events] == [
+                    ("message" if label == "reader" else "mention", message)
+                ]
+
+
+def test_room_mention_validation_is_atomic_and_singleton_retry_is_compatible(team):
+    path = room(team)
+    join(team, "target", path)
+    confirm(team, "sender", path)
+    confirm(team, "target", path)
+    target = member(team, "target")
+    body = {"client_message_id": "key", "text": "hello"}
+    for ids in (
+        None,
+        [],
+        "x",
+        [target, target.upper()],
+        [str(uuid4()) for _ in range(17)],
+    ):
+        error(
+            post(
+                team,
+                "sender",
+                f"{path}/messages",
+                json={**body, "mention_member_ids": ids},
+            ),
+            422,
+            "invalid_request",
+        )
+    error(
+        post(
+            team,
+            "sender",
+            f"{path}/messages",
+            json={**body, "mention_member_ids": [target], "mention_member_id": target},
+        ),
+        422,
+        "invalid_request",
+    )
+    for invalid in (member(team, "sender"), member(team, "reader")):
+        error(
+            post(
+                team,
+                "sender",
+                f"{path}/messages",
+                json={**body, "mention_member_ids": [target, invalid]},
+            ),
+            422,
+            "invalid_mention",
+        )
+    assert get(team, "sender", f"{path}/messages").json() == {"messages": []}
+    assert get(team, "target", "/inbox").json() == {"events": []}
+    singleton = send(team, path, "key", target=target).json()
+    assert (
+        singleton["mention_member_id"] == target
+        and "mention_member_ids" not in singleton
+    )
+    assert (
+        post(
+            team,
+            "sender",
+            f"{path}/messages",
+            json={**body, "mention_member_ids": [target]},
+        ).json()
+        == singleton
+    )
+    assert len(get(team, "target", "/inbox").json()["events"]) == 1
+
+
+def test_v6_single_recipient_message_survives_mention_migration(tmp_path):
+    db_path = tmp_path / "team.sqlite3"
+    with api(db_path) as client:
+        for label in ("sender", "target"):
+            assert enroll(client, label).status_code == 200
+        path = room(client)
+        join(client, "target", path)
+        for label in ("sender", "target"):
+            confirm(client, label, path)
+        target = member(client, "target")
+        legacy = send(client, path, "old", target=target).json()
+        original_events = get(client, "target", "/inbox").json()
+    with closing(sqlite3.connect(db_path)) as connection, connection:
+        connection.execute("DROP TABLE room_message_additional_mentions")
+        connection.execute("PRAGMA user_version = 6")
+    with api(db_path) as client:
+        response = post(
+            client,
+            "sender",
+            f"{path}/messages",
+            json={
+                "client_message_id": "old",
+                "text": "hello",
+                "mention_member_ids": [target],
+            },
+        )
+        assert response.json() == legacy
+        assert get(client, "target", f"{path}/messages").json() == {
+            "messages": [legacy]
+        }
+        assert get(client, "target", "/inbox").json() == original_events
+
+
 def test_inbox_is_durable_and_filters_unconfirmed_rooms_before_paging(tmp_path):
     db_path = tmp_path / "team.sqlite3"
     with api(db_path) as client:

@@ -84,13 +84,17 @@ TOOLS = [
     ),
     tool(
         "send_message",
-        "Send a room message and optionally notify one other member.",
+        "Send a room message. Optionally notify one member with mention_member_id "
+        "or up to 16 with mention_member_ids. Preserve the target order on retry.",
         ROOM
         | {
             "client_message_id": {"type": "string", "minLength": 1, "maxLength": 128},
             "text": TEXT,
         },
-        {"mention_member_id": {"type": ["string", "null"], "format": "uuid"}},
+        {
+            "mention_member_id": {"type": ["string", "null"], "format": "uuid"},
+            "mention_member_ids": {**ADDRESSED, "minItems": 1, "maxItems": 16},
+        },
     ),
     tool("read_messages", "Read room messages after a message ID.", ROOM, HISTORY),
     tool(
@@ -260,6 +264,7 @@ def create_mcp(
             "Open a pair DM with the teammate's member ID; teamup_open_dm returns "
             "the same conversation on every repeat. "
             "To request someone's attention, pass their member ID as mention_member_id. "
+            "Use mention_member_ids for an ordered list of room recipients. "
             "Use a fresh client_message_id for each new message and keep it on retry. "
             "Keep DM text between the two participants and out of logs and rooms. "
             "Follow local sharing permissions."

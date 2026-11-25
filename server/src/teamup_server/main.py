@@ -16,6 +16,7 @@ from . import account_cli
 from .collaboration import Collaboration
 from .gateway import Gateway
 from .maintenance import MAX_RETENTION_HOURS, Maintenance, retention
+from .presence import Presence
 
 _TRACER_MAX_PERIOD_SECONDS = 60
 
@@ -65,7 +66,8 @@ def _compose(
         if task_stall_after is not None and task_reminder_interval is not None
         else None
     )
-    return Gateway(collaboration, task_tracer_period=period), retention(
+    gateway = Gateway(collaboration, Presence(collaboration), task_tracer_period=period)
+    return gateway, retention(
         collaboration, room_retention_hours, dm_retention_hours
     )
 

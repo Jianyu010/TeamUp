@@ -57,15 +57,16 @@
               <button type="button" id="tasks-tab" aria-pressed="false">Tasks</button>
               <button type="button" id="chats-tab" aria-pressed="true">Chats</button>
             </nav>
-            <label><span id="actor-label">Viewing as</span> <select id="chat-session"></select></label>
           </div>
           <section class="scroll-frame" id="chat-scroll" aria-label="Room chat">
+            <p id="history-boundary" class="muted"></p>
             <button type="button" id="older" hidden>Older messages</button>
             <p id="chat-status" role="status"></p>
             <div id="messages"></div>
           </section>
           <section id="task-board" class="task-board" aria-label="Room tasks" hidden>
             <div class="task-toolbar">
+              <label>Acting as <select id="task-actor"></select></label>
               <div id="task-lane-nav" aria-label="Task panels"></div>
               <button type="button" id="finished-tasks" aria-pressed="false">Finished</button>
               <button type="button" id="more-tasks" hidden>More tasks</button>
@@ -75,7 +76,8 @@
           </section>
         </div>
         <aside class="roster" aria-labelledby="roster-title">
-          <h2 id="roster-title">My sessions</h2>
+          <h2 id="roster-title">Members</h2>
+          <p id="roster-status" class="muted" role="status"></p>
           <div id="roster" class="scroll-frame"></div>
         </aside>
       </section>
@@ -86,5 +88,6 @@
       </section>
     </div>
   </main>
+  <section id="member-detail" popover="manual" aria-label="Room member details"></section>
 </body>
 </html>
