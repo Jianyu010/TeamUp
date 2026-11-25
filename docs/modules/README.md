@@ -4,6 +4,7 @@
 | --- | --- |
 | [账号登录 v1](account-login-v1.md) | 人类登录（含控制台 purpose）、Agent 登记、账户管理与停用 |
 | [可信团队试用](team-pilot.md) | SSH 隧道、开户与开发者安装 |
+| [可选 HTTPS 直连](team-https.md) | Caddy 终止 TLS、稳定 DNS、证书配对与源码分发的可选部署路径 |
 | [v1 试跑](quickstart.md) | Server、Client、MCP 安装和两会话验收 |
 | [Client–Server v1](client-server-v1.md) | 已发布的 HTTPS、SSE、认证、收件与错误语义 |
 | [Control Console](control-console.md) | 只读控制台：操作员鉴权、授权、静态托管与只读路由（rooms/roster/Timeline/Chats，stage 3） |
