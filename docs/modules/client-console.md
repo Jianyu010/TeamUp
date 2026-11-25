@@ -4,9 +4,11 @@ Local workspace for [#17](https://github.com/Jianyu010/TeamUp/issues/17). Start 
 
 ## macOS desktop app
 
-TeamUp.app opens one Electron window for the local profile ([#41](https://github.com/Jianyu010/TeamUp/issues/41)). The default profile is `~/.config/teamup/client.json`. The launcher reuses a running console from the same profile and socket or starts the installed Client through `teamup-client serve --config PATH --console`. The Client can continue receiving events and sending notifications after closing TeamUp.app. If the configured socket belongs to a Client started outside the launcher, TeamUp shows a startup error so the operator can choose how to manage that process.
+TeamUp.app opens the local Client Console for the selected profile ([#41](https://github.com/Jianyu010/TeamUp/issues/41)). The default profile is `~/.config/teamup/client.json`. The launcher reuses a running console from the same profile and socket or starts the installed Client through `teamup-client serve --config PATH --console`. The Client can continue receiving events and sending notifications after closing TeamUp.app. If the configured socket belongs to a Client started outside the launcher, TeamUp shows a startup error so the operator can choose how to manage that process.
 
 The desktop app ships the Client's console assets and serves them inside the sandboxed window at `teamup://console/`. Its main process gets the loopback address and launch credential from the launcher over a private pipe. It holds that credential and forwards the console's named workspace, room, team, and task requests to the Client listener. The same Client session checks and Server authorization apply to both desktop and browser requests. See the [desktop build and launch instructions](../../client/desktop/README.md).
+
+**View → Server Control Console** opens the [Server's operator interface](control-console.md) in a separate window ([#61](https://github.com/Jianyu010/TeamUp/issues/61)). The desktop launcher reads the selected private profile and returns its `server_url` over a pipe. The window loads that origin's `/console/` in a dedicated, in-memory Electron session and uses the Server's own sign-in form. Reopening the window after closing it starts a new sign-in. A load failure leaves the Client Console available and shows an error that can be retried from the View menu.
 
 ## Ownership and access
 

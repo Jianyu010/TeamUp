@@ -76,6 +76,10 @@ def test_console_static_file_set():
     assert actual == EXPECTED_FILES
 
 
+def test_css_keeps_hidden_regions_out_of_layout(css):
+    assert re.search(r"\[hidden\]\s*\{\s*display:\s*none\s*!important\s*;\s*\}", css)
+
+
 def test_html_document_basics(html):
     assert html.lstrip().lower().startswith("<!doctype html>")
     assert re.search(r"<html\b[^>]*\blang=", html)

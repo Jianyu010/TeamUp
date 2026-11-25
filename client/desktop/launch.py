@@ -1,4 +1,4 @@
-"""Hand a launcher-managed Client console address to the desktop main process."""
+"""Hand console addresses to the desktop main process through a private pipe."""
 
 import argparse
 import fcntl
@@ -66,17 +66,35 @@ def write_private(path, content):
         stream.flush()
 
 
-def configured_socket(config):
+def read_profile(config):
     try:
         raw = json.loads(read_private(config, 128 * 1024))
-        path = Path(raw["socket_path"])
-    except (FileNotFoundError, ValueError, KeyError, TypeError) as error:
+        if not isinstance(raw, dict):
+            raise TypeError("Expected an object")
+        return raw
+    except (FileNotFoundError, ValueError, TypeError) as error:
+        raise LaunchError(
+            "The selected TeamUp Client configuration is unavailable or invalid."
+        ) from error
+
+
+def configured_socket(config):
+    try:
+        path = Path(read_profile(config)["socket_path"])
+    except (KeyError, TypeError) as error:
         raise LaunchError(
             "The selected TeamUp Client configuration is unavailable or invalid."
         ) from error
     if not path.is_absolute():
         raise LaunchError("The Client configuration must name an absolute socket path.")
     return path.parent.resolve() / path.name
+
+
+def configured_server_origin(config):
+    origin = read_profile(config).get("server_url")
+    if not isinstance(origin, str) or not origin:
+        raise LaunchError("The selected TeamUp profile must specify a Server origin.")
+    return origin
 
 
 def live_socket(path):
@@ -223,9 +241,14 @@ def ensure_console(config, client, state_dir):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--client", type=Path, required=True)
-    parser.add_argument("--state-dir", type=Path, required=True)
+    parser.add_argument("--client", type=Path)
+    parser.add_argument("--state-dir", type=Path)
+    parser.add_argument("--server-origin", action="store_true")
     args = parser.parse_args()
+    if not args.server_origin and (args.client is None or args.state_dir is None):
+        parser.error(
+            "--client and --state-dir are required to launch the Client Console"
+        )
     os.umask(0o077)
     try:
         mode = os.fstat(sys.stdout.fileno()).st_mode
@@ -234,11 +257,14 @@ def main():
                 "The Console URL must be handed to the launcher over a private pipe."
             )
         path = args.config.expanduser().absolute()
-        value = ensure_console(
-            path,
-            args.client.expanduser().absolute(),
-            args.state_dir.expanduser().absolute(),
-        )
+        if args.server_origin:
+            value = json.dumps(configured_server_origin(path))
+        else:
+            value = ensure_console(
+                path,
+                args.client.expanduser().absolute(),
+                args.state_dir.expanduser().absolute(),
+            )
         print(value, flush=True)
     except LaunchError as error:
         print(str(error), file=sys.stderr)

@@ -1,6 +1,8 @@
 # TeamUp for macOS
 
-TeamUp.app opens a single desktop window for the local Client console. It can use an existing profile and reuse a Client started by the previous TeamUp launcher.
+TeamUp.app opens the local Client Console on launch. It can use an existing profile and reuse a Client started by the previous TeamUp launcher.
+
+Choose **View → Server Control Console** to open the configured Server's read-only operator interface in a second window. Sign in with a TeamUp account that has the `console_read` grant. The Server must serve `/console/` at the configured origin. For the pilot profile, keep its SSH tunnel running. An HTTPS origin must use a certificate trusted by macOS.
 
 ## Build and open
 
@@ -28,3 +30,5 @@ npm --prefix client/desktop start
 ## Verify
 
 Open TeamUp.app twice and confirm the existing window comes forward. In a profile with approved sessions, open a joined room and check its transcript and Tasks tab. Close and reopen the window to verify it can reconnect to the same running Client. The [console contract](../../docs/modules/client-console.md) describes the API and session authorization.
+
+Open the Server Control Console twice and confirm the existing operator window comes forward. Sign in, confirm the login card disappears, and open a room's Members and Timeline. Confirm that Chats follows the Server's room grant. Sign out and check that the room views disappear. Close the operator window and reopen it from the View menu to get a fresh sign-in.

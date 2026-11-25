@@ -13,6 +13,41 @@ from urllib.parse import urlsplit
 LAUNCHER = Path(__file__).resolve().parents[1] / "desktop" / "launch.py"
 
 
+def test_desktop_launcher_reads_only_the_server_origin_from_a_private_profile(tmp_path):
+    profile = tmp_path / "client.json"
+    profile.write_text(
+        json.dumps(
+            {
+                "server_url": "http://127.0.0.1:18765",
+                "account_token": "a" * 43,
+            }
+        )
+    )
+    command = [
+        sys.executable,
+        "-I",
+        str(LAUNCHER),
+        "--config",
+        str(profile),
+        "--server-origin",
+    ]
+
+    profile.chmod(0o644)
+    public = subprocess.run(
+        command, capture_output=True, text=True, timeout=3, check=False
+    )
+    assert public.returncode == 1
+    assert public.stdout == ""
+    assert "private" in public.stderr
+
+    profile.chmod(0o600)
+    private = subprocess.run(
+        command, capture_output=True, text=True, timeout=3, check=False
+    )
+    assert private.returncode == 0, private.stderr
+    assert json.loads(private.stdout) == "http://127.0.0.1:18765"
+
+
 def test_desktop_launcher_reuses_client_through_private_socketpair():
     # Keep the Client's Unix socket path short on macOS.
     with TemporaryDirectory(prefix="tu-desktop-", dir="/tmp") as temp:

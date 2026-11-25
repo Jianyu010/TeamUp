@@ -1,9 +1,10 @@
-const { app, BrowserWindow, dialog, protocol, session } = require("electron");
+const { app, BrowserWindow, dialog, Menu, protocol, session } = require("electron");
 const { execFile } = require("node:child_process");
 const { homedir } = require("node:os");
 const { join, resolve } = require("node:path");
 const { promisify } = require("node:util");
 const { CONSOLE_URL, createConsoleHandler, parseConsoleEndpoint } = require("./console-protocol.cjs");
+const { createServerConsole } = require("./server-console.cjs");
 
 const exec = promisify(execFile);
 const runtime = resolve(process.env.TEAMUP_DESKTOP_RUNTIME ||
@@ -41,6 +42,18 @@ async function prepareConsole() {
     throw new Error(detail || "TeamUp could not start the local Client console.");
   }
   return parseConsoleEndpoint(stdout);
+}
+
+async function readServerOrigin() {
+  try {
+    const { stdout } = await exec(join(runtime, "python"), [
+      "-I", launcher, "--config", profile, "--server-origin",
+    ], { timeout: 3000, maxBuffer: 4096 });
+    return JSON.parse(stdout);
+  } catch (error) {
+    const detail = error.code === 1 && error.stderr.trim();
+    throw new Error(detail || "TeamUp could not read the selected Client profile.");
+  }
 }
 
 function resetEndpoint(stale) {
@@ -96,6 +109,32 @@ function showConsole() {
   }
 }
 
+function setMenu(showServerConsole) {
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    ...(process.platform === "darwin" ? [{ role: "appMenu" }] : []),
+    { role: "fileMenu" },
+    { role: "editMenu" },
+    {
+      label: "View",
+      submenu: [
+        { label: "Client Console", click: showConsole },
+        { label: "Server Control Console", id: "server-control-console", click: showServerConsole },
+        { type: "separator" },
+        { role: "reload" },
+        { role: "forceReload" },
+        { role: "toggleDevTools" },
+        { type: "separator" },
+        { role: "resetZoom" },
+        { role: "zoomIn" },
+        { role: "zoomOut" },
+        { type: "separator" },
+        { role: "togglefullscreen" },
+      ],
+    },
+    { role: "windowMenu" },
+  ]));
+}
+
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
@@ -107,6 +146,12 @@ if (!app.requestSingleInstanceLock()) {
     consoleSession.setPermissionCheckHandler(() => false);
     consoleSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
     consoleSession.protocol.handle("teamup", createConsoleHandler(assetDirectory, getEndpoint, resetEndpoint));
+    setMenu(createServerConsole({
+      BrowserWindow,
+      dialog,
+      readOrigin: readServerOrigin,
+      serverSession: session.fromPartition("teamup-server-console", { cache: false }),
+    }));
     app.on("activate", showConsole);
     app.on("second-instance", showConsole);
     showConsole();
