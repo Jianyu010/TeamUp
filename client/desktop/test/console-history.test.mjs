@@ -39,6 +39,26 @@ test("older pages and polls preserve survivors under a stable expiration waterma
   assert.deepEqual(calls, [{after: id(0)}, {after: id(30)}, {after: id(61)}, {after: id(90)}]);
 });
 
+test("polling refreshes retired sender labels on all loaded pages", async () => {
+  const messages = Array.from({length: 60}, (_, index) => ({
+    id: String(index + 1),
+    sender: index === 48 ? "Backend" : "Reviewer",
+  }));
+  const board = {current: 1, acknowledged: 1};
+  const previous = {state: "ready", board, messages, older: "1"};
+  const current = messages.map((message) => message.id === "49"
+    ? {...message, sender: "Retired member (93e57f02)"}
+    : message);
+  const {page, reset} = await readTranscript(previous, null, async ({after}) => {
+    const messages = current.filter((message) => Number(message.id) > Number(after)).slice(0, 30);
+    return {state: "ready", board, messages, more_recent: messages.length === 30};
+  });
+
+  assert.equal(reset, false);
+  assert.equal(page.older, "1");
+  assert.deepEqual(page.messages, current);
+});
+
 test("a denied intermediate probe discards the cached transcript", async () => {
   const previous = {
     state: "ready", board: {current: 1, acknowledged: 1},

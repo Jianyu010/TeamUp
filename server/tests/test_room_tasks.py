@@ -354,7 +354,7 @@ def test_tasks_survive_restart_on_an_existing_database(tmp_path):
         ]
 
     with closing(sqlite3.connect(db_path)) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 8
         assert (
             connection.execute(
                 "SELECT version FROM room_task_schema WHERE singleton = 1"

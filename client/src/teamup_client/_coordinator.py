@@ -84,6 +84,7 @@ OPERATIONS = {
         },
     ),
     "join_room": Operation("POST", "/rooms/{room_id}/join", ROOM),
+    "leave_room": Operation("POST", "/rooms/{room_id}/leave", ROOM),
     "get_board": Operation("GET", "/rooms/{room_id}/board", ROOM),
     "ack_board": Operation(
         "POST", "/rooms/{room_id}/board/ack", {**ROOM, "version": POSITIVE}

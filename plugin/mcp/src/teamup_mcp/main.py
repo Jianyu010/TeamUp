@@ -76,6 +76,7 @@ TOOLS = [
         {"rules": TEXT, "protocol": TEXT, "history_policy": HISTORY_POLICY},
     ),
     tool("join_room", "Join a team-visible room.", ROOM),
+    tool("leave_room", "Leave a room as this member. You can rejoin later.", ROOM),
     tool("get_board", "Read the room's current rules, protocol and version.", ROOM),
     tool(
         "ack_board",

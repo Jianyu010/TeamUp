@@ -31,12 +31,15 @@ def _member_labels(members: list[dict]) -> dict[str, str]:
 
 def _message(item: dict, labels: dict[str, str]) -> dict:
     sender = item["sender_member_id"]
+    sender_label = labels.get(sender, sender[:8])
+    if item.get("sender_retired") is True:
+        sender_label = f"Retired member ({sender[:8]})"
     first_target = item["mention_member_id"]
     targets = item.get("mention_member_ids", [first_target] if first_target else [])
     mentioned = [labels.get(target, target[:8]) for target in targets]
     result = {
         "id": str(item["message_id"]),
-        "sender": labels.get(sender, sender[:8]),
+        "sender": sender_label,
         "sender_member_id": sender,
         "text": item["text"],
         "created_at": item.get("created_at"),

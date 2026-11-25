@@ -48,6 +48,7 @@ MCP 初始化说明与随附的协作 skill 会引导 Agent 按参与范围选�
 | `teamup_list_rooms` | `list_rooms` | 无 | `{"rooms":[Room 概要]}`，按 `room_id` 稳定排序 |
 | `teamup_create_room` | `create_room` | `name`、可选 `rules`、`protocol`、`history_policy` | Room |
 | `teamup_join_room` | `join_room` | `room_id` | Room |
+| `teamup_leave_room` | `leave_room` | `room_id` | `{"room_id":"…"}`，仅离开当前成员本人的房间 |
 | `teamup_get_board` | `get_board` | `room_id` | Board |
 | `teamup_ack_board` | `ack_board` | `room_id`、`version` | `{"version":1}` |
 | `teamup_send_message` | `send_message` | `room_id`、`client_message_id`、`text`、可选 `mention_member_id` 或 `mention_member_ids` | Message |
@@ -130,5 +131,7 @@ Codex 的提交执行 `codex_command` 并在末尾追加 `queue --disable daemon
 - `teamup-client sessions --config PATH` 列出会话身份、状态、是否接入及唤醒许可。
 - `teamup-client sessions --config PATH approve|reject HARNESS_INSTANCE_ID SESSION_ID` 批准或拒绝待批准会话。
 - `teamup-client wake --config PATH HARNESS_INSTANCE_ID SESSION_ID [--room ROOM_ID]... [--sender MEMBER_ID]...` 设置唤醒许可。省略 `--sender` 时允许这些房间中的任何发送者，不带 `--room` 时撤销。会话须为静态绑定或已批准。
+
+`teamup-client members --config PATH rename MEMBER_ID ROLE_DESCRIPTION` 更新角色，`teamup-client members --config PATH retire MEMBER_ID` 永久退役成员。这两条命令使用私有配置中的 `account_token` 直接调用 [账号管理路由](account-login-v1.md#成员档案管理47)。已登录且账号拥有成员时可用，支持按成员 ID 管理当前机器以外的绑定。Agent 的 MCP/IPC 工具不持有该授权。退役后，已经领到本机的通知仍由原绑定查收，后续拉取和向 harness 提交前的服务端授权检查会拒绝已退役凭证。退役绑定再次登记返回 `member_retired`，须以新的绑定和凭证登记新成员。[会话迁移步骤](../../client/README.md#one-member-per-agent-session)
 
 首轮未实现频率限制。远端聊天正文不会直接作为命令执行。

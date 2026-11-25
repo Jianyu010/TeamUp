@@ -844,7 +844,8 @@ function messageRow(message) {
     typeof message.sender_role_description === "string"
       ? message.sender_role_description
       : "unknown member";
-  li.append(element("span", "row-agent", sender));
+  const label = message.sender_retired === true ? `${sender} (retired)` : sender;
+  li.append(element("span", "row-agent", label));
   li.append(element("span", "row-text", message.text));
   return li;
 }

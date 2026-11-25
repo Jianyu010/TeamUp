@@ -774,7 +774,7 @@ def _member(connection: sqlite3.Connection, token: str) -> sqlite3.Row:
     digest = _credential_digest(token)
     record = connection.execute(
         f"""
-        SELECT {_MEMBER} FROM members WHERE token_digest = ?
+        SELECT {_MEMBER} FROM members WHERE token_digest = ? AND retired = 0
             AND NOT EXISTS (
                 SELECT 1 FROM accounts
                 WHERE accounts.owner_id = members.owner_id AND disabled = 1
@@ -826,7 +826,7 @@ def _available_member(
     return connection.execute(
         """
         SELECT member_id FROM members
-        WHERE member_id = ? AND NOT EXISTS (
+        WHERE member_id = ? AND retired = 0 AND NOT EXISTS (
             SELECT 1 FROM accounts
             WHERE accounts.owner_id = members.owner_id AND disabled = 1
         )
@@ -882,6 +882,10 @@ def _room_message(row: sqlite3.Row) -> dict:
     return message
 
 
+def _retired_sender(row: sqlite3.Row) -> dict:
+    return {"sender_retired": True} if row["sender_retired"] else {}
+
+
 def _room_transcript(
     connection: sqlite3.Connection,
     room_id: str,
@@ -905,8 +909,9 @@ def _room_transcript(
         bound_values.append(before)
     rows = connection.execute(
         f"""
-        SELECT {_MESSAGE}, {_ADDITIONAL_MENTIONS} FROM messages AS m
-        WHERE room_id = ? AND {bounds}
+        SELECT {_MESSAGE}, {_ADDITIONAL_MENTIONS}, sender.retired AS sender_retired
+        FROM messages AS m JOIN members AS sender ON sender.member_id = m.sender_member_id
+        WHERE m.room_id = ? AND {bounds}
         ORDER BY message_id {"DESC" if newest_first else ""}
         LIMIT ?
         """,
@@ -1259,6 +1264,8 @@ class Collaboration:
             connection.execute("PRAGMA journal_mode = WAL")
         with self._transaction(write=True) as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
+            if not 0 <= version <= 8:
+                raise ValueError("Unsupported TeamUp database schema version")
             if version == 0:
                 for statement in _SCHEMA:
                     connection.execute(statement)
@@ -1312,9 +1319,14 @@ class Collaboration:
                     )
                     """
                 )
-                connection.execute("PRAGMA user_version = 7")
-            elif version != 7:
-                raise ValueError("Unsupported TeamUp database schema version")
+            if version < 8:
+                connection.execute(
+                    """
+                    ALTER TABLE members ADD COLUMN retired INTEGER NOT NULL DEFAULT 0
+                        CHECK (retired IN (0, 1))
+                    """
+                )
+                connection.execute("PRAGMA user_version = 8")
             _migrate_room_tasks(connection)
 
     def _connect(self) -> sqlite3.Connection:
@@ -1580,7 +1592,9 @@ class Collaboration:
                     owner = candidate
         return owner
 
-    def _enrollment_owner(self, connection: sqlite3.Connection, token: str) -> str:
+    def _enrollment_owner(
+        self, connection: sqlite3.Connection, token: str, *, allow_legacy: bool = True
+    ) -> str:
         digest = _credential_digest(token)
         session = connection.execute(
             """
@@ -1598,6 +1612,8 @@ class Collaboration:
             ):
                 raise CollaborationError("unauthorized")
             return session["owner_id"]
+        if not allow_legacy:
+            raise CollaborationError("unauthorized")
         owner = self._legacy_owner(digest)
         if (
             owner is None
@@ -1634,12 +1650,14 @@ class Collaboration:
                 raise CollaborationError("invalid_request")
             existing = connection.execute(
                 f"""
-                SELECT {_MEMBER}, token_digest FROM members
+                SELECT {_MEMBER}, token_digest, retired FROM members
                 WHERE owner_id = ? AND harness_instance_id = ? AND session_key = ?
                 """,
                 (owner, harness_instance_id, session_key),
             ).fetchone()
             if existing is not None:
+                if existing["retired"]:
+                    raise CollaborationError("member_retired")
                 if not compare_digest(existing["token_digest"], digest):
                     raise CollaborationError("conflict")
                 return {key: existing[key] for key in ("member_id", "role_description")}
@@ -1665,6 +1683,48 @@ class Collaboration:
                 ),
             )
         return {"member_id": member_id, "role_description": role_description}
+
+    def _owned_member(
+        self, connection: sqlite3.Connection, token: str, member_id: str
+    ) -> sqlite3.Row:
+        owner = self._enrollment_owner(connection, token, allow_legacy=False)
+        member = connection.execute(
+            "SELECT retired FROM members WHERE owner_id = ? AND member_id = ?",
+            (owner, member_id),
+        ).fetchone()
+        if member is None:
+            raise CollaborationError("not_found")
+        return member
+
+    def rename_member(self, token: str, member_id: str, role_description: str) -> dict:
+        with self._transaction(write=True) as connection:
+            if self._owned_member(connection, token, member_id)["retired"]:
+                raise CollaborationError("member_retired")
+            connection.execute(
+                "UPDATE members SET role_description = ? WHERE member_id = ?",
+                (role_description, member_id),
+            )
+        return {"member_id": member_id, "role_description": role_description}
+
+    def retire_member(self, token: str, member_id: str) -> dict:
+        with self._transaction(write=True) as connection:
+            if not self._owned_member(connection, token, member_id)["retired"]:
+                connection.execute(
+                    "UPDATE members SET retired = 1 WHERE member_id = ?", (member_id,)
+                )
+                connection.execute(
+                    "DELETE FROM room_members WHERE member_id = ?", (member_id,)
+                )
+                connection.execute(
+                    "DELETE FROM inbox_events WHERE member_id = ? AND acknowledged = 0",
+                    (member_id,),
+                )
+                connection.execute(
+                    "DELETE FROM task_reminders WHERE member_id = ? AND claimed_at IS NULL",
+                    (member_id,),
+                )
+        self._notify((member_id,))
+        return {"member_id": member_id, "retired": True}
 
     def get_member(self, token: str) -> dict:
         with self._transaction() as connection:
@@ -1699,7 +1759,7 @@ class Collaboration:
             rows = connection.execute(
                 f"""
                 SELECT {_MEMBER} FROM members
-                WHERE instr(teamup_casefold(role_description), ?) > 0
+                WHERE retired = 0 AND instr(teamup_casefold(role_description), ?) > 0
                 ORDER BY member_id LIMIT 100
                 """,
                 (query.casefold(),),
@@ -1839,7 +1899,8 @@ class Collaboration:
             parameters = (room_id,) if cursor is None else (room_id, cursor)
             rows = connection.execute(
                 f"""
-                SELECT {_MESSAGE}, mem.role_description AS sender_role_description
+                SELECT {_MESSAGE}, mem.role_description AS sender_role_description,
+                    mem.retired AS sender_retired
                 FROM messages AS m
                 JOIN members AS mem ON mem.member_id = m.sender_member_id
                 WHERE m.room_id = ? {boundary}
@@ -1867,6 +1928,7 @@ class Collaboration:
                         "text": row["text"],
                         "mention_member_id": row["mention_member_id"],
                         "created_at": _rfc3339_to_unix(row["created_at"]),
+                        **_retired_sender(row),
                     }
                     for row in page
                 ],
@@ -1980,6 +2042,26 @@ class Collaboration:
                     connection, room_id, "member_joined", member_id, _rfc3339_utc_now()
                 )
         return dict(room)
+
+    def leave_room(self, token: str, room_id: str) -> dict:
+        with self._transaction(write=True) as connection:
+            member_id = _member(connection, token)["member_id"]
+            removed = connection.execute(
+                "DELETE FROM room_members WHERE room_id = ? AND member_id = ?",
+                (room_id, member_id),
+            )
+            if removed.rowcount:
+                connection.execute(
+                    """
+                    DELETE FROM inbox_events WHERE member_id = ? AND acknowledged = 0
+                        AND EXISTS (
+                            SELECT 1 FROM messages
+                            WHERE message_id = inbox_events.message_id AND room_id = ?
+                        )
+                    """,
+                    (member_id, room_id),
+                )
+        return {"room_id": room_id}
 
     def list_rooms(self, token: str) -> list[dict]:
         with self._transaction() as connection:
@@ -2378,7 +2460,10 @@ class Collaboration:
                 newest_first=before is not None,
             )
             return {
-                "messages": [_room_message(record) for record in rows],
+                "messages": [
+                    {**_room_message(record), **_retired_sender(record)}
+                    for record in rows
+                ],
                 **_expiry_metadata(
                     membership["expired_through_message_id"], cursor, upper
                 ),

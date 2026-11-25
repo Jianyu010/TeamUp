@@ -37,6 +37,7 @@ _ERRORS = {
     "board_read_required": (409, "Read the current board version first."),
     "board_ack_required": (409, "Confirm the current board version first."),
     "conflict": (409, "The request conflicts with the existing state."),
+    "member_retired": (409, "This member's binding has been retired."),
     "invalid_mention": (422, "Mention another member of this room."),
     "invalid_peer": (422, "The DM peer must be another available member of this team."),
     "rate_limited": (429, "Too many login attempts. Try again later."),
@@ -119,6 +120,10 @@ class _Enrollment(_Body):
     session_key: _ShortText
     role_description: _Name
     member_token: _MemberToken
+
+
+class _MemberRole(_Body):
+    role_description: _Name
 
 
 class _Room(_Body):
@@ -395,6 +400,18 @@ class Gateway:
         def search_members(token: _Bearer, q: str = "") -> dict:
             return {"members": collaboration.search_members(token, q)}
 
+        @app.patch("/v1/members/{member_id}", dependencies=[Depends(_require_utf8)])
+        def rename_member(
+            token: _Bearer, member_id: _Identifier, body: _MemberRole
+        ) -> dict:
+            return collaboration.rename_member(token, member_id, body.role_description)
+
+        @app.post(
+            "/v1/members/{member_id}/retire", dependencies=[Depends(_reject_body)]
+        )
+        def retire_member(token: _Bearer, member_id: _Identifier) -> dict:
+            return collaboration.retire_member(token, member_id)
+
         @app.post("/v1/presence/heartbeat", dependencies=[Depends(_reject_body)])
         def heartbeat(token: _Bearer) -> dict:
             return presence.heartbeat(token)
@@ -427,6 +444,10 @@ class Gateway:
         @app.post("/v1/rooms/{room_id}/join", dependencies=[Depends(_reject_body)])
         def join_room(token: _Bearer, room_id: _Identifier) -> dict:
             return collaboration.join_room(token, room_id)
+
+        @app.post("/v1/rooms/{room_id}/leave", dependencies=[Depends(_reject_body)])
+        def leave_room(token: _Bearer, room_id: _Identifier) -> dict:
+            return collaboration.leave_room(token, room_id)
 
         @app.get("/v1/rooms/{room_id}/board", dependencies=[Depends(_reject_body)])
         def read_board(token: _Bearer, room_id: _Identifier) -> dict:
