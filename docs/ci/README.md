@@ -24,7 +24,7 @@ TeamUp 的 main 分支只接受合入门禁的自动合入。仓库 owner（`Jia
 | --- | --- | --- | --- | --- | --- | --- |
 | `1 · PR Routing` | 1 | 门禁写入的提交状态（`merge-gate-01`） | 门禁的路由结论：PR 走自动路径还是等待 owner | 否，只报告 | – | 启用 |
 | `1 · Protected Changes` | 1 | 同上 | 改了受保护路径、删除测试或新增 skip/xfail 时为红，owner 加 `ready` 后为绿；`require_ready` 关闭时只报告，保持绿色并注明 | 否，只报告 | – | 启用 |
-| `1 · Automation Limits` | 1 | 同上 | 改动超过 300 个文件、PR 作者不受信或审查重跑次数用尽时为红 | 否，只报告 | – | 启用 |
+| `1 · Automation Limits` | 1 | 同上 | PR 作者不受信、审查重跑次数用尽，或（`require_ready` 打开时）改动超过 300 个文件时为红 | 否，只报告 | – | 启用 |
 | `1 · Linked Issue` | 1 | 同上 | PR 的标题或正文没有引用本仓库的 issue（`#N` 或 `Jianyu010/TeamUp#N`，引用的是 PR 不算）时为红；门禁据此拦截，owner 加 `ready` 可放行 | 否，门禁执行 | – | 启用 |
 | `3 · Review Findings` | 3 | 同上 | 按下文"AI 审查发现"判定：有未修复的 P0/P1 或未回复的 P2 时为红；当前 head 还没有审查时为 pending | 否，门禁执行 | – | 启用 |
 | `2 · Type Check` | 2 | `type-check-01` | `uv run --no-sync mypy`，配置在根 `pyproject.toml` 的 `[tool.mypy]`，覆盖 `server/src`、`client/src`、`plugin/mcp/src` | 是 | `gate/type-check-failed` | 启用 |
@@ -60,7 +60,8 @@ TeamUp 的 main 分支只接受合入门禁的自动合入。仓库 owner（`Jia
 
 | 情况 | `require_ready: true` | `require_ready: false`（当前） |
 | --- | --- | --- |
-| 改受保护路径、删除测试、新增 skip/xfail、改动超过 300 个文件 | 等 owner 加 `ready` | 自动路径照常判定；`1 · Protected Changes` 只报告 |
+| 改受保护路径、删除测试、新增 skip/xfail | 等 owner 加 `ready` | 自动路径照常判定；`1 · Protected Changes` 保持绿色并注明 |
+| 改动超过 300 个文件 | 等 owner 加 `ready`，`1 · Automation Limits` 为红 | 不拦截，也不再报告；超过 3000 个文件（GitHub 列表上限，可能列不全）时不论开关都要 AI 审查 |
 | main 或 nightly 冻结 | 只合入带 `ready` 或引用冻结 issue 的 PR | 不拦截合入；冻结 issue 照常打开和关闭，用于提醒 |
 
 不受开关影响、仍然生效的规则：必需检查全绿、`3 · AI Review` 通过并按下文处理完发现、关联 issue、`pr/hold`、草稿不合入，以及不受信作者的 PR 等待维护者。`ready` 仍可用作放行（例如未修复的 P0/P1），只是不再是必需的。PR 作者一般就是 owner 的账号（agent 也用它），所以"只豁免 owner"等同于对所有 PR 关闭，开关因此按仓库设置。

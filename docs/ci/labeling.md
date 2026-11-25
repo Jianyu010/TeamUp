@@ -123,7 +123,7 @@ PR 的标签描述状态，`type/*` 从关联的 issue 继承。
 
 | 标签 | 由谁设置 | 含义 |
 | --- | --- | --- |
-| `ci/freeze` | 自动化 | main 或 nightly 失败，只有带 `ready` 的 PR 能合入 |
+| `ci/freeze` | 自动化 | main 或 nightly 失败。`require_ready` 打开时只有带 `ready` 或引用该 issue 的 PR 能合入；关闭时（当前）只作提醒，不拦截合入 |
 | `weekly-failure` | 自动化 | weekly 真实 Agent 端到端失败 |
 | `opencode-review` | 维护者 | 请求对 PR 进行一次 OpenCode 审查 |
 
@@ -215,7 +215,7 @@ PR 的标签描述状态，`type/*` 从关联的 issue 继承。
 | ready | 0E8A16 | 维护者放行：受保护改动、AI 审查或冻结期合入 |
 | pr/hold | B60205 | 不要合入 |
 | pr/no-issue | FBCA04 | 没有关联 issue |
-| ci/freeze | D93F0B | main 或 nightly 失败，只合入带 ready 的 PR |
+| ci/freeze | D93F0B | main 或 nightly 失败（是否拦截合入见 require_ready） |
 | weekly-failure | FBCA04 | weekly 真实 Agent 端到端失败 |
 | opencode-review | 5319E7 | 请求 OpenCode 审查 |
 | area/collaboration | C5DEF5 | 成员、房间、私聊、公告、消息、收件箱 |

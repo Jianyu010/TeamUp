@@ -1991,6 +1991,20 @@ def _protected() -> FakeGitHub:
     return gh
 
 
+def test_only_an_explicit_false_turns_require_ready_off() -> None:
+    assert ci_gate.require_ready({}) is True
+    for value in (None, 0, "", "false", True):
+        assert ci_gate.require_ready({"require_ready": value}) is True, value
+    assert ci_gate.require_ready({"require_ready": False}) is False
+
+
+def test_a_listing_at_the_cap_is_never_review_exempt() -> None:
+    policy = {"review_exempt_paths": ["docs/assets/"]}
+    paths = ["docs/assets/a.png"]
+    assert ci_gate.review_exempt(paths, policy, 1) is True
+    assert ci_gate.review_exempt(paths, policy, ci_gate.LISTING_CAP) is False
+
+
 @pytest.mark.usefixtures("owner_review_off")
 def test_with_require_ready_off_the_other_rules_still_hold() -> None:
     gh = _protected()
@@ -2006,8 +2020,5 @@ def test_with_require_ready_off_the_other_rules_still_hold() -> None:
 
 def test_the_policy_on_main_has_require_ready_off() -> None:
     """The owner's current choice; flip it back in policy.json and this test together."""
-    import json
-    from pathlib import Path
-
-    policy = json.loads(Path(".github/ci/policy.json").read_text(encoding="utf-8"))
+    policy = json.loads(ci_gate.POLICY_PATH.read_text(encoding="utf-8"))
     assert policy["require_ready"] is False

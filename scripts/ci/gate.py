@@ -98,7 +98,9 @@ def require_ready(policy: dict[str, Any]) -> bool:
 
     Missing means yes (fail closed); docs/ci/README.md, "owner 审查开关".
     """
-    return bool(policy.get("require_ready", True))
+    return (
+        policy.get("require_ready", True) is not False
+    )  # only an explicit false turns it off
 
 
 MAINTAINER_ROLES = frozenset({"admin", "maintain"})
@@ -602,9 +604,21 @@ REVIEW_RERUNS = 3
 REVIEW_RERUN_AFTER_S = 600
 
 
-def review_exempt(paths: list[str], policy: dict[str, Any] | None = None) -> bool:
-    """Whether the PR changes only files that need no AI review (``review_exempt_paths``)."""
+# ``file_entries`` reads at most 30 pages of 100: a listing this long may be cut off.
+LISTING_CAP = 3000
+
+
+def review_exempt(
+    paths: list[str], policy: dict[str, Any] | None = None, listed: int = 0
+) -> bool:
+    """Whether the PR changes only files that need no AI review (``review_exempt_paths``).
+
+    ``listed`` is how many changed-file entries GitHub returned; at ``LISTING_CAP`` the listing
+    may be cut off, so the PR is never exempt (whatever ``require_ready`` says).
+    """
     roots = tuple((policy or {}).get("review_exempt_paths") or ())
+    if listed >= LISTING_CAP:
+        return False
     return bool(paths) and bool(roots) and all(p.startswith(roots) for p in paths)
 
 
@@ -788,7 +802,7 @@ def layer1_verdicts(
     blocking = problems if owner else []
     issue = linked_issue(gh, pull)
     paths = sorted({str(e.get("filename") or "") for e in entries})
-    exempt = review_exempt(paths, policy)
+    exempt = review_exempt(paths, policy, len(entries))
     labels = {label["name"] for label in pull.get("labels", [])}
 
     limits: list[str] = []
@@ -1193,7 +1207,7 @@ def auto_problems(gh: GitHub, pull: dict[str, Any], required: list[str]) -> list
     if linked_issue(gh, pull) is None:
         problems.append(NO_ISSUE)
     paths = sorted({str(e.get("filename") or "") for e in entries})
-    if review_exempt(paths, policy):
+    if review_exempt(paths, policy, len(entries)):
         return problems
     reviews = _reviews(gh, number)
     review_runs = _review_runs(gh, sha) if _own_reviews(sha, reviews) else []
