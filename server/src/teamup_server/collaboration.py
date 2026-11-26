@@ -74,7 +74,7 @@ _OBSERVATION_FIELDS = (
 _PASSWORD_HASHER = PasswordHasher(
     time_cost=2, memory_cost=19 * 1024, parallelism=1, type=Type.ID
 )
-_MEMBER = "member_id, role_description"
+_MEMBER = "member_id, owner_id, role_description"
 _MEMBER_PROFILE = """
     m.member_id, m.role_description, m.description, a.username AS owner_username
 """
@@ -898,9 +898,10 @@ def _room_member(
     record = connection.execute(
         """
         SELECT r.name, r.version, r.rules, r.protocol, r.history_policy,
-            r.creator_member_id, r.expired_through_message_id, rm.read_board_version,
+            creator.owner_id AS creator_owner_id, r.expired_through_message_id, rm.read_board_version,
             rm.acked_board_version, rm.joined_after, rm.membership_id
         FROM room_members AS rm JOIN rooms AS r ON r.room_id = rm.room_id
+        LEFT JOIN members AS creator ON creator.member_id = r.creator_member_id
         WHERE rm.room_id = ? AND rm.member_id = ?
         """,
         (room_id, member_id),
@@ -2768,9 +2769,9 @@ class Collaboration:
         self, token: str, room_id: str, member_id: str, membership_id: str
     ) -> dict:
         with self._transaction(write=True) as connection:
-            actor = _member(connection, token)["member_id"]
-            room = _room_member(connection, room_id, actor)
-            if room["creator_member_id"] != actor:
+            actor = _member(connection, token)
+            room = _room_member(connection, room_id, actor["member_id"])
+            if room["creator_owner_id"] != actor["owner_id"]:
                 raise CollaborationError("forbidden")
             event_id = self._end_room_membership(
                 connection, room_id, member_id, membership_id, notify=True
@@ -2835,25 +2836,26 @@ class Collaboration:
 
     def list_rooms(self, token: str, *, include_membership: bool = False) -> list[dict]:
         with self._transaction() as connection:
-            member_id = _member(connection, token)["member_id"]
+            member = _member(connection, token)
             rows = connection.execute(
                 """
                 SELECT r.room_id, r.name, r.version AS current_board_version,
-                    rm.acked_board_version, rm.membership_id, r.creator_member_id, (
+                    rm.acked_board_version, rm.membership_id, creator.owner_id AS creator_owner_id, (
                         SELECT MAX(m.message_id) FROM messages AS m
                         WHERE m.room_id = r.room_id
                     ) AS latest_message_id
                 FROM room_members AS rm JOIN rooms AS r ON r.room_id = rm.room_id
+                LEFT JOIN members AS creator ON creator.member_id = r.creator_member_id
                 WHERE rm.member_id = ?
                 ORDER BY r.room_id
                 """,
-                (member_id,),
+                (member["member_id"],),
             )
             rooms = [dict(record) for record in rows]
             for room in rooms:
-                creator = room.pop("creator_member_id")
+                creator_owner_id = room.pop("creator_owner_id")
                 if include_membership:
-                    room["can_remove_members"] = creator == member_id
+                    room["can_remove_members"] = creator_owner_id == member["owner_id"]
                 else:
                     room.pop("membership_id")
             return rooms
@@ -2917,21 +2919,21 @@ class Collaboration:
 
     def view_board(self, token: str, room_id: str) -> dict:
         with self._transaction() as connection:
-            member_id = _member(connection, token)["member_id"]
-            board = _room_member(connection, room_id, member_id)
+            member = _member(connection, token)
+            board = _room_member(connection, room_id, member["member_id"])
             return {
                 "room_id": room_id,
                 **{key: board[key] for key in ("version", "rules", "protocol")},
-                "can_edit": board["creator_member_id"] == member_id,
+                "can_edit": board["creator_owner_id"] == member["owner_id"],
             }
 
     def publish_board(
         self, token: str, room_id: str, version: int, rules: str, protocol: str
     ) -> dict:
         with self._transaction(write=True) as connection:
-            member_id = _member(connection, token)["member_id"]
-            current = _room_member(connection, room_id, member_id)
-            if current["creator_member_id"] != member_id:
+            member = _member(connection, token)
+            current = _room_member(connection, room_id, member["member_id"])
+            if current["creator_owner_id"] != member["owner_id"]:
                 raise CollaborationError("forbidden")
             if current["version"] != version:
                 raise CollaborationError("conflict")
