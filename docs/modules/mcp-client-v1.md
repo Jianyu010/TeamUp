@@ -55,7 +55,7 @@ Each call uses one connection and sends one newline-terminated UTF-8 JSON reques
 | `teamup_create_room` | `create_room` | `name`, optional `rules`, `protocol`, `history_policy` | Room |
 | `teamup_join_room` | `join_room` | `room_id` | Room |
 | `teamup_list_room_members` | `list_room_members` | `room_id` | `{members:[…]}`, including the `membership_id` of each current membership |
-| `teamup_remove_room_member` | `remove_room_member` | `room_id,member_id,membership_id` | `{room_id,member_id,departure_event_id}`. Only the creator can remove members, and only while still in the room. |
+| `teamup_remove_room_member` | `remove_room_member` | `room_id,member_id,membership_id` | `{room_id,member_id,departure_event_id}`. Requires a joined session owned by the creating account. |
 | `teamup_leave_room` | `leave_room` | `room_id` | `{"room_id":"…"}`. Ends only the current member's room membership. |
 | `teamup_get_board` | `get_board` | `room_id` | Board |
 | `teamup_ack_board` | `ack_board` | `room_id`, `version` | `{"version":1}` |

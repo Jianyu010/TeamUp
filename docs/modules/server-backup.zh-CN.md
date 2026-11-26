@@ -2,7 +2,7 @@
 
 [English](server-backup.md)
 
-Server 运维人员获取快照，用于灾难恢复。Collaboration 仍是唯一访问在线业务数据库的应用组件。运维人员以现有数据库所有者的操作系统身份，通过 SQLite 在线备份 API 以只读方式获取副本。Gateway、Client 和 MCP 继续使用现有契约。
+备份是由运维人员按需启用的功能。TeamUp Server、Client 和 MCP 的安装与升级独立于备份任务。在线数据库保留在源主机，应用内由 Collaboration 负责访问。备份任务以数据库所有者的操作系统身份，通过 SQLite 在线备份 API 获取只读快照。
 
 ## 获取快照
 
@@ -29,40 +29,57 @@ python3 scripts/ops/snapshot_sqlite.py \
 
 ## 定时异地备份
 
-在独立的 Linux 主机上运行备份接收端，并使用持久存储。为接收端配置专用 SSH 密钥，限制它只能在源服务器上运行分派程序。分派程序只接受配置中精确匹配的源名称，以相应数据库的所有者身份运行采集命令，禁止使用 shell、转发和任意路径。每次采集都在仅该用户可访问的内存目录中生成独立快照。SSH 响应通过标准输出传回快照，通过标准错误输出一行 `TEAMUP_BACKUP_SHA256 <hex>`。若退出状态为非零，整份响应无效。
+选择配有持久存储的独立 Linux 主机作为接收端。接收端主动通过 SSH 连接运维人员指定的源主机，并把快照保存在接收端的本地备份目录。由运维人员安装并启动接收端定时器后，才会定期拉取。主机地址、数据库路径和 SSH 凭证写入部署本地配置，配置保存在 Git 仓库之外。
 
-接收端先核对每个来源的快照摘要，再发布一组带时间戳的备份和相应回执。单次运行失败时，仍可使用先前的备份。通过定时器每小时从两个来源拉取备份。最近 7 天内的每组备份都保留，之后到第 30 天为止，每个 UTC 日只保留当天最新的一组。超过 2 小时无新备份时应能检测到。接收端的目录仅限授权人员访问，恢复命令在隔离的恢复环境中运行。接收端以 SQLite 文件保存备份。
+为接收端配置专用 SSH 密钥，限制它只能在源服务器上运行分派程序。分派程序只接受配置中精确匹配的源名称，以相应数据库的所有者身份运行采集命令，禁止使用 shell、转发和任意路径。每次采集都在仅该用户可访问的内存目录中生成独立快照。SSH 响应通过标准输出传回快照，通过标准错误输出一行 `TEAMUP_BACKUP_SHA256 <hex>`。若退出状态为非零，整份响应无效。
+
+接收端先核对每个来源的快照摘要，再发布一组带时间戳的备份和相应回执。单次运行失败时，仍可使用先前的备份。通过定时器每小时从已配置的来源拉取备份。最近 7 天内的每组备份都保留，之后到第 30 天为止，每个 UTC 日只保留当天最新的一组。超过 2 小时无新备份时应能检测到。接收端的目录仅限授权人员访问，恢复命令在隔离的恢复环境中运行。接收端以 SQLite 文件保存备份。
 
 ### 安装备份源命令
 
 1. 将 `snapshot_sqlite.py`、`capture_backup.py` 和 `dispatch_backup.py` 一起安装到 root 所有的目录，例如 `/usr/local/libexec/teamup-backup`。创建专用 SSH 账号，锁定密码，并为其设置一个空的、归 root 所有的主目录。只为这个账号安装备份接收端的公钥。
-2. 将允许访问的备份源写入归 root 所有的 JSON 文件，例如 `/etc/teamup-backup/sources.json`。为每个源名称指定现有数据库所有者和配置中的数据库路径。
+2. 将允许访问的备份源写入归 root 所有的 JSON 文件，例如 `/etc/teamup-backup/sources.json`。为每个源名称指定现有数据库所有者和配置中的数据库路径。将示例中的来源名、所有者和路径替换为本地部署的值。
 
    ```json
    {
-     "pilot": {"owner": "teamup-pilot", "database": "/var/lib/teamup-pilot/teamup.db"},
-     "secondary": {"owner": "ubuntu", "database": "/home/ubuntu/.local/state/teamup/teamup.db"}
+     "primary": {"owner": "teamup-primary", "database": "/srv/example-teamup/primary.sqlite3"},
+     "secondary": {"owner": "teamup-secondary", "database": "/srv/example-teamup/secondary.sqlite3"}
    }
    ```
 
 3. 在 `authorized_keys` 中给接收端公钥加上 `restrict,command="/usr/bin/python3 /usr/local/libexec/teamup-backup/dispatch_backup.py /etc/teamup-backup/sources.json"` 前缀。为专用账号按备份源逐一设置精确匹配的 sudo 规则，安装前用 `visudo -cf` 检查该文件。此账号只需这些 sudo 规则。
 
    ```sudoers
-   teamup-backup ALL=(teamup-pilot) NOPASSWD: NOSETENV: /usr/bin/python3 /usr/local/libexec/teamup-backup/capture_backup.py --source /var/lib/teamup-pilot/teamup.db
-   teamup-backup ALL=(ubuntu) NOPASSWD: NOSETENV: /usr/bin/python3 /usr/local/libexec/teamup-backup/capture_backup.py --source /home/ubuntu/.local/state/teamup/teamup.db
+   teamup-backup ALL=(teamup-primary) NOPASSWD: NOSETENV: /usr/bin/python3 /usr/local/libexec/teamup-backup/capture_backup.py --source /srv/example-teamup/primary.sqlite3
+   teamup-backup ALL=(teamup-secondary) NOPASSWD: NOSETENV: /usr/bin/python3 /usr/local/libexec/teamup-backup/capture_backup.py --source /srv/example-teamup/secondary.sqlite3
    ```
 
 ### 安装备份接收端
 
 将 `pull_backup.py`、`restore_backup.py` 和 `snapshot_sqlite.py` 安装到 `~/.local/lib/teamup-backup`，并将 `deploy/backup/` 下的单元文件安装到 `~/.config/systemd/user/`。在接收端的私有 SSH 配置中固定已核验的源主机密钥，使用专用身份，并设置 `IdentitiesOnly yes`、`RequestTTY no` 和 `LogLevel ERROR`。将配置和快照放在应用和 CI 的工作目录以外。条件允许时，为接收端使用专用账号。如果接收端与构建工具共用主机或操作系统账号，确认构建进程在独立的文件系统命名空间内运行，无法访问接收端实际的主目录或生产备份。以接收端账号运行且未受沙箱限制的进程可以读取这些文件。
 
-创建权限为 `0700` 的备份目录和权限为 `0600` 的 `~/.config/teamup-backup/receiver.env`。用户级服务会读取下面四项配置。
+在接收端的私有 `ssh_config` 中配置源主机的 SSH 别名。将 `teamup-source.example.invalid` 替换为实际源主机名，并在 `known_hosts` 中以该别名固定已核验的源主机密钥。
+
+```sshconfig
+Host teamup-backup-source
+    HostName teamup-source.example.invalid
+    User teamup-backup
+    HostKeyAlias teamup-backup-source
+    UserKnownHostsFile /home/receiver/.config/teamup-backup/known_hosts
+    IdentityFile /home/receiver/.config/teamup-backup/source_ed25519
+    StrictHostKeyChecking yes
+    IdentitiesOnly yes
+    RequestTTY no
+    LogLevel ERROR
+```
+
+创建权限为 `0700` 的本地备份目录和权限为 `0600` 的 `~/.config/teamup-backup/receiver.env`。`TEAMUP_BACKUP_HOST` 使用 `ssh_config` 中定义的别名。下列路径和来源名对应本页的示例部署。
 
 ```ini
 TEAMUP_BACKUP_ROOT=/home/receiver/teamup-backups
 TEAMUP_BACKUP_SSH_CONFIG=/home/receiver/.config/teamup-backup/ssh_config
 TEAMUP_BACKUP_HOST=teamup-backup-source
-TEAMUP_BACKUP_SOURCES="--source pilot --source secondary"
+TEAMUP_BACKUP_SOURCES="--source primary --source secondary"
 ```
 
 由管理员为接收端账号启用 linger，使定时器在开机时启动，并在该账号退出登录后继续运行。
@@ -71,7 +88,7 @@ TEAMUP_BACKUP_SOURCES="--source pilot --source secondary"
 sudo loginctl enable-linger receiver
 ```
 
-然后以接收端账号运行以下命令。第一条命令必须输出 `yes`。
+启用服务前，用 `ssh -G -F ~/.config/teamup-backup/ssh_config teamup-backup-source` 查看生效的 SSH 配置，确认源主机和备份目录符合本地部署。然后以接收端账号运行以下命令。第一条命令必须输出 `yes`。
 
 ```sh
 loginctl show-user "$USER" --property=Linger --value
@@ -92,7 +109,7 @@ systemctl --user list-timers 'teamup-backup*'
 
 ```sh
 python3 "$HOME/.local/lib/teamup-backup/restore_backup.py" \
-  --snapshot /path/to/generation/pilot.sqlite3 \
+  --snapshot /path/to/generation/primary.sqlite3 \
   --sha256 "$SNAPSHOT_SHA256" \
   --destination /path/to/private-restore/teamup.db
 ```

@@ -40,18 +40,16 @@ def test_board_view_preserves_receipt_gate_and_member_scope(team):
     confirm(team, "target", path)
 
 
-def test_only_creating_member_can_publish_a_new_version(team):
+def test_joined_sessions_of_the_creating_account_can_publish(team):
     path = room(team)
     board_path = f"{path}/board"
     join(team, "target", path)
-    # Another session owned by the creator's human account still has its own identity.
-    enroll(team, "sibling")
+    assert enroll(team, "sibling").is_success
     join(team, "sibling", path)
     confirm(team, "target", path)
     update = {"version": 1, "rules": "Review the diff.", "protocol": "Summarize it."}
 
     error(post(team, "target", board_path, json=update), 403, "forbidden")
-    error(post(team, "sibling", board_path, json=update), 403, "forbidden")
     error(post(team, "reader", board_path, json=update), 404, "not_found")
     error(
         post(team, "sender", board_path, json={**update, "rules": "   "}),
@@ -59,7 +57,8 @@ def test_only_creating_member_can_publish_a_new_version(team):
         "invalid_request",
     )
     assert get(team, "sender", f"{board_path}/view").json()["can_edit"] is True
-    response = post(team, "sender", board_path, json=update)
+    assert get(team, "sibling", f"{board_path}/view").json()["can_edit"] is True
+    response = post(team, "sibling", board_path, json=update)
     assert response.status_code == 200
     assert response.json() == {
         **update,
@@ -68,7 +67,8 @@ def test_only_creating_member_can_publish_a_new_version(team):
         "can_edit": True,
     }
     error(post(team, "sender", board_path, json=update), 409, "conflict")
-    error(get(team, "target", f"{path}/messages"), 409, "board_ack_required")
+    for label in ("target", "sibling"):
+        error(get(team, label, f"{path}/messages"), 409, "board_ack_required")
     for label in ("sender", "target"):
         error(
             post(team, label, f"{board_path}/ack", json={"version": 2}),
@@ -87,20 +87,23 @@ def test_competing_edits_have_one_winner_and_persist(tmp_path):
     database = tmp_path / "team.sqlite3"
     with api(database) as client:
         enroll(client, "sender")
-        board_path = room(client) + "/board"
+        path = room(client)
+        assert enroll(client, "sibling").is_success
+        join(client, "sibling", path)
+        board_path = f"{path}/board"
         together = Barrier(2)
 
-        def publish(rules):
+        def publish(label, rules):
             together.wait(timeout=5)
             return post(
                 client,
-                "sender",
+                label,
                 board_path,
                 json={"version": 1, "rules": rules, "protocol": "Post a summary."},
             )
 
         with ThreadPoolExecutor(max_workers=2) as workers:
-            responses = list(workers.map(publish, ("First edit", "Second edit")))
+            responses = list(workers.map(publish, ("sender", "sibling"), ("First edit", "Second edit")))
         assert sorted(result.status_code for result in responses) == [200, 409]
         committed = next(result.json() for result in responses if result.is_success)
 
@@ -208,6 +211,7 @@ def test_upgrade_recovers_only_the_original_timestamped_creator(tmp_path):
     with api(database) as client:
         enroll(client, "sender")
         enroll(client, "target", owner="bob")
+        enroll(client, "sibling")
         path = room(client)
         join(client, "target", path)
         assert post(client, "sender", f"{path}/leave").status_code == 200
@@ -218,5 +222,47 @@ def test_upgrade_recovers_only_the_original_timestamped_creator(tmp_path):
     for _ in range(2):
         with api(database) as client:
             assert get(client, "target", f"{path}/board/view").json()["can_edit"] is False
-            join(client, "sender", path)
-            assert get(client, "sender", f"{path}/board/view").json()["can_edit"] is True
+            join(client, "sibling", path)
+            assert get(client, "sibling", f"{path}/board/view").json()["can_edit"] is True
+
+
+def test_replacement_session_can_manage_existing_room_after_creator_retires(tmp_path):
+    database = tmp_path / "team.sqlite3"
+    with api(database) as client:
+        assert enroll(client, "sender").is_success
+        assert enroll(client, "target", owner="bob").is_success
+        path = room(client)
+        join(client, "target", path)
+        creator = member(client, "sender")
+        target = member(client, "target")
+        assert post(client, "sender", "/members/me/retire").is_success
+
+    with api(database) as client:
+        assert enroll(client, "replacement").is_success
+        assert member(client, "replacement") != creator
+        roster = get(client, "target", f"{path}/members?include_membership=true").json()
+        (membership,) = roster["members"]
+        assert membership["member_id"] == target
+        removal = f"{path}/members/{target}/remove"
+        chosen = {"membership_id": membership["membership_id"]}
+        update = {"version": 1, "rules": "Updated rules.", "protocol": "Updated protocol."}
+
+        error(get(client, "sender", f"{path}/board/view"), 401, "unauthorized")
+        error(post(client, "replacement", f"{path}/board", json=update), 404, "not_found")
+        error(post(client, "replacement", removal, json=chosen), 404, "not_found")
+        error(post(client, "target", removal, json=chosen), 403, "forbidden")
+
+        join(client, "replacement", path)
+        (summary,) = get(client, "replacement", "/rooms?include_membership=true").json()["rooms"]
+        assert summary["can_remove_members"] is True
+        assert summary["acked_board_version"] is None
+        assert get(client, "replacement", f"{path}/board/view").json()["can_edit"] is True
+        published = post(client, "replacement", f"{path}/board", json=update)
+        assert published.is_success
+        assert published.json()["version"] == 2
+        removed = post(client, "replacement", removal, json=chosen)
+        assert removed.is_success
+        assert removed.json()["departure_event_id"] is not None
+        retry = post(client, "replacement", removal, json=chosen)
+        assert retry.is_success
+        assert retry.json()["departure_event_id"] is None
