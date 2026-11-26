@@ -108,7 +108,7 @@ Client/MCP 侧（本变更，`uv run --no-sync pytest -q`）：
 - MCP schema：三个 DM 工具按上表暴露，参数校验复用现有 UUID 与长度边界。
 - 回归：既有房间路由、事件、通知与 CLI/MCP 查询行为全部不变。
 
-Server 侧（#3 Server 工作树验收，`uv run --no-sync pytest -q`，由 `server/tests/test_direct_messages.py` 与 `tests/test_loop.py` 覆盖；并入 #5 控制台分支后，控制台相关项另由 `server/tests/test_console_server.py` 覆盖，schema 收敛于 [控制台契约](control-console.md) 的 v6）：
+Server 侧（#3 Server 工作树验收，`uv run --no-sync pytest -q`，由 `tests/server/src/teamup_server/test_direct_messages.py` 与 `tests/integration/test_loop.py` 覆盖；并入 #5 控制台分支后，控制台相关项另由 `tests/server/src/teamup_server/test_console_server.py` 覆盖，schema 收敛于 [控制台契约](control-console.md) 的 v6）：
 
 - 打开：重复打开、双向打开、并发打开同一对 → 同一 `dm_id`；对本人、未知成员或所属账号已停用的成员 → 422 `invalid_peer`。
 - 参与者隔离：第三成员对任意 `dm_id`（真实或随机）读取或发送 → 404；其收件箱永不含他人 DM 事件；`find_members` 仍返回成员档案，会话存在性不泄露。

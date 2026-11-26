@@ -30,9 +30,7 @@
     "pyproject.toml"
   ],
   "test_roots": [
-    "tests/",
-    "server/tests/",
-    "client/tests/"
+    "tests/"
   ],
   "review_exempt_paths": [
     "docs/assets/"

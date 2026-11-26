@@ -9,13 +9,18 @@ TeamUp/
 ├── LICENSE
 ├── dashboards/                    # 仓库看板与指标口径
 ├── client/
-│   ├── desktop/                     # macOS Electron 控制台与打包
-│   └── src/teamup_client/          # 本机 Client 源码
+│   ├── macos/desktop/              # macOS Electron 控制台与打包
+│   └── shared/src/teamup_client/   # 共用 Client 运行时与控制台资源
 ├── server/
 │   └── src/teamup_server/          # 团队 Server 源码
 ├── plugin/
 │   ├── mcp/src/teamup_mcp/         # MCP 工具适配与组装
 │   └── skills/                    # 随 Agent 插件安装的 skills
+├── tests/                         # 源码镜像与跨组件测试套件
+│   ├── client/                    # macOS 外壳、共用 Client
+│   ├── server/                    # Server
+│   ├── plugin/                    # MCP 工具适配
+│   └── scripts/                   # CI 脚本
 └── docs/
     ├── protocols/                 # 全仓开发准则
     ├── architecture/              # 系统和子系统设计、技术选型
@@ -28,13 +33,13 @@ TeamUp/
 | 目录 | 模块与边界 |
 | --- | --- |
 | `server/src/teamup_server/` | `gateway`、`collaboration`、`presence` 各有公开入口。业务表与迁移在 `collaboration` 内。Serve 入口是组合根。 |
-| `client/src/teamup_client/` | 会话协调器、本机 IPC、Server API、harness driver 和通知，各有自己的职责。Client 入口是组合根，公开本机协议供 CLI 和 MCP 使用。 |
-| `client/desktop/` | macOS Electron 控制台，打包 Client 的静态界面，通过 [Client 控制台接口](../modules/client-console.md)访问本机 Client。 |
+| `client/shared/src/teamup_client/` | 共用 Client 运行时。会话协调器、本机 IPC、Server API、harness driver 和通知各有自己的职责。Client 入口是组合根，公开本机协议供 CLI 和 MCP 使用。 |
+| `client/macos/desktop/` | macOS Electron 控制台，打包共用的静态界面，通过 [Client 控制台接口](../modules/client-console.md)访问本机 Client。 |
 | `plugin/mcp/src/teamup_mcp/` | MCP 入口、工具名称和 schema、调用转换。通过 Client 的公开 IPC 调用封装访问本机服务。 |
 | `plugin/skills/` | 每个工作流一个 `SKILL.md` 目录。工具 schema 和授权逻辑由各自的代码 owner 维护。 |
 | `dashboards/` | 看板和数据来源说明。需要内网状态时使用授权 API。 |
 
-`server`、`client`、`plugin/mcp` 是 uv workspace 的三个 Python 包。Client 和 MCP 入口可在同一个 workspace 环境安装。各包的测试面向其公开入口，根目录 `tests/` 覆盖跨进程闭环和导入边界。
+`server`、`client/shared`、`plugin/mcp` 是 uv workspace 的三个 Python 包。Client 和 MCP 入口可在同一个 workspace 环境安装。平台目录和测试镜像遵循 [开发协议](../protocols/README.md#client-平台与测试目录)。
 
 ## 依赖与验证
 

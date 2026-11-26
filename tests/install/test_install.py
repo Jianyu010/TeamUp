@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 from _stack import (
+    CLIENT_PACKAGE,
     ROOT,
     agent_tool_names,
     build_wheels,
@@ -41,8 +42,8 @@ def venvs(wheels):
         out = {}
         for name, packages in {
             "server": ["server"],
-            "client": ["client"],
-            "mcp": ["plugin/mcp", "client"],
+            "client": [CLIENT_PACKAGE],
+            "mcp": ["plugin/mcp", CLIENT_PACKAGE],
         }.items():
             create_venv(root / name)
             pip_install(root / name, [wheels[p] for p in packages])
@@ -86,12 +87,16 @@ def test_wheels_are_built(wheels):
     }
 
 
-@pytest.mark.parametrize("project", ("client", "server"))
-def test_stamped_source_build_preserves_version_in_sdist_and_wheel(tmp_path, project):
+@pytest.mark.parametrize(
+    ("project", "package_path"), [("client", CLIENT_PACKAGE), ("server", "server")]
+)
+def test_stamped_source_build_preserves_version_in_sdist_and_wheel(
+    tmp_path, project, package_path
+):
     source = tmp_path / "source"
-    package = source / project
-    shutil.copytree(ROOT / project / "src", package / "src")
-    shutil.copyfile(ROOT / project / "pyproject.toml", package / "pyproject.toml")
+    package = source / package_path
+    shutil.copytree(ROOT / package_path / "src", package / "src")
+    shutil.copyfile(ROOT / package_path / "pyproject.toml", package / "pyproject.toml")
     shutil.copytree(ROOT / "scripts", source / "scripts")
     (source / "TEAMUP-VERSION").write_text("0.3.5.dev4\n", encoding="utf-8")
     env = clean_env() | {"TEAMUP_VERSION": "0.4.0"}

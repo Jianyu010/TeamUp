@@ -124,10 +124,10 @@ def workspace_venv():
     import shutil
     import tempfile
 
-    from _stack import install_venv
+    from _stack import CLIENT_PACKAGE, install_venv
 
     root = Path(tempfile.mkdtemp(prefix="tu-venv-", dir="/tmp"))
     try:
-        yield install_venv(root / "all", ["server", "client", "plugin/mcp"])
+        yield install_venv(root / "all", ["server", CLIENT_PACKAGE, "plugin/mcp"])
     finally:
         shutil.rmtree(root, ignore_errors=True)

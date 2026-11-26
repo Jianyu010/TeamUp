@@ -141,7 +141,7 @@ class Developer:
         )
         self.client = Daemon(
             "teamup_client.main",
-            "client/src",
+            "client/shared/src",
             ["serve", "--config", self.config_path],
             directory / "client.log",
         )
@@ -170,7 +170,7 @@ class Developer:
     def mcp_environment(self) -> dict[str, str]:
         return {
             "PYTHONPATH": os.pathsep.join(
-                [str(ROOT / "plugin/mcp/src"), str(ROOT / "client/src")]
+                [str(ROOT / "plugin/mcp/src"), str(ROOT / "client/shared/src")]
             ),
             "TEAMUP_SOCKET": str(self.socket_path),
             "TEAMUP_BINDING_KEY": self.binding_key,
