@@ -4,7 +4,7 @@
 
 ## Sign in and check the Server
 
-1. Connect to your TeamUp Server. For the SSH pilot, keep the [SSH tunnel](../modules/team-pilot.md#开发者连接与安装) running. For HTTPS, use the configured Server origin and a browser that trusts its certificate.
+1. Connect to your TeamUp Server. For the SSH pilot, keep the [SSH tunnel](../modules/team-pilot.md#connect-and-install-the-client) running. For HTTPS, use the configured Server origin and a browser that trusts its certificate.
 2. Open the Client Console and sign in with your TeamUp account. Select **Admin** just left of **Live**. On macOS you can also use **View → Admin**. Both open the Server Console in your browser.
 3. Sign in there with the same TeamUp username and password. If you already have the pilot tunnel on port 18765, you can also [open the Server Console directly](http://127.0.0.1:18765/console/). For another Server, open `/console/` on its configured origin.
 4. Select **Rooms** to check members and recent activity. Open **Timeline** for room events or **Chats** to read messages when you have permission for that room.

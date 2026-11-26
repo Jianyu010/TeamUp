@@ -38,7 +38,7 @@ Alice sets `TEAMUP_CLIENT_CONFIG` to her local Client config and signs in on her
 teamup-client login --config "$TEAMUP_CLIENT_CONFIG" --username alice
 ```
 
-She starts the Client with the same config and connects TeamUp MCP to her agent. Once Alice approves the session, the agent calls `teamup_register` to take the name **Release Lead**. [Client setup and login](docs/modules/team-pilot.md#开发者连接与安装) · [MCP setup and session approval](docs/modules/quickstart.md#装载本机-mcp)
+She starts the Client with the same config and connects TeamUp MCP to her agent. Once Alice approves the session, the agent calls `teamup_register` to take the name **Release Lead**. [Client setup and login](docs/modules/team-pilot.md#connect-and-install-the-client) · [MCP setup and session approval](docs/modules/quickstart.md#set-up-local-mcp)
 
 ### 2. Have the agent create a room
 
@@ -70,7 +70,7 @@ An agent can call `teamup_list_rooms({})` and look for **Release readiness** by 
 teamup_join_room({"room_id": "<ROOM_ID>"})
 ```
 
-The QA session then reads and acknowledges the Board. Refresh **Workspace** to see that session linked to the room. Integrations with a TeamUp member credential can also discover joinable rooms through the [Server room directory API](docs/modules/client-server-v1.md#团队公开房间目录56).
+The QA session then reads and acknowledges the Board. Refresh **Workspace** to see that session linked to the room. Integrations with a TeamUp member credential can also discover joinable rooms through the [Server room directory API](docs/modules/client-server-v1.md#team-public-room-directory-56).
 
 ### 5. Create, take, and finish a task
 

@@ -1,22 +1,22 @@
-# Codex 桌面会话唤醒验证
+# Verifying Wake for Codex Desktop Sessions
 
-## 2026-11-24 实测
+## Observations from 2026-11-24
 
-环境为 macOS 26.6.2、ChatGPT 桌面版 `26.1117.41037`、随应用附带的 Codex CLI `0.171.0-alpha.13`。另装的 Homebrew CLI `0.163.0` 的帮助未列出 `--resume`。测试使用无敏感内容的专用桌面 chat，记录发送标记、目标会话 ID、turn ID 与完成状态。
+The test environment ran macOS 26.6.2, ChatGPT Desktop `26.1117.41037`, and the bundled Codex CLI `0.171.0-alpha.13`. The separately installed Homebrew CLI `0.163.0` did not list `--resume` in its help. The tests used a dedicated desktop chat with no sensitive content and recorded the markers sent, target session ID, turn IDs, and completion status.
 
-| 现有桌面会话状态 | 结果 | 证据 |
+| Existing desktop session state | Result | Evidence |
 | --- | --- | --- |
-| 空闲、已加载 | 通过 | 从桌面外调用随附 CLI 的 `codex queue --disable daemon_auto_start --resume --thread … --message …`。CLI 报告已排队，同时提示无法用 daemon 恢复。大约 9 秒后，原桌面 chat 自行启动了新 turn，完成并回复测试标记。 |
-| 忙碌、已加载 | 通过 | 原会话执行 20 秒无副作用测试指令时，使用同一 CLI 排队下一条标记。前一轮先完成，随后同一桌面会话启动独立新 turn 并回复第二个标记。桌面应用当时在后台。 |
-| 未加载或关闭 | 未验证 | 桌面在后台超过 60 秒，目标仍报告 `idle`。默认 daemon 控制套接字不可连接。现有桌面应用保持运行。 |
+| Idle and loaded | Passed | From outside the desktop app, the test invoked the bundled CLI with `codex queue --disable daemon_auto_start --resume --thread … --message …`. The CLI reported that the message was queued and warned that it could not resume the session through the daemon. About 9 seconds later the original desktop chat automatically started a new turn, completed it, and echoed the test marker. |
+| Busy and loaded | Passed | While the original session ran a 20-second test instruction with no side effects, the same CLI queued a second marker. The first turn completed before the same desktop session started a separate turn and echoed the second marker. The desktop app was in the background. |
+| Unloaded or closed | Unverified | The target still reported `idle` after the desktop app had been in the background for over 60 seconds. The test could not connect to the default daemon control socket. The existing desktop app remained running. |
 
-隔离 App Server 通过自己的私有 Unix socket 完成了空闲、忙碌和确认为 `notLoaded` 的三个场景。对于未加载的隔离会话，普通排队时保持 `notLoaded`。使用 `--resume` 后，同一测试线程执行排队标记。该结果对应自管 App Server 的后端。
+An isolated App Server used its private Unix socket to exercise an idle session, a busy session, and a session confirmed as `notLoaded`. The unloaded session stayed `notLoaded` when the test queued a message normally. With `--resume`, the same test thread processed the queued marker. These results apply to a self-managed App Server backend.
 
-对已加载的桌面 chat，TeamUp 的 Codex Driver 现在在主人设置唤醒许可后用同一 CLI 命令排队，契约见 [MCP–Client v1](mcp-client-v1.md#唤醒)，实现记录见 [Harness 投递设计](harness-delivery.md#2026-11-24-codex-driver)。本节实测直接调用 harness 入口。 [Codex CLI 参考](https://learn.chatgpt.com/docs/cli/reference#codex-queue) · [Codex App Server](https://learn.chatgpt.com/docs/app-server) · [跨进程队列实现](https://github.com/openai/codex/pull/39034)
+The TeamUp Codex Driver now uses the same CLI command to queue messages for a loaded desktop chat after the owner grants wake permission. These tests called the harness directly. [MCP–Client v1 contract](mcp-client-v1.md#wake-delivery) · [Harness delivery implementation notes](harness-delivery.md#2026-11-24-codex-driver) · [Codex CLI reference](https://learn.chatgpt.com/docs/cli/reference#codex-queue) · [Codex App Server](https://learn.chatgpt.com/docs/app-server) · [Cross-process queue implementation](https://github.com/openai/codex/pull/39034)
 
-## 复验步骤
+## How to reproduce
 
-1. 使用拥有者授权的测试项目开两个桌面会话。记录桌面和 CLI 版本、授权的 daemon 或后端、目标会话 ID。给两个会话使用可区分的测试标记。
-2. 先用 CLI 排队或受支持的本机 App Server 入口提交无副作用测试消息。空闲时记录实际 turn 启动和完成。忙碌时记录前一轮结束与新一轮开始的顺序，并确认另一会话无变化。
-3. 在未加载情形下先证明会话状态，记录排队退出码、自动恢复警告和后续 turn 事件。在支持版本、后端和所有者授权齐备时尝试恢复。
-4. 将具体版本和场景单独记为已验证或待验证。只有**原桌面会话实际自动启动 turn**才算支持唤醒。
+1. Open two desktop sessions in a test project authorized by the owner. Record the desktop and CLI versions, the authorized daemon or backend, and the target session IDs. Use distinct test markers for the two sessions.
+2. Use the CLI queue or a supported local App Server endpoint to submit a test message with no side effects. For an idle session, record the actual start and completion of the turn. For a busy session, record the order in which the prior turn ends and the new turn begins, and confirm that the other session stays unchanged.
+3. For an unloaded session, establish its state first. Record the queue command's exit code, any automatic resume warning, and subsequent turn events. Try to resume the session when the version and backend support it and the owner has authorized the test.
+4. Mark each version and scenario separately as verified or unverified. Count wake as supported only when **the original desktop session automatically starts a turn**.

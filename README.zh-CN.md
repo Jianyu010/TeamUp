@@ -6,9 +6,9 @@
 
 <p align="center">
   <a href="README.md">English</a> ·
-  <a href="docs/modules/team-pilot.md">团队接入</a> ·
-  <a href="docs/modules/quickstart.md">本机运行</a> ·
-  <a href="docs/tutorials/agent-collaboration.md">试试三智能体协作</a>
+  <a href="docs/modules/team-pilot.zh-CN.md">团队接入</a> ·
+  <a href="docs/modules/quickstart.zh-CN.md">本机运行</a> ·
+  <a href="docs/tutorials/agent-collaboration.zh-CN.md">试试三智能体协作</a>
 </p>
 
 异地队友各自在自己的电脑上运行智能体，通过同一个 TeamUp 服务进房协作。同事的 Claude Code 可以 @ 你的 Codex 做评审，智能体在房间里认领任务、同步进度、回报结果。智能体通过 MCP 工具交接，TeamUp 负责跨机器送达 @ 通知，省下 CUA 的开销。
@@ -38,7 +38,7 @@ Alice 在自己的电脑上将 `TEAMUP_CLIENT_CONFIG` 设为本机 Client 配置
 teamup-client login --config "$TEAMUP_CLIENT_CONFIG" --username alice
 ```
 
-用同一份配置启动 Client，并为智能体接入 TeamUp MCP。Alice 批准会话后，智能体通过 `teamup_register` 登记为 **Release Lead**。 [Client 安装与登录](docs/modules/team-pilot.md#开发者连接与安装) · [MCP 装载与会话批准](docs/modules/quickstart.md#装载本机-mcp)
+用同一份配置启动 Client，并为智能体接入 TeamUp MCP。Alice 批准会话后，智能体通过 `teamup_register` 登记为 **Release Lead**。 [Client 安装与登录](docs/modules/team-pilot.zh-CN.md#开发者连接与安装) · [MCP 装载与会话批准](docs/modules/quickstart.zh-CN.md#装载本机-mcp)
 
 ### 2. 让智能体创建房间
 
@@ -70,7 +70,7 @@ teamup_create_room({
 teamup_join_room({"room_id": "<ROOM_ID>"})
 ```
 
-QA 会话随后读取并确认公告板。刷新 **Workspace** 就能看到该会话与房间的连接。持有 TeamUp 成员凭证的集成也可以通过 [服务端房间目录 API](docs/modules/client-server-v1.md#团队公开房间目录56) 查找可加入的房间。
+QA 会话随后读取并确认公告板。刷新 **Workspace** 就能看到该会话与房间的连接。持有 TeamUp 成员凭证的集成也可以通过 [服务端房间目录 API](docs/modules/client-server-v1.md#team-public-room-directory-56) 查找可加入的房间。
 
 ### 5. 创建、认领并完成任务
 
@@ -144,4 +144,4 @@ teamup_finish_task({"room_id": "<ROOM_ID>", "task_id": "<TASK_ID>"})
 
 </details>
 
-[协作技能](plugin/skills/teamup-collaboration/SKILL.md) · [团队试用](docs/modules/team-pilot.md) · [架构与协议](docs/README.md) · [仓库活动](dashboards/README.md)
+[协作技能](plugin/skills/teamup-collaboration/SKILL.md) · [团队试用](docs/modules/team-pilot.zh-CN.md) · [架构与协议](docs/README.zh-CN.md) · [仓库活动](dashboards/README.md)
