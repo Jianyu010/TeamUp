@@ -155,6 +155,8 @@ class Request(Protocol):
 
 
 class SessionLifecycle(Protocol):
+    async def console_wake_settings(self, enabled: bool | None = None) -> dict: ...
+
     def console_retired_sessions(self) -> list[dict]: ...
 
     async def console_session_action(
@@ -190,6 +192,11 @@ class ConsoleReader:
         self._version = (
             None if installed_version == "0.0.0+unknown" else installed_version
         )
+
+    async def wake_settings(self, enabled: bool | None = None) -> dict:
+        if self._lifecycle is None:
+            return {"state": "unavailable"}
+        return await self._lifecycle.console_wake_settings(enabled)
 
     async def versions(self) -> dict:
         server_version = None

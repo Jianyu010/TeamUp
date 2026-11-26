@@ -17,6 +17,7 @@ Agent self-retirement, owner-managed departure, and retired history are specifie
 `teamup-client serve --config PATH` 启动常驻进程。配置必须为用户拥有、组和其他账号无访问权的 JSON 文件，包含：
 
 - `server_url`，TeamUp HTTP 回环或 HTTPS 基础地址，不含尾路径。
+- 可选 `server_socket`，回环 HTTP 通过当前用户私有 Unix socket 连接 Server，例如 [SSH 本地转发](team-pilot.md#开发者连接与安装)。
 - `socket_path`，用户私有目录中的绝对 Unix socket 路径。Client 在这个目录私有地保存自身通知状态。
 - `enrollment_key`，管理员分发给本机开发者的登记密钥。
 - `bindings`，本机批准的会话列表。每项包含 `binding_key`、`member_token`、`harness_instance_id`、`session_key`。每项的秘密与稳定标识对在配置中唯一。以 Codex thread UUID 为 `session_key` 的已有绑定可选 `codex_install`，值为接管该会话的安装的 `harness_instance_id`。
@@ -119,7 +120,7 @@ The Codex and Claude Code lifecycle commands require `--workspace PATH` for enro
 
 The Client CLI provides `teamup-client codex-hook --config PATH --install HARNESS_INSTANCE_ID --workspace DIRECTORY` for owner-configured local Codex `SessionStart` and `UserPromptSubmit` command hooks. The hook reads `hook_event_name` and the UUID `session_id` from Codex's JSON input. It uses the selected installation's secret to call the existing local `register` operation with the Codex session reference and a neutral profile. The name is `Codex` followed by the final eight characters of the UUID. The hook sends no prompt, chat title, working directory or transcript path. Codex can run both hooks in the background. An unavailable Client or Server, an invalid payload, or a declined session leaves the Codex turn free to proceed. Later activity retries registration.
 
-The Client applies the installation's approval policy before enrollment. A pending session becomes eligible on the first hook or registration call after approval. With `auto_approve: true`, the first successful hook enrolls the member. Repeats recover the stored member and profile. The hook grants neither room membership nor wake permission. A subsequent `teamup_register` returns the saved profile, which the account owner can rename through the existing member command. The Client and MCP use the same installation and thread ID. Server HTTP and the MCP tool catalog are unchanged.
+The Client applies the installation's approval policy before enrollment. A pending session becomes eligible on the first hook or registration call after approval. With `auto_approve: true`, the first successful hook enrolls the member. Repeats recover the stored member and profile. The hook grants neither room membership nor wake permission. An approved and enrolled thread can use the signed-in local console's wake default. A subsequent `teamup_register` returns the saved profile, which the account owner can rename through the existing member command. The Client and MCP use the same installation and thread ID. Server HTTP and the MCP tool catalog are unchanged.
 
 For migration, a static binding may opt into one configured installation via `codex_install`. Both callers then resolve an exact Codex UUID reference under that installation to the static binding, preserving its original Server identity and local wake settings. Configure the mapping before first using the new installation with that thread. An existing dynamic session or retirement for that installation and thread takes precedence over a later static mapping. A pair of installation and thread UUID can point to at most one static binding. A non-Codex reference, a different installation, or a different thread does not use the mapping. Unmarked static bindings keep their established behavior.
 
@@ -131,7 +132,7 @@ The Client applies the existing installation approval policy. Automatic approval
 
 ## 唤醒
 
-每个会话身份可有一条本机唤醒许可，列出允许的 `rooms` 和可选的 `senders`（`member_id`）。@ 所在房间须在 `rooms` 中，`senders` 非空时发送者也须在其中。默认没有许可，任何房间公告、消息正文和 Server 字段都不能放宽它。
+每个会话身份可有一条本机唤醒许可，列出允许的 `rooms` 和可选的 `senders`（`member_id`）。@ 所在房间须在 `rooms` 中，`senders` 非空时发送者也须在其中。显式许可（包括撤销）优先于默认值。已登录的本机账号控制台默认允许已批准的会话接收其已加入房间的定向 @ 唤醒。主人可在控制台持久关闭默认值。headless 和旧登记密钥启动保留显式授权模式。房间公告、消息正文和 Server 字段不能放宽许可。升级时保留已有房间和发送者限制。旧版本通过删除记录撤销许可，因此没有记录的会话会使用新的默认值。
 
 通知登记后，Client 按 `event_id` 顺序为每个会话串行处理 `mention` 通知，结果记入通知的 `harness_state`；`dm` 通知不进入该投递流程：
 

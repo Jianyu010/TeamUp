@@ -57,7 +57,7 @@ async function read(path, params, action) {
     },
     body: action?.body ? JSON.stringify(action.body) : undefined,
     cache: "no-store",
-    signal: AbortSignal.timeout(21000),
+    signal: AbortSignal.timeout(action?.timeout ?? 21000),
   });
   if (!response.ok && !action) {
     if (response.status === 409 && (await response.json()).state === "sign_in_required") {
@@ -601,6 +601,57 @@ function applyWorkspace(snapshot) {
 
 const signIn = get("sign-in");
 const signInPassword = get("sign-in-password");
+const rememberLogin = get("remember-login");
+const wakeSettings = get("wake-settings");
+const wakeOnMention = get("wake-on-mention");
+const preferenceStatus = get("login-preference-status");
+const rememberLoginLabel = get("remember-login-label");
+
+async function loadRememberOption() {
+  rememberLogin.checked = false;
+  rememberLoginLabel.hidden = true;
+  if (!desktop) return;
+  try {
+    const result = await read("/api/login");
+    rememberLoginLabel.hidden = signIn.hidden || result.remember_available !== true;
+  } catch {
+    // Interactive sign-in is available while the preference check is retried.
+  }
+}
+
+function showPreferenceStatus(text) {
+  preferenceStatus.textContent = text;
+  preferenceStatus.hidden = !text;
+}
+
+async function loadWakeSettings() {
+  wakeSettings.hidden = true;
+  try {
+    const result = await read("/api/wake-settings");
+    if (result.state === "ready" && !stage.hidden) {
+      wakeOnMention.checked = result.enabled;
+      wakeSettings.hidden = false;
+    }
+  } catch {
+    // The Workspace can open with an older or temporarily disconnected Client.
+  }
+}
+
+wakeOnMention.addEventListener("change", async () => {
+  const enabled = wakeOnMention.checked;
+  wakeOnMention.disabled = true;
+  showPreferenceStatus("");
+  try {
+    const result = await read("/api/wake-settings", null, {body: {enabled}});
+    if (result.state !== "ready") throw new Error("wake_settings");
+    wakeOnMention.checked = result.enabled;
+  } catch {
+    wakeOnMention.checked = !enabled;
+    showPreferenceStatus("TeamUp could not save the wake setting.");
+  } finally {
+    wakeOnMention.disabled = false;
+  }
+});
 const loginMessages = {
   wrong_credentials: "Wrong username or password.",
   rate_limited: "Too many sign-in attempts. Try again later.",
@@ -617,6 +668,7 @@ function displaySignIn() {
   clearTimeout(versionsTimer);
   setConnection("Sign-in required", false);
   if (opening) {
+    loadRememberOption();
     get("retire-dialog").close();
     get("sign-in-username").focus();
   }
@@ -630,6 +682,7 @@ function displayWorkspace() {
   stage.hidden = false;
   get("client-nav").hidden = false;
   get("versions").hidden = false;
+  loadWakeSettings();
   refreshVersions();
 }
 
@@ -640,16 +693,26 @@ get("sign-in-form").addEventListener("submit", async (event) => {
   if (submit.disabled) return;
   submit.disabled = true;
   status.textContent = "Signing in…";
-  const pending = read("/api/login", null, {body: {
-    username: get("sign-in-username").value,
-    password: signInPassword.value,
-  }});
+  const pending = read("/api/login", null, {
+    body: {
+      username: get("sign-in-username").value,
+      password: signInPassword.value,
+      ...(desktop ? {remember: rememberLogin.checked} : {}),
+    },
+    timeout: 35000,
+  });
   signInPassword.value = "";
   try {
     const result = await pending;
     if (result.state === "ready") {
+      const keychainMessage = {
+        save_failed: "TeamUp could not save credentials in Keychain.",
+        forget_failed: "TeamUp could not remove saved credentials from Keychain.",
+      };
+      showPreferenceStatus(keychainMessage[result.keychain] ?? "");
+      rememberLogin.checked = false;
       await refresh();
-    } else if (result.state in loginMessages) {
+    } else if (Object.hasOwn(loginMessages, result.state)) {
       status.textContent = loginMessages[result.state];
     } else {
       status.textContent = loginMessages.unavailable;

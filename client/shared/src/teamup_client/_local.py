@@ -75,6 +75,22 @@ def private_socket(path):
     return entry
 
 
+def private_forward_socket(path):
+    """Resolve a socket through directories that other users cannot replace."""
+    resolved = path.resolve(strict=True)
+    for directory in reversed(resolved.parents):
+        entry = directory.lstat()
+        if (
+            not stat.S_ISDIR(entry.st_mode)
+            or entry.st_uid not in {0, os.geteuid()}
+            or (entry.st_mode & 0o022 and not entry.st_mode & stat.S_ISVTX)
+        ):
+            raise LocalError("Server socket path includes an untrusted directory")
+    private_directory(resolved.parent)
+    private_socket(resolved)
+    return resolved
+
+
 def _remove_stale_socket(path):
     try:
         private_socket(path)

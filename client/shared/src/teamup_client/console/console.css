@@ -53,8 +53,10 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
   border-radius: 10px; background: var(--panel);
 }
 .sign-in h2 { font-size: 20px; }
-.sign-in label { display: grid; gap: 5px; }
-.sign-in input {
+.sign-in label:not(.checkbox-label) { display: grid; gap: 5px; }
+.checkbox-label { display: flex; align-items: center; gap: 6px; }
+.checkbox-label input { accent-color: var(--accent); }
+.sign-in input:not([type="checkbox"]) {
   width: 100%; padding: 8px 10px; border: 1px solid var(--edge);
   border-radius: 6px; background: var(--shell);
 }
@@ -353,7 +355,7 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
   .task-lane[data-selected="false"] { display: none; }
 }
 
-.session-panel { grid-template-rows: 30px minmax(0, 1fr) auto auto; }
+.session-panel { grid-template-rows: 30px minmax(0, 1fr) auto auto auto; }
 .retire-action {
   justify-self: end; color: #efb095; border-color: #80584d;
   background: #332825; white-space: normal;

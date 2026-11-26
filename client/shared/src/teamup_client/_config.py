@@ -48,6 +48,14 @@ class ClientConfig:
     notify_command: tuple[str, ...] | None = None
     installs: tuple[Install, ...] = ()
     codex_command: tuple[str, ...] | None = None
+    server_socket: Path | None = None
+
+    @property
+    def remember_scope(self) -> str | None:
+        if self.server_socket is None and not self.server_url.startswith("https://"):
+            return None
+        transport = f"{self.server_url}\0{self.server_socket or ''}"
+        return hashlib.sha256(transport.encode()).hexdigest()
 
 
 def _server_origin(value):
@@ -98,6 +106,7 @@ def _read(path):
     required = {"server_url", "socket_path", "bindings"}
     optional = {
         "ca_file",
+        "server_socket",
         "account_token",
         "enrollment_key",
         "notify_command",
@@ -109,18 +118,23 @@ def _read(path):
     return data, contents
 
 
-def _socket_path(value):
+def _socket_path(value, name="socket_path"):
     if not is_string(value) or "\0" in value:
-        raise ConfigError("socket_path must be an absolute path")
+        raise ConfigError(f"{name} must be an absolute path")
     socket_path = Path(value)
     if not socket_path.is_absolute() or not socket_path.name:
-        raise ConfigError("socket_path must be an absolute path")
+        raise ConfigError(f"{name} must be an absolute path")
     return socket_path
 
 
 def _parse(path, data):
     socket_path = _socket_path(data["socket_path"])
     server_url = _server_origin(data["server_url"])
+    server_socket = None
+    if "server_socket" in data:
+        server_socket = _socket_path(data["server_socket"], "server_socket")
+        if not server_url.startswith("http://") or server_socket == socket_path:
+            raise ConfigError("server_socket requires a distinct socket and a loopback HTTP origin")
     enrollment_key = data.get("enrollment_key")
     account_token = data.get("account_token")
     if "account_token" in data and "enrollment_key" in data:
@@ -217,6 +231,7 @@ def _parse(path, data):
         notify_command,
         tuple(installs),
         codex_command,
+        server_socket,
     )
 
 
