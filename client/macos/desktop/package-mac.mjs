@@ -27,7 +27,7 @@ try {
   const keychain = join(staging, "teamup-keychain");
   await mkdir(source);
   await Promise.all([
-    ...["main.cjs", "admin-window.cjs", "console-protocol.cjs", "console-login.cjs", "keychain.cjs"].map((name) =>
+    ...["main.cjs", "admin-window.cjs", "admin-preload.cjs", "console-protocol.cjs", "console-login.cjs", "keychain.cjs"].map((name) =>
       copyFile(join(desktop, name), join(source, name))),
     writeFile(join(source, "package.json"), JSON.stringify({...manifest, teamupVersion})),
     cp(join(desktop, "../../shared/src/teamup_client/console"), join(source, "console"), {

@@ -1,5 +1,8 @@
 const assert = require("node:assert/strict");
-const { EventEmitter } = require("node:events");
+const { EventEmitter, once } = require("node:events");
+const { mkdtemp, rm } = require("node:fs/promises");
+const http = require("node:http");
+const { join } = require("node:path");
 const test = require("node:test");
 const { allowsAdminRequest, createAdminWindow } = require("../../../../client/macos/desktop/admin-window.cjs");
 
@@ -36,9 +39,24 @@ test("CI is confined to its published frame, resources, and read requests", () =
   assert.equal(allows("https://example.invalid/", "subFrame", {initiatorOrigin: ci}), false);
 });
 
-test("Admin opens a separate sandboxed window and reuses it for the same Server", async () => {
+test("Admin reuses its sandboxed window and routes the Server through the private socket", async (t) => {
   const instances = [];
   let popupHandler;
+  let socketHandler;
+  const folder = await mkdtemp("/tmp/teamup-admin-test-");
+  const serverSocket = join(folder, "upstream.sock");
+  const requests = [];
+  const upstream = http.createServer((request, response) => {
+    requests.push({path: request.url, host: request.headers.host});
+    response.writeHead(200, {"Content-Type": "text/html", "Content-Security-Policy": "default-src 'none'"});
+    response.end("Server over Unix");
+  });
+  upstream.listen(serverSocket);
+  await once(upstream, "listening");
+  t.after(async () => {
+    await new Promise((resolve) => upstream.close(resolve));
+    await rm(folder, {recursive: true});
+  });
   class Window extends EventEmitter {
     webContents = new EventEmitter();
     minimized = false;
@@ -66,21 +84,42 @@ test("Admin opens a separate sandboxed window and reuses it for the same Server"
   }
   const adminSession = Object.assign(new EventEmitter(), {
     webRequest: {onBeforeRequest() {}},
+    protocol: {
+      handle(scheme, handler) { assert.equal(scheme, "http"); socketHandler = handler; },
+      unhandle() { socketHandler = undefined; },
+    },
     setPermissionCheckHandler(handler) { assert.equal(handler(), false); },
     setPermissionRequestHandler(handler) { handler(null, "test", (allowed) => assert.equal(allowed, false)); },
   });
 
-  const open = createAdminWindow(Window, adminSession);
-  await Promise.all([open(landing.href), open(landing.href)]);
+  const issued = [];
+  const {open, signIn} = createAdminWindow(Window, adminSession, async (url) => {
+    issued.push(url);
+    return {status: 200, payload: {access_token: "console-token"}};
+  });
+  const access = {url: landing.href, serverSocket};
+  await Promise.all([open(access), open(access)]);
   const [admin] = instances;
   assert.equal(instances.length, 1);
   assert.equal(admin.url, landing.href);
+  const page = await socketHandler(new Request(landing.href));
+  assert.equal(await page.text(), "Server over Unix");
+  assert.equal(page.headers.get("Content-Security-Policy"), "default-src 'none'");
+  assert.equal((await socketHandler(new Request(server + "/v1/members"))).status, 403);
+  assert.deepEqual(requests, [{path: "/console/", host: landing.host}]);
   assert.equal(admin.showed, 1);
   assert.equal(admin.options.webPreferences.session, adminSession);
   assert.equal(admin.options.webPreferences.sandbox, true);
   assert.equal(admin.options.webPreferences.contextIsolation, true);
   assert.equal(admin.options.webPreferences.nodeIntegration, false);
   assert.deepEqual(popupHandler(), {action: "deny"});
+  const adminFrame = {url: landing.href, parent: null};
+  const adminEvent = {sender: admin.webContents, senderFrame: adminFrame};
+  assert.equal((await signIn({...adminEvent, sender: new EventEmitter()})).status, 403);
+  assert.equal((await signIn({...adminEvent, senderFrame: {url: ciPage, parent: adminFrame}})).status, 403);
+  assert.equal((await signIn({...adminEvent, senderFrame: {url: landing.href, parent: adminFrame}})).status, 403);
+  assert.deepEqual(await signIn(adminEvent), {status: 200, payload: {access_token: "console-token"}});
+  assert.deepEqual(issued, [access]);
 
   let prevented = false;
   admin.webContents.emit("will-frame-navigate", {
@@ -88,11 +127,12 @@ test("Admin opens a separate sandboxed window and reuses it for the same Server"
   });
   assert.equal(prevented, true);
   admin.minimized = true;
-  await open(landing.href);
+  await open(access);
   assert.equal(instances.length, 1);
   assert.equal(admin.minimized, false);
   assert.equal(admin.focused, 1);
-  await open("https://teamup.example/console/");
+  await open({url: "https://teamup.example/console/"});
   assert.equal(admin.isDestroyed(), true);
   assert.equal(instances.length, 2);
+  assert.equal((await signIn(adminEvent)).status, 403);
 });

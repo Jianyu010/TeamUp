@@ -1,3 +1,7 @@
+const http = require("node:http");
+const { Readable } = require("node:stream");
+const { join } = require("node:path");
+
 // The Server console runs in its own Electron session, with only its published
 // routes and the public CI frame reachable from that renderer.
 const ciOrigin = "https://jianyu010.github.io";
@@ -51,6 +55,51 @@ function allowsAdminRequest(landing, {url, method, resourceType, initiatorOrigin
   );
 }
 
+async function serveThroughSocket(request, landing, serverSocket) {
+  const target = new URL(request.url);
+  const resourceType = target.href === landing.href ? "mainFrame" :
+    (adminAssets.get(target.pathname) ?? "xhr");
+  const {method, url} = request;
+  if (target.origin !== landing.origin ||
+      !allowsAdminRequest(landing, {url, method, resourceType, initiatorOrigin: landing.origin})) {
+    return new Response(null, {status: 403});
+  }
+
+  try {
+    const headers = {Host: target.host};
+    for (const name of ["Accept", "Content-Type", "Authorization"]) {
+      const value = request.headers.get(name);
+      if (value && resourceType === "xhr") headers[name] = value;
+    }
+    const body = request.body ? Buffer.from(await request.arrayBuffer()) : undefined;
+    if (body && body.length > 128 * 1024) return new Response(null, {status: 413});
+    if (body) headers["Content-Length"] = body.length;
+    const response = await new Promise((resolve, reject) => {
+      const upstream = http.request({
+        socketPath: serverSocket, path: target.pathname + target.search, method, headers,
+        agent: false, signal: AbortSignal.any([request.signal, AbortSignal.timeout(15000)]),
+      }, resolve);
+      upstream.once("error", reject);
+      upstream.end(body);
+    });
+    if (response.statusCode >= 300 && response.statusCode < 400) {
+      response.destroy();
+      return new Response(null, {status: 502});
+    }
+    const responseHeaders = new Headers();
+    for (const name of ["content-type", "content-security-policy", "cache-control",
+      "referrer-policy", "x-content-type-options"]) {
+      const value = response.headers[name];
+      if (typeof value === "string") responseHeaders.set(name, value);
+    }
+    return new Response(Readable.toWeb(response), {
+      status: response.statusCode, headers: responseHeaders,
+    });
+  } catch {
+    return new Response(null, {status: 502});
+  }
+}
+
 async function load(window, url) {
   let status;
   window.webContents.once("did-navigate", (_event, _url, code) => { status = code; });
@@ -71,14 +120,15 @@ async function load(window, url) {
   }
 }
 
-function createAdminWindow(BrowserWindow, adminSession) {
+function createAdminWindow(BrowserWindow, adminSession, issueSession) {
   let current;
   adminSession.setPermissionCheckHandler(() => false);
   adminSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
   adminSession.on("will-download", (event) => event.preventDefault());
 
-  return async function openAdminWindow(url) {
-    if (current?.url === url) {
+  async function open(access) {
+    const {url, serverSocket} = access;
+    if (current?.url === url && current.access.serverSocket === serverSocket) {
       if (current.loading) return current.loading;
       const window = current.window;
       if (window.isMinimized()) window.restore();
@@ -89,6 +139,10 @@ function createAdminWindow(BrowserWindow, adminSession) {
 
     current?.window.destroy();
     const landing = new URL(url);
+    const automatic = Boolean(serverSocket) || landing.protocol === "https:";
+    if (serverSocket) {
+      adminSession.protocol.handle("http", (request) => serveThroughSocket(request, landing, serverSocket));
+    }
     adminSession.webRequest.onBeforeRequest((details, callback) => {
       callback({cancel: !allowsAdminRequest(landing, details)});
     });
@@ -101,6 +155,7 @@ function createAdminWindow(BrowserWindow, adminSession) {
       show: false,
       webPreferences: {
         session: adminSession,
+        ...(automatic ? {preload: join(__dirname, "admin-preload.cjs")} : {}),
         sandbox: true,
         contextIsolation: true,
         nodeIntegration: false,
@@ -113,14 +168,29 @@ function createAdminWindow(BrowserWindow, adminSession) {
     window.webContents.on("will-redirect", (event) => event.preventDefault());
     window.webContents.setWindowOpenHandler(() => ({action: "deny"}));
 
-    const view = {url, window, loading: null};
+    const view = {url, access, automatic, window, loading: null};
     current = view;
     window.once("closed", () => {
-      if (current === view) current = null;
+      if (current === view) {
+        if (serverSocket) adminSession.protocol.unhandle("http");
+        current = null;
+      }
     });
     view.loading = load(window, landing.href).finally(() => { view.loading = null; });
     return view.loading;
-  };
+  }
+
+  async function signIn({sender, senderFrame}) {
+    const view = current;
+    if (!view?.automatic || sender !== view.window.webContents || senderFrame?.parent !== null ||
+        senderFrame.url !== view.url) {
+      return {status: 403, payload: null};
+    }
+    const result = await issueSession(view.access);
+    return current === view ? result : {status: 403, payload: null};
+  }
+
+  return {open, signIn};
 }
 
 module.exports = {allowsAdminRequest, createAdminWindow};
