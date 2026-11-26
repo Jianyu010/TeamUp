@@ -6,9 +6,17 @@ Local workspace for [#17](https://github.com/Jianyu010/TeamUp/issues/17). Start 
 
 ## macOS desktop app
 
-TeamUp.app opens one Electron window for the local profile ([#41](https://github.com/Jianyu010/TeamUp/issues/41)). The default profile is `~/.config/teamup/client.json`. The launcher reuses a running console from the same profile and socket or starts the installed Client through `teamup-client serve --config PATH --console`. The Client can continue receiving events and sending notifications after closing TeamUp.app. If the configured socket belongs to a Client started outside the launcher, TeamUp shows a startup error so the operator can choose how to manage that process.
+TeamUp.app opens one Electron window for the local profile ([#41](https://github.com/Jianyu010/TeamUp/issues/41)). The default profile is `~/.config/teamup/client.json`. The launcher reuses a running console or a pending sign-in from the same profile, or starts the installed Client through `teamup-client serve --config PATH --console`. The Client can continue receiving events and sending notifications after closing TeamUp.app. If the configured socket belongs to a Client started outside the launcher, TeamUp shows a startup error so the operator can choose how to manage that process.
 
 The desktop app ships the Client's console assets and serves them inside the sandboxed window at `teamup://console/`. Its main process gets the loopback address and launch credential from the launcher over a private pipe. It holds that credential and forwards the console's named workspace, room, team, and task requests to the Client listener. The same Client session checks and Server authorization apply to both desktop and browser requests. See the [desktop build and launch instructions](../../client/macos/desktop/README.md).
+
+## Sign in to the Client
+
+Opening TeamUp.app reuses a live, launcher-managed console for the same profile. A newly started account-based console, including the browser entry, displays a TeamUp username and password form before starting its IPC socket. A saved token from an earlier Client process does not open this workspace. The explicit legacy enrollment-key path starts directly. Headless `teamup-client serve` and terminal `teamup-client login` remain available for unattended setup and CLI use.
+
+`GET /api/login` reports `{"state":"sign_in_required"}` or `{"state":"ready"}` to the launcher. While sign-in is required, the workspace and action routes return 409 `sign_in_required`. `POST /api/login` takes `{"username":"…","password":"…"}`. It requires the console launch credential and the exact loopback Origin. The desktop bridge forwards the named route only from the sandboxed console origin.
+
+The Client sends credentials over the profile's existing Server connection using the [enrollment-purpose login](account-login-v1.md#clientserver-增量). The configuration owner atomically saves the account token to the private profile, then the Client starts IPC and makes the workspace available. The console response contains only a state. Incorrect usernames or passwords, disabled accounts, and invalid credential values produce the same `wrong_credentials` response and the message **Wrong username or password.** Rate limits, unavailable Server connections, and profile failures have separate states. Failed authentication leaves the profile and socket untouched. Only one successful submission activates the process. Further submissions to an active Client return `ready` without changing the signed-in account.
 
 ## Ownership and access
 
