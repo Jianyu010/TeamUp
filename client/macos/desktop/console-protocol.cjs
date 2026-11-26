@@ -170,7 +170,11 @@ function createConsoleHandler(directory, getEndpoint, resetEndpoint = () => {}, 
         admin.show(Boolean(url));
         if (opensAdmin) {
           if (!url) return failure(403, "forbidden");
-          await admin.open(url);
+          try {
+            await admin.open(url);
+          } catch {
+            return failure(503, "unavailable");
+          }
           return Response.json({state: "opened"}, {headers});
         }
         return Response.json(url ? {admin_url: url} : {}, {headers});

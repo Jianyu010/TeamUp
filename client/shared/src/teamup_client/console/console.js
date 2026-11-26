@@ -748,9 +748,8 @@ adminEntry.addEventListener("click", async (event) => {
   if (!desktop) return;
   event.preventDefault();
   try {
-    if ((await read("/api/open-admin", null, {})).state === "opened") return;
+    if ((await read("/api/open-admin", null, {})).state === "forbidden") showAdminEntry();
   } catch {}
-  showAdminEntry();
 });
 
 async function refresh() {
