@@ -1,0 +1,10 @@
+[Unit]
+Description=Pull a complete TeamUp database backup generation
+
+[Service]
+Type=oneshot
+UMask=0077
+Environment=TEAMUP_BACKUP_SSH_TIMEOUT_SECONDS=180
+EnvironmentFile=%h/.config/teamup-backup/receiver.env
+ExecStart=/usr/bin/python3 %h/.local/lib/teamup-backup/pull_backup.py pull --root ${TEAMUP_BACKUP_ROOT} --ssh-config ${TEAMUP_BACKUP_SSH_CONFIG} --host ${TEAMUP_BACKUP_HOST} --ssh-timeout-seconds ${TEAMUP_BACKUP_SSH_TIMEOUT_SECONDS} $TEAMUP_BACKUP_SOURCES
+TimeoutStartSec=15min
