@@ -7,7 +7,7 @@ Agent self-retirement, owner-managed departure, and retired history are specifie
 ## 账号和管理
 
 - 用户名为 3–64 个小写 ASCII 字符，以字母开头，可含数字、下划线和连字符。账号有不可变的 UUID `owner_id`。
-- 管理员在服务器上以服务账号调用 `teamup-server accounts --db PATH create USERNAME` 或 `reset-password USERNAME`，口令从终端无回显输入两遍。可用 `list` 查看状态，用 `disable USERNAME` 停用。管理命令通过 Collaboration 的公开入口执行，并使用同一个业务数据库。Server 的网络入口不提供开户或停用接口。
+- 管理员在服务器上以服务账号调用 `teamup-server accounts --db PATH create USERNAME` 或 `reset-password USERNAME`，口令从终端无回显输入两遍。可用 `list` 查看状态，用 `disable USERNAME` 停用。管理命令通过 Collaboration 的公开入口执行，并使用同一个业务数据库。已授权操作员也可以通过 [Admin Console](admin-console.md) 开户、重置口令和停用普通账号。
 - 口令须有 12–128 个字符，保留原文，以 Argon2id 摘要存储。重置口令使该开发者的所有人类登录会话失效，已经授予 Agent 的凭证仍有效。永久停用账号使人类登录和所属 Agent 的凭证同时失效，保留历史里的成员 ID。停用操作可重复执行，账号不复用。
 
 ## Client–Server 增量
