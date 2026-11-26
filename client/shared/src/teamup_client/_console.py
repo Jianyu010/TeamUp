@@ -23,6 +23,7 @@ from ._protocol import REQUEST_LIMIT, decode_json, is_integer, is_string, is_uui
 from .ipc import ClientError
 
 CONSOLE_REQUEST_SECONDS = 18
+CONSOLE_LOGIN_SECONDS = 15
 WORKSPACE_RESPONSE_RESERVE_SECONDS = 0.5
 STATIC = {
     "/": ("index.html", "text/html; charset=utf-8"),
@@ -46,6 +47,7 @@ class ConsoleSession:
         self.reader = reader
         self._sign_in = sign_in
         self._lock = asyncio.Lock()
+        self._login_task = None
 
     def status(self):
         return {"state": "ready" if self.reader is not None else "sign_in_required"}
@@ -61,8 +63,10 @@ class ConsoleSession:
                 for value, limit in ((username, 64), (password, 128))
             ):
                 return {"state": "wrong_credentials"}
+            self._login_task = asyncio.current_task()
             try:
-                self.reader = await self._sign_in(username, password)
+                async with asyncio.timeout(CONSOLE_LOGIN_SECONDS):
+                    self.reader = await self._sign_in(username, password)
             except ClientError as error:
                 if error.code in {"unauthorized", "invalid_request"}:
                     return {"state": "wrong_credentials"}
@@ -73,12 +77,16 @@ class ConsoleSession:
                 return {"state": "profile_unavailable"}
             except (LocalError, OSError, sqlite3.Error):
                 return {"state": "unavailable"}
+            finally:
+                self._login_task = None
             return self.status()
 
     async def close(self):
         self._sign_in = None
-        async with self._lock:
-            pass
+        if self._login_task is not None:
+            task = self._login_task
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
 
 class Handler(BaseHTTPRequestHandler):

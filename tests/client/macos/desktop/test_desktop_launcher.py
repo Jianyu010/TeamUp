@@ -1,5 +1,6 @@
 import json
 import os
+import runpy
 import secrets
 import signal
 import socket
@@ -44,7 +45,7 @@ def login_server():
             thread.join()
 
 
-def test_desktop_launcher_reuses_pending_and_active_session(login_server):
+def test_desktop_launcher_reuses_pending_and_active_session(login_server, monkeypatch):
     # Keep the Client's Unix socket path short on macOS.
     with TemporaryDirectory(prefix="tu-desktop-", dir="/tmp") as temp:
         root = Path(temp)
@@ -101,6 +102,16 @@ def test_desktop_launcher_reuses_pending_and_active_session(login_server):
             assert len(url.fragment) == 43
             endpoint = next(state.glob("*/console.url"))
             assert endpoint.stat().st_mode & 0o077 == 0
+            launcher = runpy.run_path(str(LAUNCHER))
+            ensure_console = launcher["ensure_console"]
+            with monkeypatch.context() as failing_probe:
+                failing_probe.setitem(
+                    ensure_console.__globals__, "console_state", lambda _address: None
+                )
+                with pytest.raises(launcher["LaunchError"], match="still waiting for sign-in"):
+                    ensure_console(profile, client, state)
+            assert endpoint.read_text().strip() == address
+            assert launch() == address
             connection = HTTPConnection(url.hostname, url.port, timeout=3)
             try:
                 connection.request(
