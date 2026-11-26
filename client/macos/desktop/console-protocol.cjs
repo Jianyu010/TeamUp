@@ -17,7 +17,7 @@ const assets = new Map([
   ["/jet-pair.png", ["jet-pair.png", "image/png"]],
 ]);
 const reads = new Set([
-  "/api/workspace", "/api/login", "/api/wake-settings", "/api/versions", "/api/retired", "/api/team", "/api/room", "/api/room-members",
+  "/api/workspace", "/api/access", "/api/login", "/api/wake-settings", "/api/versions", "/api/retired", "/api/team", "/api/room", "/api/room-members",
   "/api/room-board", "/api/tasks", "/api/task-events",
 ]);
 const taskAction = /^\/api\/tasks\/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\/(?:join|progress|finish)$/i;
@@ -125,7 +125,21 @@ async function signIn(request, endpoint, desktopLogin) {
   return Response.json(result, {status, headers});
 }
 
-function createConsoleHandler(directory, getEndpoint, resetEndpoint = () => {}, desktopLogin) {
+async function readAdminUrl(endpoint, signal) {
+  if (!endpoint) return null;
+  const target = new URL("/api/access", CONSOLE_URL);
+  const response = await forward(new Request(target, {signal}), target, endpoint);
+  const data = await response.json();
+  if (!response.ok || typeof data.admin_url !== "string") return null;
+  const url = URL.parse(data.admin_url);
+  if (!url || url.pathname !== "/console/" || url.username || url.password ||
+      url.search || url.hash) return null;
+  const loopback = ["localhost", "[::1]"].includes(url.hostname) ||
+    /^127(?:\.\d{1,3}){3}$/.test(url.hostname);
+  return url.protocol === "https:" || (url.protocol === "http:" && loopback) ? url.href : null;
+}
+
+function createConsoleHandler(directory, getEndpoint, resetEndpoint = () => {}, desktopLogin, admin) {
   return async (request) => {
     const target = new URL(request.url);
     if (target.protocol !== "teamup:" || target.host !== "console" || target.username || target.password) {
@@ -138,10 +152,11 @@ function createConsoleHandler(directory, getEndpoint, resetEndpoint = () => {}, 
         headers: { ...headers, "Content-Type": contentType },
       });
     }
+    const opensAdmin = admin && request.method === "POST" && target.pathname === "/api/open-admin" && !target.search;
     const isRead = request.method === "GET" && reads.has(target.pathname);
     const isAction = request.method === "POST" &&
       (actions.has(target.pathname) || taskAction.test(target.pathname));
-    if (!isRead && !isAction) return failure(404, "not_found");
+    if (!isRead && !isAction && !opensAdmin) return failure(404, "not_found");
     if (request.initiatorOrigin !== CONSOLE_ORIGIN) return failure(403, "forbidden");
 
     const pending = getEndpoint();
@@ -149,6 +164,17 @@ function createConsoleHandler(directory, getEndpoint, resetEndpoint = () => {}, 
     try {
       const endpoint = await pending;
       if (!endpoint) return failure(503, "unavailable");
+      if (admin && (target.pathname === "/api/access" || opensAdmin)) {
+        if (target.search || (opensAdmin && request.body)) return failure(400, "invalid_request");
+        const url = await readAdminUrl(endpoint, request.signal);
+        admin.show(Boolean(url));
+        if (opensAdmin) {
+          if (!url) return failure(403, "forbidden");
+          await admin.open(url);
+          return Response.json({state: "opened"}, {headers});
+        }
+        return Response.json(url ? {admin_url: url} : {}, {headers});
+      }
       if (desktopLogin && target.pathname === "/api/login" && !target.search) {
         if (isAction) return await signIn(request, endpoint, desktopLogin);
         if (endpoint.loginSocket) {
@@ -164,10 +190,11 @@ function createConsoleHandler(directory, getEndpoint, resetEndpoint = () => {}, 
       }
       return response;
     } catch {
+      if (admin && (target.pathname === "/api/access" || opensAdmin)) admin.show(false);
       if (refreshesEndpoint) resetEndpoint(pending);
       return failure(503, "unavailable");
     }
   };
 }
 
-module.exports = { CONSOLE_URL, createConsoleHandler, parseConsoleEndpoint, requestPrivateLogin };
+module.exports = { CONSOLE_URL, createConsoleHandler, parseConsoleEndpoint, readAdminUrl, requestPrivateLogin };

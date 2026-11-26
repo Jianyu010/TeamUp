@@ -35,7 +35,7 @@ The administrator supplies a matching certificate and private key.
 - `admin off` disables the Caddy admin endpoint. `auto_https off` disables automatic certificate management and HTTP redirects. TLS uses the certificate and key you supply.
 - The required variables fail closed. Site-level `vars` directives mirror `TEAMUP_HTTPS_HOST`, `TEAMUP_HTTPS_PORT`, `TEAMUP_TLS_CERT`, `TEAMUP_TLS_KEY`, and `TEAMUP_UPSTREAM_PORT`. If any is unset or empty, the corresponding directive has too few arguments and `caddy adapt` exits with an error, rejecting the entire configuration. See the verification details below for the tests on Caddy v2.11.9.
 - `TEAMUP_HTTPS_BIND` also fails closed. The Caddyfile expression `{$TEAMUP_HTTPS_BIND:127.0.0.1}` uses the default only when the variable is unset. An explicit empty string expands to an empty argument, leaving the site-level `vars teamup_https_bind` directive short of arguments. Caddy rejects the configuration instead of listening on all interfaces.
-- Caddy proxies only `/v1/*` to the literal loopback upstream `127.0.0.1:$TEAMUP_UPSTREAM_PORT` and returns 404 on all other paths.
+- Caddy proxies `/v1/*`, `/console/`, `/dashboard/`, and the exact console asset paths to the loopback Server at `127.0.0.1:$TEAMUP_UPSTREAM_PORT`. Other paths return 404.
 - Caddy forwards the `Authorization` header unchanged. The backend handles authentication and authorization according to the contract.
 - Caddy streams SSE (`/v1/events`) immediately by default. No buffering or redirects are configured. SSE provides hints, and the durable inbox recovers events after a dropped frame. Reconnect behavior stays the same.
 
@@ -47,7 +47,7 @@ caddy run --config /opt/teamup-pilot/Caddyfile --adapter caddyfile
 
 ## Distributing the source
 
-Use the same Client source as the SSH-based deployment. From the repository root, run `git archive` for a pinned revision, record the SHA-256 digest, and distribute the archive through a separate private channel approved by the team. The HTTPS site only proxies `/v1` and cannot serve as a source distribution channel. Members verify the digest before extracting and installing the archive and accept archives only from a known source.
+Use the same Client source as the SSH-based deployment. From the repository root, run `git archive` for a pinned revision, record the SHA-256 digest, and distribute the archive through a separate private channel approved by the team. Distribute source archives through the approved separate channel. Members verify the digest before extracting and installing the archive and accept archives only from a known source.
 
 ```sh
 revision='<pinned-revision>'
@@ -74,7 +74,7 @@ Automated acceptance testing runs Caddy on loopback with a temporary private CA 
 - Account login and Agent registration through the proxy.
 - Real-time SSE delivery in a separate check. An independently authenticated SSE stream through the proxy waits for a real `: ready` frame. Another handle sends an @mention, and the same stream receives the complete `inbox_changed` frame within the time limit.
 - Desktop notifications for an online member and inbox catch-up when an offline member reconnects. These assertions are separate from the SSE check.
-- TLS verification with the wrong CA, rejection of an incorrect password, and 404 responses on paths outside `/v1`.
+- TLS verification with the wrong CA, rejection of an incorrect password, and 404 responses on paths outside the API and console routes.
 
 The same suite runs `caddy adapt` to check all three bind settings. An unset `TEAMUP_HTTPS_BIND` binds only to loopback, an explicit empty string causes the configuration to be rejected, and an explicit address is preserved as supplied. The suite also verifies that an unset or empty value for any required variable causes the entire configuration to be rejected. These checks ran against Caddy v2.11.9.
 

@@ -14,3 +14,4 @@ Read [AGENTS.md](../AGENTS.md) and the [development protocol](protocols/README.m
 | [Specifications](specs/mvp.md) | MVP product behavior and acceptance criteria |
 | [CI](ci/README.md) | CI layers, merge gates, the hp-laptop runner, nightly and weekly runs, releases, dashboards, and [label conventions](ci/labeling.md) |
 | [Tutorials](tutorials/agent-collaboration.md) | A hands-on guide to completing a task with three agents in a shared room |
+| [Admin Console tutorial](tutorials/admin-console.md) | Sign in, check rooms and dashboards, and manage accounts |

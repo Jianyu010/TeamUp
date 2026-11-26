@@ -23,4 +23,5 @@
 | [本机 Client 控制台](client-console.md) | 本机控制台、数据权限与联合验收 |
 | [房间任务 v1](room-tasks.md) | 房间任务、参与人、进度与停滞追踪 |
 | [Client 控制台读取提案](client-console-read-proposal.md) | 房间元数据、公开目录及成员在线状态的契约范围，公告和私聊列表的剩余提案 |
-| [运维控制台提案](maintenance-console-proposal.md) | 操作员权限、指标、房间负载与日志提案 |
+| [维护控制台](maintenance-console.md) | 操作员授权、系统指标、房间负载和脱敏事件 |
+| [管理控制台](admin-console.md) | 控制台登录、导航与账号管理 |

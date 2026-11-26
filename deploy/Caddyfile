@@ -13,7 +13,8 @@ https://{$TEAMUP_HTTPS_HOST}:{$TEAMUP_HTTPS_PORT} {
 	vars teamup_upstream_port {$TEAMUP_UPSTREAM_PORT}
 	tls {$TEAMUP_TLS_CERT} {$TEAMUP_TLS_KEY}
 
-	handle /v1/* {
+	@teamup path /v1/* /console/ /dashboard/ /console/console.css /console/console.js /console/maintenance.js /console/accounts.js
+	handle @teamup {
 		reverse_proxy 127.0.0.1:{$TEAMUP_UPSTREAM_PORT}
 	}
 

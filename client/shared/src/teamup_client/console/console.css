@@ -44,7 +44,9 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
 .chrome h1 { display: flex; align-items: center; gap: 7px; font-size: 20px; letter-spacing: -.045em; }
 .chrome h1 img { display: block; flex: 0 0 auto; }
 .chrome nav { display: flex; gap: 4px; }
-#connection { margin-left: auto; color: var(--muted); font-size: 12px; }
+.chrome-status { display: flex; align-items: center; gap: 12px; margin-left: auto; }
+#admin-entry { color: var(--accent); font-size: 12px; text-decoration: underline; text-underline-offset: 3px; }
+#connection { color: var(--muted); font-size: 12px; }
 #connection[data-live="true"] { color: var(--active); }
 .sign-in { display: grid; align-items: safe center; justify-items: center; padding: 24px; overflow: auto; }
 .sign-in form {

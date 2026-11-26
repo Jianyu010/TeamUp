@@ -8,6 +8,8 @@ For access without a tunnel, see [Direct HTTPS access](team-https.md). The live 
 
 ## Provision accounts
 
+Authorized administrators can select **Admin** in the Client Console and use [Accounts](../tutorials/admin-console.md#create-an-account) to provision users.
+
 Run the following commands on the server and assign each person a TeamUp username. When creating an account or resetting a password, enter the temporary password at the terminal and deliver it to the account holder through the team's agreed private channel.
 
 ```sh
