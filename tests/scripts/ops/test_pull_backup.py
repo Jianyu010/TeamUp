@@ -338,3 +338,61 @@ def test_retention_keeps_an_older_daily_copy_if_newest_is_corrupt(backup_root, s
     assert run_cli("pull", backup_root) == 0
 
     assert older_daily.is_dir()
+
+
+def test_metadata_only_check_detects_size_changes_without_rehashing(backup_root):
+    generation = write_generation(backup_root, NOW)
+    snapshot = generation / "pilot.sqlite3"
+    payload = snapshot.read_bytes()
+    snapshot.write_bytes(b"A" * len(payload))
+
+    args = [
+        "check",
+        "--root",
+        str(backup_root),
+        "--max-age-hours",
+        "2",
+        "--source",
+        "pilot",
+        "--source",
+        "primary",
+    ]
+    assert pull_backup.main([*args, "--metadata-only"]) == 0
+    assert pull_backup.main(args) != 0
+
+    snapshot.write_bytes(payload[:-1])
+    assert pull_backup.main([*args, "--metadata-only"]) != 0
+
+
+def test_receiver_accepts_an_operator_configured_ssh_deadline(backup_root, monkeypatch):
+    def receive(staging, ssh_config, host, source, timeout_seconds):
+        assert timeout_seconds == 240
+        payload = SNAPSHOTS[source]
+        file = staging / f"{source}.sqlite3"
+        file.write_bytes(payload)
+        file.chmod(0o600)
+        return {
+            "file": file.name,
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "size_bytes": len(payload),
+        }
+
+    monkeypatch.setattr(pull_backup, "receive_snapshot", receive)
+    assert (
+        pull_backup.main(
+            [
+                "pull",
+                "--root",
+                str(backup_root),
+                "--ssh-config",
+                "/private/ssh config",
+                "--host",
+                "teamup-backup",
+                "--source",
+                "pilot",
+                "--ssh-timeout-seconds",
+                "240",
+            ]
+        )
+        == 0
+    )

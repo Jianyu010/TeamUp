@@ -1,0 +1,9 @@
+[Unit]
+Description=Hash and verify the latest TeamUp database backup generation
+
+[Service]
+Type=oneshot
+UMask=0077
+EnvironmentFile=%h/.config/teamup-backup/receiver.env
+ExecStart=/usr/bin/python3 %h/.local/lib/teamup-backup/pull_backup.py check --root ${TEAMUP_BACKUP_ROOT} --max-age-hours 2 $TEAMUP_BACKUP_SOURCES
+TimeoutStartSec=15min

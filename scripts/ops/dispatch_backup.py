@@ -21,7 +21,7 @@ def capture_command(config: Path, requested: str) -> list[str]:
         raise ValueError("invalid database owner")
     if not Path(database).is_absolute():
         raise ValueError("expected an absolute database path")
-    return [
+    command = [
         "/usr/bin/sudo",
         "-n",
         "-u",
@@ -32,6 +32,12 @@ def capture_command(config: Path, requested: str) -> list[str]:
         "--source",
         database,
     ]
+    if "timeout_seconds" in source:
+        timeout = source["timeout_seconds"]
+        if type(timeout) is not int or timeout <= 0:
+            raise ValueError("invalid snapshot timeout")
+        command.extend(("--timeout-seconds", str(timeout)))
+    return command
 
 
 def main() -> int:

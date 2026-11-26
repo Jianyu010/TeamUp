@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from snapshot_sqlite import snapshot_database
+from snapshot_sqlite import DEFAULT_TIMEOUT_SECONDS, snapshot_database
 
 
 class RestoreError(Exception):
@@ -32,7 +32,9 @@ def copy_verified_snapshot(source: Path, staged: Path, expected_digest: str) -> 
         raise RestoreError("checksum mismatch. Check the backup receipt and snapshot")
 
 
-def restore_database(source: Path, destination: Path, expected_digest: str) -> None:
+def restore_database(
+    source: Path, destination: Path, expected_digest: str, timeout_seconds: float
+) -> None:
     if not re.fullmatch(r"[0-9a-f]{64}", expected_digest):
         raise RestoreError("SHA-256 must be 64 lowercase hexadecimal characters")
     parent = destination.parent.resolve(strict=True)
@@ -50,7 +52,9 @@ def restore_database(source: Path, destination: Path, expected_digest: str) -> N
         staged = Path(staging) / "verified.sqlite3"
         copy_verified_snapshot(source, staged, expected_digest)
         try:
-            snapshot_database(staged, parent / destination.name)
+            snapshot_database(
+                staged, parent / destination.name, timeout_seconds=timeout_seconds
+            )
         except (ValueError, sqlite3.Error) as exc:
             raise RestoreError(
                 "snapshot failed SQLite validation. Choose a different backup"
@@ -69,9 +73,14 @@ def main() -> int:
         type=Path,
         help="new path in a private directory",
     )
+    parser.add_argument(
+        "--timeout-seconds", type=float, default=DEFAULT_TIMEOUT_SECONDS
+    )
     args = parser.parse_args()
     try:
-        restore_database(args.snapshot, args.destination, args.sha256)
+        restore_database(
+            args.snapshot, args.destination, args.sha256, args.timeout_seconds
+        )
     except RestoreError as exc:
         message = str(exc)
     except FileExistsError:

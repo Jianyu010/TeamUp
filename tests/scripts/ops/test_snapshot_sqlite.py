@@ -151,3 +151,18 @@ def test_destination_sidecar_blocks_publication(tmp_path, suffix):
     assert "destination has an existing sqlite sidecar" in result.stderr.lower()
     assert not destination.exists()
     assert sidecar.is_symlink()
+
+
+def test_validation_obeys_snapshot_deadline(tmp_path, monkeypatch):
+    source = tmp_path / "live.db"
+    destination = tmp_path / "snapshot.sqlite3"
+    with closing(sqlite3.connect(source)) as db, db:
+        db.execute("CREATE TABLE messages (body TEXT)")
+        db.executemany("INSERT INTO messages VALUES (?)", [("message",)] * 3000)
+    times = iter((0, 0))
+    monkeypatch.setattr(snapshot_sqlite, "monotonic", lambda: next(times, 2))
+
+    with pytest.raises(TimeoutError, match="SQLite snapshot deadline exceeded"):
+        snapshot_sqlite.snapshot_database(source, destination, timeout_seconds=1)
+
+    assert set(tmp_path.iterdir()) == {source}

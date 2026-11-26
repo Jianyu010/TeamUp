@@ -52,7 +52,7 @@ The receiver verifies the snapshot digest for each source before publishing one 
 
 ### Install the receiver
 
-Install `pull_backup.py` and `restore_backup.py` with `snapshot_sqlite.py` in `~/.local/lib/teamup-backup`. Install the four `deploy/backup/` units in `~/.config/systemd/user/`. The receiver's private SSH configuration should pin the verified source host key, use the dedicated identity, and set `IdentitiesOnly yes`, `RequestTTY no`, and `LogLevel ERROR`. Store configuration and snapshots outside application and CI working directories. Use a dedicated receiver account where possible. If the receiver shares a host or OS login with build tooling, verify that build processes run in a separate filesystem namespace and cannot see its real home or production backups. Processes running unsandboxed under the receiver’s account can read its files.
+Install `pull_backup.py` and `restore_backup.py` with `snapshot_sqlite.py` in `~/.local/lib/teamup-backup`. Install the `deploy/backup/` units in `~/.config/systemd/user/`. The receiver's private SSH configuration should pin the verified source host key, use the dedicated identity, and set `IdentitiesOnly yes`, `RequestTTY no`, and `LogLevel ERROR`. Store configuration and snapshots outside application and CI working directories. Use a dedicated receiver account where possible. If the receiver shares a host or OS login with build tooling, verify that build processes run in a separate filesystem namespace and cannot see its real home or production backups. Processes running unsandboxed under the receiver’s account can read its files.
 
 Create the backup directory with mode `0700` and `~/.config/teamup-backup/receiver.env` with mode `0600`. The four values below are read by the user services.
 
@@ -63,15 +63,26 @@ TEAMUP_BACKUP_HOST=teamup-backup-source
 TEAMUP_BACKUP_SOURCES="--source pilot --source secondary"
 ```
 
+Have an administrator enable lingering for the receiver account so its timers start at boot and keep running after logout.
+
 ```sh
+sudo loginctl enable-linger receiver
+```
+
+Then run the following commands as the receiver account. The first check must print `yes`.
+
+```sh
+loginctl show-user "$USER" --property=Linger --value
 systemctl --user daemon-reload
 systemctl --user start teamup-backup.service
-systemctl --user start teamup-backup-check.service
-systemctl --user enable --now teamup-backup.timer teamup-backup-check.timer
+systemctl --user start teamup-backup-check.service teamup-backup-verify.service
+systemctl --user enable --now teamup-backup.timer teamup-backup-check.timer teamup-backup-verify.timer
 systemctl --user list-timers 'teamup-backup*'
 ```
 
-The receiver's user manager must remain running across logouts and reboots. Review the two service journals for failed transfers, retention errors, and stale copies. The freshness check runs every 15 minutes. Its failure is visible in the receiver's systemd journal.
+The 15-minute check verifies the latest manifest, age, and snapshot sizes. The daily check hashes the latest generation again. Review the receiver’s systemd journal for failed transfers, retention errors, stale copies, and checksum failures.
+
+The source capture budgets 120 seconds per database for the online copy and SQLite validation. To increase it, set the source’s `timeout_seconds` integer in `sources.json` and add the matching `--timeout-seconds N` to that source’s exact sudo rule. The receiver uses a 180-second SSH deadline per source. Set `TEAMUP_BACKUP_SSH_TIMEOUT_SECONDS` in `receiver.env` to a value that leaves time for capture and transfer. Adjust the pull service’s `TimeoutStartSec` to cover all sources and local publication. Both the standalone snapshot and restore commands accept `--timeout-seconds` for SQLite copy and validation.
 
 ### Restore a stored generation
 
