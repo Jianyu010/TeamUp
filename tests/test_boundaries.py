@@ -5,7 +5,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGES = {
     "teamup_server": ROOT / "server/src/teamup_server",
-    "teamup_client": ROOT / "client/src/teamup_client",
+    "teamup_client": ROOT / "client/shared/src/teamup_client",
     "teamup_mcp": ROOT / "plugin/mcp/src/teamup_mcp",
 }
 

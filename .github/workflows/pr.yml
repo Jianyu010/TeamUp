@@ -223,7 +223,7 @@ jobs:
           uv sync --frozen --all-packages --python 3.12 2>&1 | tail -3
       - name: Component and CI unit tests
         run: >-
-          uv run --no-sync pytest -q server/tests client/tests tests/ci
+          uv run --no-sync pytest -q tests/server tests/client/shared tests/client/macos tests/scripts/ci
           --cov --cov-report=term-missing:skip-covered
 
   linux-st:
@@ -252,11 +252,7 @@ jobs:
           sed -i 's#https://pypi.org/simple#https://pypi.tuna.tsinghua.edu.cn/simple#g; s#https://files.pythonhosted.org/packages/#https://pypi.tuna.tsinghua.edu.cn/packages/#g' uv.lock
           uv sync --frozen --all-packages --python 3.12 2>&1 | tail -3
       - name: Cross-process tests (server, clients, MCP sessions)
-        run: >-
-          uv run --no-sync pytest -q tests
-          --ignore=tests/ci --ignore=tests/test_boundaries.py --ignore=tests/scenarios
-          --ignore=tests/contract
-          --ignore=tests/install --ignore=tests/system
+        run: uv run --no-sync pytest -q tests/integration tests/plugin/mcp
 
   linux-st-cross:
     name: 3 · Linux ST · 跨组件

@@ -27,9 +27,10 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 ROOT = Path(__file__).resolve().parents[2]
+CLIENT_PACKAGE = "client/shared"
 SOURCES = {
     "server": ("teamup_server.main", "server/src"),
-    "client": ("teamup_client.main", "client/src"),
+    "client": ("teamup_client.main", f"{CLIENT_PACKAGE}/src"),
     "mcp": ("teamup_mcp.main", "plugin/mcp/src"),
 }
 SCRIPTS = {"server": "teamup-server", "client": "teamup-client", "mcp": "teamup-mcp"}
@@ -136,7 +137,7 @@ def pip_install(venv, requirements, *options):
     assert installed.returncode == 0, installed.stderr[-1500:]
 
 
-def build_wheels(out_dir, packages=("server", "client", "plugin/mcp")):
+def build_wheels(out_dir, packages=("server", CLIENT_PACKAGE, "plugin/mcp")):
     """Build one wheel per package directory; return {package: wheel path}."""
     out_dir = Path(out_dir)
     wheels = {}

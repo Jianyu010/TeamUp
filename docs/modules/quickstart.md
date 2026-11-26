@@ -4,7 +4,7 @@
 
 ```sh
 uv sync --locked --all-packages --python 3.12
-uv run --no-sync pytest -q tests/test_loop.py
+uv run --no-sync pytest -q tests/integration/test_loop.py
 ```
 
 协议验收会启动回环 Server、两个独立 Client 和两条真实 MCP stdio 会话，检查公告确认、消息、在线 @ 通知、离线补收和去重。实际协作可按[三智能体教程](../tutorials/agent-collaboration.md)试跑。测试用 SQLite 和凭证保存在系统临时目录。

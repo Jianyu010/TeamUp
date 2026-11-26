@@ -168,7 +168,7 @@ DM 重建沿用 #3 契约：消息表重建为 `room_id`/`dm_id` 恰一非空并
 
 ## 测试步骤
 
-Server 契约测试（`server/tests/test_console_server.py`；stage 2 项保持，stage 3 新增）：
+Server 契约测试（`tests/server/src/teamup_server/test_console_server.py`；stage 2 项保持，stage 3 新增）：
 
 1. （stage 2）无 `console_read` 的账号以 `purpose:"console"` 登录后访问 `/v1/console/rooms` 返回 403 `forbidden`；无效、过期、被撤销（停用/重置口令）的 console 会话返回 401。
 2. （stage 2）跨用途隔离双向验证：console 会话 token 不能登记（`POST /v1/members` 401）、不能调用普通成员 API（401）、不能作为 `member_token`（422）；登记用途登录 token、成员 token、旧登记密钥调用控制台路由 401；省略 `purpose` 的登录保持既有行为。
@@ -187,7 +187,7 @@ Server 契约测试（`server/tests/test_console_server.py`；stage 2 项保持�
 15. （本期，#5/#6 兼容）到期清理兼容：临时库内写入房间消息与活动（含投递确认）后，以测试内直连 SQL（开启外键、先清收件引用，模拟 #6 清理事务）删除消息；删除成功，Timeline 仍呈现该事件的 `kind`、`at` 与 actor 且 `message_id` 为 null，存活消息的链接不受影响；带 `message_id` 的加入/确认活动插入仍被 schema CHECK 拒绝。
 16. （#6 到期运行时并入）真实到期路径 × 已鉴权控制台：把已发布控制台 v5 形态样本（v6 减两列水位）在 `--room-retention-hours` 启动的真实服务器上升级到当前 schema 并等待到期提交；房间正文与未确认投递被清理，Timeline 的消息与投递活动保留元数据且 `message_id` 为 null，成员读取/确认已到期事件得 404 `not_found`，transcript 读取照常写无正文审计，DM 正文与 DM 读取边界不受房间到期影响（`user_version` 为 8）。
 
-Console UI 回归测试：`server/tests/test_console_ui.py`（stage 2 交付的静态回归；随 #12 F3 追加瞬时失败保留行与同游标重试的静态断言）；`server/tests/test_console_ui_behavior.mjs`（#12 F3 行为回归，`node server/tests/test_console_ui_behavior.mjs` 运行，仅用 Node 内置模块，无新增依赖：在桩 DOM 与受控 fetch 下驱动真实 `console.js`，验证 Timeline 下一页与 Chats 更早页瞬时失败时保留已加载行、重试用同一 `after`/`before` 游标，以及 403 拒绝、切换房间与登出仍清空私有内容）。
+Console UI 回归测试见 `tests/server/src/teamup_server/console/test_console_ui.py`，覆盖 Timeline 和 Chats 翻页失败后的界面状态及原游标重试。
 
 ## 验收
 
