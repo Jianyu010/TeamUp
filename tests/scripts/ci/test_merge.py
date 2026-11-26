@@ -575,6 +575,7 @@ def test_with_require_ready_off_a_pr_that_would_close_a_freeze_still_waits(
     out = capsys.readouterr().out
     assert "would merge #5" not in out
     assert "would merge #6" in out
+    assert "#5 waits: it would close freeze #40" in out
 
 
 def test_unfrozen_plan_skips_closers_and_rechecks_the_open_freezes() -> None:

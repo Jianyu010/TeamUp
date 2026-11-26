@@ -468,10 +468,18 @@ def main(argv: list[str] | None = None) -> int:
             f"merge: auto-merge is frozen ({titles}); only PRs the owner passed with `ready` "
             f"or that refer to {numbers} merge"
         )
+    pulls = facts(gh, required, checks)
+    freeze_issues = frozenset(n for n, _t in open_freezes)
+    if not owner:
+        for pull in pulls:
+            closed = sorted(pull.closes & freeze_issues)
+            if closed and pull.blocked() is None and pull.gate == "success":
+                print(
+                    f"merge: #{pull.number} waits: it would close freeze #{closed[0]}; "
+                    "refer to it with `Refs` instead"
+                )
     steps = plan(
-        facts(gh, required, checks),
-        frozen=bool(open_freezes) and owner,
-        freeze_issues=frozenset(n for n, _t in open_freezes),
+        pulls, frozen=bool(open_freezes) and owner, freeze_issues=freeze_issues
     )
     for step in steps:
         print(
