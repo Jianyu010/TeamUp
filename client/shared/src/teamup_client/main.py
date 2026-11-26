@@ -13,6 +13,7 @@ from contextlib import nullcontext, suppress
 from functools import partial
 from pathlib import Path
 
+from ._codex_hook import register_thread
 from ._config import ConfigError, locked_config, owner_key, read_config
 from ._console import serve_console
 from ._console_data import ConsoleReader
@@ -180,6 +181,9 @@ def main(argv=None):
         help="Generate a key that identifies sessions within a harness install",
     )
     install.add_argument("harness_instance_id")
+    codex_hook = commands.add_parser("codex-hook", help="Register a local Codex hook session")
+    codex_hook.add_argument("--config", required=True, type=Path)
+    codex_hook.add_argument("--install", required=True)
     sessions = commands.add_parser("sessions", help="List and manage agent sessions")
     sessions.add_argument("--config", required=True, type=Path)
     sessions.add_argument("decision", nargs="?", choices=("approve", "reject", "leave", "retire"))
@@ -226,6 +230,8 @@ def main(argv=None):
                     indent=2,
                 )
             )
+        elif args.command == "codex-hook":
+            asyncio.run(register_thread(args.config, args.install, sys.stdin.buffer))
         elif args.command in ("sessions", "wake"):
             print(json.dumps(asyncio.run(_owner(args)), ensure_ascii=False, indent=2))
         elif args.command == "members":

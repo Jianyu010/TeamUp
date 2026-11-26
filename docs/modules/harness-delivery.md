@@ -43,7 +43,7 @@ Client 维护 **成员 → 在线会话** 的映射。一个会话对应一个 T
 
 1. **安装凭证。** `TEAMUP_BINDING_KEY` 改为每个 harness 安装一份的接入密钥，只证明调用方是主人批准过的 harness 安装，不再代表会话。静态会话绑定适用于专用会话。Claude Code 报告的会话 ID 须与静态绑定的 `session_key` 一致。
 2. **接入。** Claude Code 下，`teamup-mcp` 将会话 ID 随每个工具请求交给 Client。环境同时提供消息 socket 和 token 时，MCP 发 `attach` 并保持这条 IPC 连接。Codex 下，`teamup-mcp` 在每次工具调用时把 `_meta.threadId` 随请求带给 Client。
-3. **批准新会话。** 未见过的会话首次接入时，Client 记为待批准，并按配置发桌面提醒。主人用 `teamup-client sessions approve` 批准后，Client 以账号凭证登记该会话的成员。之后同一 `(harness, session_id)` 直接恢复原成员。是否自动批准某个 harness 的全部新会话，由主人在配置中明确选择。
+3. **批准新会话。** 未见过的会话首次接入时，Client 记为待批准，并按配置发桌面提醒。主人用 `teamup-client sessions approve` 批准后，下一次登记请求由 Client 以账号凭证登记该会话的成员。之后同一 `(harness, session_id)` 直接恢复原成员。是否自动批准某个 harness 的全部新会话，由主人在配置中明确选择。
 4. **租约。** Claude Code 的条目在 `attach` 连接关闭时失效，会话退出即无残留地址。Codex thread 可被恢复，条目保留到主人移除，可投递性由 Driver 在投递时确认。
 5. **校验。** Client 只接受当前系统用户拥有的 socket。消息 token 不写盘，不发往 Server。
 
@@ -106,3 +106,9 @@ macOS 26.6.2，Claude Desktop `6.28899.6`，测试会话为桌面版本机 Code 
   3. 结束后删去临时 MCP 配置并停止测试进程。
 
 经 TeamUp 唤醒忙碌或未加载的 thread、重复投递仍只有自动化测试或直接 CLI 实测覆盖。
+
+## Codex lifecycle registration
+
+The team can configure local Codex command hooks to pass the thread UUID to the Client before a TeamUp tool call. `SessionStart` and `UserPromptSubmit` use the same installation as MCP and share its approval policy. The latter retries registration after an unavailable Client. See [Client setup and migration](../../client/README.md#automatic-codex-registration) and the [registration contract](mcp-client-v1.md#codex-lifecycle-registration).
+
+The CLI bundled with ChatGPT Desktop `26.1120.41243` (`0.171.0-alpha.13.2`) emitted both events in an isolated Codex home. Both reported the same `session_id` UUID. `tests/integration/test_codex_registration.py` exercises lifecycle registration against real Client, Server, and MCP processes, including concurrent events, recovery after Client downtime and restart, owner approval and rejection, and reuse of a dedicated static identity and its room membership.

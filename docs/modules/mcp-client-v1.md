@@ -19,7 +19,7 @@ Agent self-retirement, owner-managed departure, and retired history are specifie
 - `server_url`，TeamUp HTTP 回环或 HTTPS 基础地址，不含尾路径。
 - `socket_path`，用户私有目录中的绝对 Unix socket 路径。Client 在这个目录私有地保存自身通知状态。
 - `enrollment_key`，管理员分发给本机开发者的登记密钥。
-- `bindings`，本机批准的会话列表。每项包含 `binding_key`、`member_token`、`harness_instance_id`、`session_key`。每项的秘密与稳定标识对在配置中唯一。
+- `bindings`，本机批准的会话列表。每项包含 `binding_key`、`member_token`、`harness_instance_id`、`session_key`。每项的秘密与稳定标识对在配置中唯一。以 Codex thread UUID 为 `session_key` 的已有绑定可选 `codex_install`，值为接管该会话的安装的 `harness_instance_id`。
 - 可选 `ca_file`，自建 CA 的证书路径，用于 HTTPS 校验。
 - 可选 `installs`，按会话分配成员的 harness 安装列表。每项包含 `binding_key`（43 字符秘密）、`harness_instance_id`，以及可选的布尔值 `auto_approve`（默认 `false`）。见下文“会话接入”。
 - 可选 `notify_command`，房间 @、会话审批和任务停滞共用的桌面提醒命令。值为 argv 字符串数组。Client 在末尾追加标题、副标题和正文三个参数后直接执行，不经 shell。macOS 需要显式配置命令才启用桌面提醒。Linux 省略时在有 `notify-send` 的环境中使用它。空数组关闭桌面提醒。
@@ -110,6 +110,14 @@ MCP 插件在其他工具成功后调用 `mention_status`，但查询通知或�
 - **升级。** Client 与 MCP 一起升级。用共享静态 Claude 绑定的安装改用新的安装秘密，并为安装指定新的 `harness_instance_id`。旧成员及其历史继续归原身份。各会话在新安装下登记并加入所需房间。同一会话重连沿用原 `member_id`。若 Claude Code 在 `/clear` 后复用 MCP 进程，在新会话使用 TeamUp 前通过 `/mcp` 重新连接，让 MCP 进程取得当前会话 ID。
 - **批准。** 安装下未见过的会话首次调用 `attach` 以外的方法时，Client 为它生成成员 token 并记为待批准，返回 `session_pending`。启用桌面提醒时，同时提醒主人。`auto_approve` 为真时直接批准。批准后的会话与静态绑定一样登记和使用，同一 `(harness_instance_id, session.id)` 始终对应同一成员。
 - **接入地址。** `attach` 仅限 `session.kind` 为 `claude-code`：`address` 为该会话的 Claude Code 消息 socket 绝对路径，`token` 为它的 `CLAUDE_CODE_MESSAGING_TOKEN`。Client 要求 socket 归当前系统用户所有，返回结果后保持连接，连接关闭即撤销该地址。同一会话后来的 `attach` 取代先前的。token 只存于内存，不写盘，不发往 Server。`session.kind` 为 `codex` 的调用让 Client 记下 `session.id` 作为 thread 地址。Codex 没有长连接，该地址保留到同一会话后来的调用取代它或 Client 重启，可否投递由 Codex Driver 在提交时确认。
+
+### Codex lifecycle registration
+
+The Client CLI provides `teamup-client codex-hook --config PATH --install HARNESS_INSTANCE_ID` for owner-configured local Codex `SessionStart` and `UserPromptSubmit` command hooks. The hook reads `hook_event_name` and the UUID `session_id` from Codex's JSON input. It uses the selected installation's secret to call the existing local `register` operation with the Codex session reference and a neutral profile. The name is `Codex` followed by the final eight characters of the UUID. The hook sends no prompt, chat title, working directory or transcript path. Codex can run both hooks in the background. An unavailable Client or Server, an invalid payload, or a declined session leaves the Codex turn free to proceed. Later activity retries registration.
+
+The Client applies the installation's approval policy before enrollment. A pending session becomes eligible on the first hook or registration call after approval. With `auto_approve: true`, the first successful hook enrolls the member. Repeats recover the stored member and profile. The hook grants neither room membership nor wake permission. A subsequent `teamup_register` returns the saved profile, which the account owner can rename through the existing member command. The Client and MCP use the same installation and thread ID. Server HTTP and the MCP tool catalog are unchanged.
+
+For migration, a static binding may opt into one configured installation via `codex_install`. Both callers then resolve an exact Codex UUID reference under that installation to the static binding, preserving its original Server identity and local wake settings. Configure the mapping before first using the new installation with that thread. An existing dynamic session or retirement for that installation and thread takes precedence over a later static mapping. A pair of installation and thread UUID can point to at most one static binding. A non-Codex reference, a different installation, or a different thread does not use the mapping. Unmarked static bindings keep their established behavior.
 
 ## 唤醒
 

@@ -15,6 +15,33 @@ Give each agent session its own binding and a specific searchable role, such as 
 
 For static setups, run `teamup-client init-binding` once per session. Add each entry to `bindings` with its own `session_key`, binding key and member token. Give each launcher only its own `TEAMUP_BINDING_KEY` and the shared `TEAMUP_SOCKET`. Keep those entries across restarts so each session recovers the same member ID. Call `teamup_register` once per binding with its role. [Client binding configuration](../docs/modules/mcp-client-v1.md#启动与绑定)
 
+### Automatic Codex registration
+
+1. Run `teamup-client init-install codex-sessions` and add the result to the private Client configuration under `installs`. Set `auto_approve` to `true` if chats using this hook may appear in the team directory automatically. Otherwise, approve pending sessions with the existing `teamup-client sessions` commands. Restart the Client after editing its configuration.
+2. Set the Codex TeamUp MCP launcher's `TEAMUP_BINDING_KEY` to the same installation secret. Keep `TEAMUP_SOCKET` pointed at this Client. For an existing dedicated static Codex binding whose `session_key` is the thread UUID, add `"codex_install": "codex-sessions"` to that binding before enabling the new installation. Keep its original credentials. A shared static pilot identity with a non-UUID key stays separate.
+3. Add the following command hooks to the local Codex configuration as either global or trusted project configuration. Use absolute paths and keep any existing hook groups. If the same configuration layer already uses `hooks.json`, add the groups under its `hooks` object instead of defining a second hook source. Both hooks can use the same command.
+
+```toml
+[[hooks.SessionStart]]
+matcher = "^(startup|resume|clear|fork)$"
+
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = "'/absolute/path/teamup-client' codex-hook --config '/absolute/path/client.json' --install codex-sessions"
+async = true
+timeout = 10
+
+[[hooks.UserPromptSubmit]]
+
+[[hooks.UserPromptSubmit.hooks]]
+type = "command"
+command = "'/absolute/path/teamup-client' codex-hook --config '/absolute/path/client.json' --install codex-sessions"
+async = true
+timeout = 10
+```
+
+Review and trust the TeamUp hooks in Codex Desktop under **Settings → Hooks**, or use `/hooks` in the CLI. With automatic approval, the first prompt or resume activity makes the chat appear in **My sessions** and the team directory after refresh. If the Client was down when the hook ran, the next prompt retries. The hook gives new members a neutral `Codex` name with a short ID. The owner can rename it with `teamup-client members`. Room joins and wake permission are separate owner or session actions. The hook requires a local Codex runtime with lifecycle command hooks, the current TeamUp Client, and a Server that accepts [structured member registration](../docs/modules/member-profiles.md#registration-and-reads). [Codex hooks](https://learn.chatgpt.com/docs/hooks) · [Registration contract](../docs/modules/mcp-client-v1.md#codex-lifecycle-registration)
+
 An account owner can correct a role in place. A member can leave a single room with `teamup_leave_room`, then rejoin and read and acknowledge the board if needed.
 
 ```sh
