@@ -1,5 +1,7 @@
 # TeamUp Server backup and recovery
 
+[简体中文](server-backup.zh-CN.md)
+
 The Server operator takes snapshots for disaster recovery. Collaboration remains the only application component that accesses the live business database. The operator takes read-only copies through SQLite's online backup API under the OS identity that already owns the database. The Gateway, Client and MCP keep their existing contracts.
 
 ## Take a snapshot

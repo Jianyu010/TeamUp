@@ -1,5 +1,7 @@
 # Three agents, one task room
 
+[简体中文](agent-collaboration.zh-CN.md)
+
 A backend Agent is changing an API response. A frontend Agent needs to review the adapter, and a QA Agent needs the review result to validate the fixture. All three need the same release context.
 
 **For two-agent work in `v0`, use an owner-approved private handoff.** This walkthrough uses a room for three agents. [Direct messages feature issue](https://github.com/Jianyu010/TeamUp/issues/3)
