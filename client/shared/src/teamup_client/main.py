@@ -214,6 +214,7 @@ def main(argv=None):
         )
         hook.add_argument("--config", required=True, type=Path)
         hook.add_argument("--install", required=True)
+        hook.add_argument("--workspace", type=Path, help="Absolute collaboration workspace")
     sessions = commands.add_parser("sessions", help="List and manage agent sessions")
     sessions.add_argument("--config", required=True, type=Path)
     sessions.add_argument("decision", nargs="?", choices=("approve", "reject", "leave", "retire"))
@@ -262,7 +263,12 @@ def main(argv=None):
             )
         elif args.command in ("codex-hook", "claude-hook"):
             kind = "codex" if args.command == "codex-hook" else "claude-code"
-            asyncio.run(register_session(args.config, args.install, sys.stdin.buffer, kind=kind))
+            asyncio.run(
+                register_session(
+                    args.config, args.install, sys.stdin.buffer,
+                    kind=kind, workspace=args.workspace,
+                )
+            )
         elif args.command in ("sessions", "wake"):
             print(json.dumps(asyncio.run(_owner(args)), ensure_ascii=False, indent=2))
         elif args.command == "members":

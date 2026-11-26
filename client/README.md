@@ -19,7 +19,7 @@ For static setups, run `teamup-client init-binding` once per session. Add each e
 
 1. Run `teamup-client init-install codex-sessions` and add the result to the private Client configuration under `installs`. Set `auto_approve` to `true` if chats using this hook may appear in the team directory automatically. Otherwise, approve pending sessions with the existing `teamup-client sessions` commands. Restart the Client after editing its configuration.
 2. Set the Codex TeamUp MCP launcher's `TEAMUP_BINDING_KEY` to the same installation secret. Keep `TEAMUP_SOCKET` pointed at this Client. For an existing dedicated static Codex binding whose `session_key` is the thread UUID, add `"codex_install": "codex-sessions"` to that binding before enabling the new installation. Keep its original credentials. A shared static pilot identity with a non-UUID key stays separate.
-3. Add the following command hooks to the local Codex configuration as either global or trusted project configuration. Use absolute paths and keep any existing hook groups. If the same configuration layer already uses `hooks.json`, add the groups under its `hooks` object instead of defining a second hook source. Both hooks can use the same command.
+3. Add the command hooks to the trusted collaboration project's `.codex/config.toml`. Set `--workspace` to that project's absolute directory. The scope includes its subdirectories. If the project already uses `.codex/hooks.json`, add the groups under its `hooks` object. During upgrades, remove the old machine-wide TeamUp hooks. Commands saved without `--workspace` now exit quietly.
 
 ```toml
 [[hooks.SessionStart]]
@@ -27,7 +27,7 @@ matcher = "^(startup|resume|clear|fork)$"
 
 [[hooks.SessionStart.hooks]]
 type = "command"
-command = "'/absolute/path/teamup-client' codex-hook --config '/absolute/path/client.json' --install codex-sessions"
+command = "'/absolute/path/teamup-client' codex-hook --config '/absolute/path/client.json' --install codex-sessions --workspace '/absolute/path/collaboration-project'"
 async = true
 timeout = 10
 
@@ -35,7 +35,7 @@ timeout = 10
 
 [[hooks.UserPromptSubmit.hooks]]
 type = "command"
-command = "'/absolute/path/teamup-client' codex-hook --config '/absolute/path/client.json' --install codex-sessions"
+command = "'/absolute/path/teamup-client' codex-hook --config '/absolute/path/client.json' --install codex-sessions --workspace '/absolute/path/collaboration-project'"
 async = true
 timeout = 10
 ```
@@ -46,7 +46,7 @@ Review and trust the TeamUp hooks in Codex Desktop under **Settings → Hooks**,
 
 Use the same per-session `installs` entry and secret for the Claude Code MCP launcher and the Client hook. Set `auto_approve` on the install if new sessions in the configured scope may appear in the team directory automatically. Restart the Client after changing its profile. Existing pending sessions use the usual owner approval command.
 
-Merge these groups into `hooks` in Claude Code user settings (`~/.claude/settings.json`) for all local projects, or in a project's local `.claude/settings.local.json` for one project. Set absolute paths to the installed executable and private Client profile. Use your existing `harness_instance_id` in both commands. Configure the TeamUp MCP launcher in the corresponding Claude Code scope so the registered sessions can collaborate.
+Merge these groups into `hooks` in the collaboration project's `.claude/settings.local.json`. Set absolute paths to the executable, private Client profile, and opted-in workspace. Use your existing `harness_instance_id` in both commands. Configure the TeamUp MCP launcher in the corresponding Claude Code scope so the registered sessions can collaborate. During upgrades, remove the old machine-wide TeamUp hooks.
 
 ```json
 {
@@ -55,14 +55,14 @@ Merge these groups into `hooks` in Claude Code user settings (`~/.claude/setting
       "matcher": "^(startup|resume|clear|fork)$",
       "hooks": [{
         "type": "command",
-        "command": "'/absolute/path/teamup-client' claude-hook --config '/absolute/path/client.json' --install claude-code-sessions",
+        "command": "'/absolute/path/teamup-client' claude-hook --config '/absolute/path/client.json' --install claude-code-sessions --workspace '/absolute/path/collaboration-project'",
         "timeout": 3
       }]
     }],
     "UserPromptSubmit": [{
       "hooks": [{
         "type": "command",
-        "command": "'/absolute/path/teamup-client' claude-hook --config '/absolute/path/client.json' --install claude-code-sessions",
+        "command": "'/absolute/path/teamup-client' claude-hook --config '/absolute/path/client.json' --install claude-code-sessions --workspace '/absolute/path/collaboration-project'",
         "async": true
       }]
     }]
