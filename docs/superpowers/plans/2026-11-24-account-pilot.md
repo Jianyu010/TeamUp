@@ -1,8 +1,8 @@
-# TeamUp 账号登录与试用机实施计划
+# TeamUp account sign-in and pilot implementation plan
 
-[账号登录契约](../../modules/account-login-v1.md) 覆盖管理命令、端口、权限和部署。
+The [account sign-in contract](../../modules/account-login-v1.md) covers administrative commands, interfaces, permissions, and deployment.
 
-1. 在 `tests/server/src/teamup_server/` 写失败用例覆盖开户、不同身份、登录和令牌隔离、停用后读写拒绝、原数据库升级。通过 `server/src/teamup_server/` 的 Collaboration 公开入口持有账号状态，补齐 Gateway API 和本机管理命令。
-2. 在 `tests/client/shared/src/teamup_client/` 写失败用例覆盖登录保存、配置权限、已有身份恢复和返回错误。通过 `client/shared/src/teamup_client/` 接入已有 HTTP 客户端和 IPC。用 `uv run --no-sync pytest -q` 回归旧路径。
-3. 新增端到端账户验收，使用三个真实入口 `teamup-server`、`teamup-client`、`teamup-mcp` 及两个开发者绑定。先在本机执行，再经试用机 SSH 隧道复验。
-4. 将实际提交构建为服务器 wheel，在 Linux 试用机安装为回环服务。备好账号管理、SSH 隧道及 Client 安装说明。将轮换密码和停止服务留在授权的管理员入口。
+1. Add failing tests under `tests/server/src/teamup_server/` for account provisioning, distinct identities, sign-in and token isolation, rejection of reads and writes after deactivation, and migration from the existing database. Have Collaboration own account state through its public interface in `server/src/teamup_server/`. Add the Gateway API and local administration commands.
+2. Add failing tests under `tests/client/shared/src/teamup_client/` for saving sign-in credentials, configuration file permissions, restoring existing identities, and returning errors. Integrate with the existing HTTP client and IPC under `client/shared/src/teamup_client/`. Run `uv run --no-sync pytest -q` to check for regressions in existing flows.
+3. Add an end-to-end account acceptance test using the actual `teamup-server`, `teamup-client`, and `teamup-mcp` entry points and two developer bindings. Run it locally, then repeat it through the pilot host's SSH tunnel.
+4. Build a Server wheel from the actual commit and install it on the Linux pilot host as a loopback service. Prepare instructions for account administration, SSH tunneling, and Client installation. Keep password rotation and service shutdown behind authorized administrative entry points.

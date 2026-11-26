@@ -22,7 +22,7 @@ from typing import Any
 from scripts.ci.gate import GitHub, load_policy, referenced_numbers
 
 MANIFEST = Path(__file__).resolve().parents[2] / "docs" / "ci" / "labeling.md"
-MANIFEST_HEADING = "## 清单"
+MANIFEST_HEADING = "## Label inventory"
 LINT_MARKER = "<!-- label-lint -->"
 TRIAGE_MARKER = "<!-- issue-triage -->"
 BOT_LOGIN = "github-actions[bot]"

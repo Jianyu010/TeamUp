@@ -1,55 +1,55 @@
-# TeamUp 账号登录 v1
+# TeamUp account login v1
 
 Agent self-retirement, owner-managed departure, and retired history are specified in [Session retirement and room departure](member-lifecycle.md).
 
-首版面向同一团队的可信试用机。开发者各有一个 TeamUp 账号，可绑定多个 Agent。应用账号与 SSH 系统账号独立。在共享 SSH 账号能取得 root 的测试环境里，所有服务器使用者都必须受信。账号、口令摘要、登录会话及成员停用的写入归 Collaboration。
+The first release targets a pilot on a shared host within a trusted team. Each developer has a TeamUp account and can link several agents to it. TeamUp accounts are separate from SSH system accounts. In a test environment where a shared SSH account can obtain root access, everyone who uses the server must be trusted. Collaboration owns writes to accounts, password hashes, and login sessions, as well as member deactivation.
 
-## 账号和管理
+## Accounts and administration
 
-- 用户名为 3–64 个小写 ASCII 字符，以字母开头，可含数字、下划线和连字符。账号有不可变的 UUID `owner_id`。
-- 管理员在服务器上以服务账号调用 `teamup-server accounts --db PATH create USERNAME` 或 `reset-password USERNAME`，口令从终端无回显输入两遍。可用 `list` 查看状态，用 `disable USERNAME` 停用。管理命令通过 Collaboration 的公开入口执行，并使用同一个业务数据库。Server 的网络入口不提供开户或停用接口。
-- 口令须有 12–128 个字符，保留原文，以 Argon2id 摘要存储。重置口令使该开发者的所有人类登录会话失效，已经授予 Agent 的凭证仍有效。永久停用账号使人类登录和所属 Agent 的凭证同时失效，保留历史里的成员 ID。停用操作可重复执行，账号不复用。
+- Usernames are 3–64 lowercase ASCII characters. They start with a letter and may contain digits, underscores, and hyphens. Each account has an immutable UUID as its `owner_id`.
+- On the server, administrators run `teamup-server accounts --db PATH create USERNAME` or `reset-password USERNAME` as the service account. Both commands prompt twice for the password without echoing it. Use `list` to check account status and `disable USERNAME` to disable an account. The commands use Collaboration's public entry points and the same application database. Account creation and deactivation are available only through the CLI.
+- Passwords must be 12–128 characters. They are accepted as entered and stored as Argon2id hashes. Resetting a password invalidates all human login sessions for that developer. Credentials already granted to agents remain valid. Permanently disabling an account invalidates both human logins and credentials for its agents. Member IDs remain in historical records. Account deactivation is idempotent. Disabled accounts are never reused.
 
-## Client–Server 增量
+## Client–Server additions
 
-| 方法与路径 | 输入 | 结果 |
+| Method and path | Input | Result |
 | --- | --- | --- |
-| `POST /v1/auth/login` | `{"username":"alice","password":"…","purpose":"console"}`。`purpose` 可选：省略（或为 `null`）保持既有行为，即登记用途会话；唯一允许的非空值是 `"console"`，其他取值返回 422 `invalid_request` | HTTP 200，`{"access_token":"…","expires_at":1780000000}`。到期为 Unix 秒，寿命 8 小时。新 token 按随机 32 字节生成，服务端持久化摘要。 |
-| `POST /v1/members` | 按现有契约提交绑定。Bearer 可使用有效的人类登录 token（登记用途会话） | 归属由有效登录会话的 `owner_id` 决定。其余请求、响应和幂等规则按 [原契约](client-server-v1.md)。 |
+| `POST /v1/auth/login` | `{"username":"alice","password":"…","purpose":"console"}`. The optional `purpose` defaults to enrollment when omitted or `null`, preserving existing behavior. The only accepted non-null value is `"console"`. Other values return 422 `invalid_request`. | HTTP 200, `{"access_token":"…","expires_at":1780000000}`. The expiration is in Unix seconds. Tokens last eight hours. The server generates each token from 32 random bytes and persists its digest. |
+| `POST /v1/members` | Submit the binding defined in the existing contract. A valid enrollment-purpose human login token can authorize the request as the Bearer credential. | The `owner_id` of the valid login session determines ownership. The [original contract](client-server-v1.md) defines the rest of the request, response, and idempotency rules. |
 
-登记用途的人类登录 token 可登记 Agent，也可更名或退役同一账号拥有的成员。成员 token 仅能调用成员 API。两类 token 和旧登记密钥不得相互兼用。已签发的人类 token 摘要在到期或撤销后保留类型记录。旧 `TEAMUP_ENROLLMENT_KEYS` 在已显式配置的 v0 实例上继续可用于登记，省略变量表示不发旧登记密钥。已有 SQLite 数据库自动升级，原 v0 成员身份和历史可读。本次试用使用新数据库和账号登录。
+A human login token issued for enrollment can register agents, rename members owned by the same account, or retire them. A member token authorizes member APIs only. Human login tokens, member tokens, and legacy enrollment keys each have their own scope. The server keeps the type record for issued human token digests after expiration or revocation. Legacy `TEAMUP_ENROLLMENT_KEYS` continue to authorize enrollment on v0 instances that explicitly configure them. Omitting the variable leaves legacy enrollment keys unavailable. Existing SQLite databases upgrade automatically, and v0 member identities and history remain readable. This pilot uses a new database and account-based login.
 
-### 成员档案管理（#47）
+### Member profile management (#47)
 
-| 方法与路径 | 输入 | 结果 |
+| Method and path | Input | Result |
 | --- | --- | --- |
-| `PATCH /v1/members/{member_id}` | `{"role_description":"…"}`，按登记角色规则校验 | HTTP 200，Member。更新角色并保留成员 ID、凭证和房间资格。重复设置同一角色返回同一档案。 |
-| `POST /v1/members/{member_id}/retire` | 无正文 | HTTP 200，`{"member_id":"…","retired":true}`。仅首次提交修改成员状态，重复请求返回同一结果。 |
+| `PATCH /v1/members/{member_id}` | `{"role_description":"…"}`, validated against the enrollment rules for roles. | HTTP 200, Member. Updates the role and preserves the member ID, credentials, and room eligibility. Submitting the same role again returns the same profile. |
+| `POST /v1/members/{member_id}/retire` | No body. | HTTP 200, `{"member_id":"…","retired":true}`. Only the first committed request changes member state. Repeated requests return the same result. |
 
-两条路由都要求有效的登记用途账号 token。成员 token、控制台 token、旧登记密钥、失效或已撤销的账号 token 返回 401 `unauthorized`。目标不存在或属于另一个账号时返回 404 `not_found`。更名已退役的成员返回 409 `member_retired`。Collaboration 在写入事务中校验账号与归属。退役和离开房间后的授权、历史及重试见 [Client–Server v1](client-server-v1.md#成员退役与离开房间47)。
+Both routes require a valid enrollment-purpose account token. Member tokens, console tokens, legacy enrollment keys, and invalid or revoked account tokens receive 401 `unauthorized`. If the target is missing or belongs to another account, the response is 404 `not_found`. Renaming a retired member returns 409 `member_retired`. Collaboration checks the account and ownership within the write transaction. See [Client–Server v1](client-server-v1.md#member-retirement-and-room-departure-47) for authorization, history access, and retries after retirement and room departure.
 
-### 登录 purpose（控制台会话，随 #5 stage 2 落地）
+### Login purpose (console sessions, shipped in #5 stage 2)
 
-- `purpose` 随会话持久化：`"console"` 会话签发的 token 只能调用 [Control Console](control-console.md) 发布的 `/v1/console/*` 只读路由；省略 `purpose` 的会话（含存量库中的全部旧会话，迁移时一律记为登记用途）保持登记语义。两类会话共用同一账号生命周期、同一登录限流、同一口令摘要域与同一 32 字节凭证摘要域（新 token 的摘要不得与任何成员 token、旧登记密钥或另一会话摘要碰撞）。
-- 跨用途隔离双向成立：`console` 会话的 token 不能登记 Agent（`POST /v1/members` 返回 401 `unauthorized`），也不能调用普通成员 API（成员路由返回 401）；登记用途登录 token、成员 token 与旧登记密钥不能授权任何 `/v1/console/*` 路由（返回 401）。`console` 会话的 token 不能作为 `POST /v1/members` 的 `member_token`（返回 422 `invalid_request`）。
-- 停用账号与重置口令照旧撤销该账号全部当前会话，`console` 会话一并失效；重置口令不影响已授予 Agent 的成员凭证。登录响应、错误与日志一律不回显口令或 token。
-- 会话 purpose 由 Collaboration 持久化（schema v5：`account_sessions` 带 `purpose` 列，存量行默认登记用途；`operator_grants` 表见 Control Console 契约）。v2 存量库、#6 历史 v3 草稿库、#3 DM v4 库与已发布的 #5 鉴权预览 v3 库（`e495544`，在 schema 迁移内以表列判别）都在 Collaboration 内部迁移到 v5，无外部迁移工具；预览 v3 的既有 purpose、会话与授权原样保留。
+- The server stores the `purpose` on the session. Tokens issued for `"console"` can call only the read-only `/v1/console/*` routes published by the [Control Console](control-console.md). Sessions created without a purpose retain enrollment semantics. During migration, every existing session receives the enrollment purpose. Both purposes share the account lifecycle, login rate limits, password hash domain, and digest domain for 32-byte credentials. A new token digest must be distinct from every member token, legacy enrollment key, and other session digest.
+- The scopes are enforced in both directions. A `console` token receives 401 `unauthorized` from `POST /v1/members` and 401 from ordinary member routes. Enrollment-purpose login tokens, member tokens, and legacy enrollment keys receive 401 from all `/v1/console/*` routes. Passing a `console` token as `member_token` to `POST /v1/members` returns 422 `invalid_request`.
+- Account deactivation and password resets continue to revoke all current sessions for that account, including console sessions. Password resets preserve member credentials already granted to agents. Login responses, errors, and logs never echo passwords or tokens.
+- Collaboration persists the session purpose. In schema v5, `account_sessions` has a `purpose` column and existing rows default to enrollment. The Control Console contract covers the `operator_grants` table. Collaboration migrates existing v2 databases, the #6 history v3 draft, #3 DM v4, and the published #5 authentication preview v3 (`e495544`) to v5 internally. The migration identifies the preview by its tables and columns, and preserves its existing purposes, sessions, and grants. No external migration tool is required.
 
-错误沿用 v1 JSON 形状。错误口令、无效账号和已停用账号统一返回 401 `unauthorized`。非法 JSON 或字段为 422 `invalid_request`。登录对同一用户名每分钟最多 5 次失败，对实例的口令检查总数限每分钟 60 次，超过返回 429 `rate_limited`。限额按单实例进程记录。响应、错误和日志不回显输入口令。
+Errors use the v1 JSON shape. Incorrect passwords, invalid accounts, and disabled accounts all return 401 `unauthorized`. Invalid JSON or fields return 422 `invalid_request`. Login allows at most five failures per username per minute and 60 password checks per instance per minute. Exceeding either limit returns 429 `rate_limited`. Each instance process tracks its own limits. Responses, errors, and logs never echo the submitted password.
 
-停用和令牌检查以同一 SQLite 权限状态为准。停用提交后，成员的新业务请求均返回 401。已打开的 SSE 在下一次提示或保活前重新检查权限，保活间隔最多 15 秒。已经交付给 Client 的通知保留在本地按绑定查询。
+Account deactivation and token checks use the same SQLite authorization state. Once deactivation commits, all new application requests from the account's members return 401. Open SSE connections recheck authorization before sending the next notification or keepalive. The keepalive interval is at most 15 seconds. Notifications already delivered to the Client remain available locally to the associated binding.
 
-## Client 启动配置
+## Client startup configuration
 
-打开 TeamUp.app，或运行 `teamup-client serve --config PATH --console` 后在浏览器打开控制台，可直接输入 TeamUp 用户名和口令。Client 在启动本机 IPC 前通过现有登记用途的登录接口完成认证并保存凭证。桌面启动器复用同一配置的常驻 Client。详见[本机控制台登录契约](client-console.md#sign-in-to-the-client)。
+Open TeamUp.app or run `teamup-client serve --config PATH --console` and open the console in a browser to enter your TeamUp username and password. The Client authenticates through the existing enrollment-purpose login API and saves the credential before starting local IPC. The desktop launcher reuses a running Client with the same configuration. See the [local console sign-in contract](client-console.md#sign-in-to-the-client).
 
-`teamup-client login --config PATH --username USERNAME` 在本机终端无回显读取口令，使用现有 Server URL 和 TLS 信任配置登录，再将 `account_token` 原子写入权限为 0600 的本机配置，成功输出不含 token。初始配置可省略凭证字段。登录失败或等待期间配置文件被修改时，保留用户的文件并提示重试。登录前停止使用同一配置的 Client，成功后重新启动。Client 配置中的 `account_token` 和旧 `enrollment_key` 二选一。
+`teamup-client login --config PATH --username USERNAME` prompts for the password in the local terminal without echoing it. The command uses the existing Server URL and TLS trust settings, then atomically writes `account_token` to the local configuration with mode 0600. The success output omits the token. The initial configuration can omit credentials. If login fails or the configuration file changes while the command is waiting, the command preserves the file and prompts the user to retry. Stop any Client using the same configuration before logging in and restart it after login succeeds. The Client configuration accepts either `account_token` or the legacy `enrollment_key`.
 
-MCP 工具、IPC、Agent 绑定字段和成员凭证形状沿用 [MCP–Client v1](mcp-client-v1.md)。Client 在登记前用其成员 token 查询已有身份，成功即复用。未登记的绑定才用人类登录 token 登记，所以人类登录到期或重新登录不会使现有 Agent 中断。已停用账号的 Agent 仍由 Server 拒绝。
+The MCP tools, IPC, agent binding fields, and member credential format continue to follow [MCP–Client v1](mcp-client-v1.md). Before enrollment, the Client checks for an existing identity with its member token and reuses it if the lookup succeeds. It uses a human login token only for a binding that has yet to enroll, so human login expiration and subsequent sign-ins leave existing agents running. The Server continues to reject agents belonging to disabled accounts.
 
-## 试用部署
+## Pilot deployment
 
-远端 Server 监听回环，由团队现有 SSH 连接转发到各自的本机回环。SSH 对转发链路加密，TeamUp 账号和密码由开发者只在自己的 Client 中使用。服务器内用独立系统账号运行服务。试用阶段的验收包含两人登录、注册、聊天和 @，以及停用一人后原成员凭证不能继续拉取或发消息。
+The remote Server listens on loopback. Team members use their existing SSH connections to forward it to their respective local loopback interfaces. SSH encrypts the forwarded connection. Each developer enters their TeamUp account credentials only in their own Client. Run the Server under a dedicated system account. To validate the pilot, have two people log in, register, chat, and exchange @mentions. Disable one account and verify that its existing member credentials can no longer fetch or send messages.
 
 ### Member responsibility for a room (#75)
 

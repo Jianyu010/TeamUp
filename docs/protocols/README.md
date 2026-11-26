@@ -1,21 +1,21 @@
-# TeamUp 开发协议
+# TeamUp development protocol
 
-本页适用于所有开发者和 Agent。固定不变量见 [AGENTS.md](../../AGENTS.md)。
+This protocol applies to all developers and agents. See [AGENTS.md](../../AGENTS.md) for the repository's invariants.
 
-## 变更契约
+## Changing contracts
 
-1. 先读当前能力的规格、架构和模块契约，确认影响范围与 owner。目录位置只用于导航，公开入口由契约声明。
-2. 涉及公开字段、授权、错误、事件、重试或数据归属时，先在对应契约写出变更。记录调用场景、提供方、受影响的调用方和兼容性。
-3. 由提供方与受影响的调用方 owner 确认契约后修改实现。遇到所需边界尚未提供时，先补契约，避免在调用方另开通道。
+1. Read the current feature's specification, architecture, and module contracts to identify what will be affected and who owns it. Use the directory layout to find code and the contracts to identify public entry points.
+2. Document changes to public fields, authorization, errors, events, retries, or data ownership in the relevant contract first. Record the use case, provider, affected callers, and compatibility implications.
+3. Change the implementation after the provider and affected caller owners have approved the contract. If the required interface does not yet exist, define it in the contract before using it from the caller.
 
-## Client 平台与测试目录
+## Client platforms and test layout
 
-- 跨平台 Client 运行时和控制台静态资源放在 `client/shared/`。平台专属代码放在 `client/macos/`、`client/windows/` 或 `client/windows-wsl/`。面向 Windows 且依赖 WSL 的客户端放在 `client/windows-wsl/`，包括该应用的 Windows 启动器和安装器。
-- 测试和测试专用资源统一放在仓库根目录的 `tests/`。面向单个组件的测试按被测源码目录镜像，例如 `client/macos/desktop/` 对应 `tests/client/macos/desktop/`，`server/src/teamup_server/` 对应 `tests/server/src/teamup_server/`。
-- 跨组件的集成、系统、契约、安装与场景测试按套件放在 `tests/` 下。
+- Put the cross-platform Client runtime and static console assets in `client/shared/`. Put platform-specific code in `client/macos/`, `client/windows/`, or `client/windows-wsl/`. The WSL-dependent Windows client belongs in `client/windows-wsl/`, including its Windows launcher and installer.
+- Put tests and test-only assets in the repository's top-level `tests/` directory. For tests of a single component, mirror the source tree. For example, `client/macos/desktop/` maps to `tests/client/macos/desktop/`, and `server/src/teamup_server/` maps to `tests/server/src/teamup_server/`.
+- Organize cross-component integration, system, contract, installation, and scenario tests by suite under `tests/`.
 
-## 验证和状态
+## Verification and status
 
-- 记录提案、已确定的设计、已实现的行为和实测结果。实测附环境及可重复的检查步骤。
-- 变更依赖边界时，检查跨组件导入与公开入口。变更授权或状态语义时，验证正常路径、跨权限路径、重试和相关并发路径。
-- 受影响的规范、架构和模块文档随同修改。已接受的规则在相应的正式位置生效。
+- Record proposals, agreed designs, implemented behavior, and observed results. Include the environment and reproducible steps for observed results.
+- When dependency boundaries change, check cross-component imports and public entry points. When authorization or state semantics change, verify normal operation, attempts across permission boundaries, retries, and relevant concurrent operations.
+- Update the affected specifications, architecture documents, and module documents in the same change. Record accepted rules in the official document that governs them.
