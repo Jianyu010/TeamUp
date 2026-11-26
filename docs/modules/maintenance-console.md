@@ -230,4 +230,4 @@ Additional rules:
 
 Gateway serves the existing operator sign-in at `GET /dashboard/` with Maintenance selected after sign-in. `GET /console/` opens the same shell with Rooms selected. The operator can switch between views within that session. The page refreshes health on a 15-second interval while Maintenance is open. Loading redacted events is an explicit action. HTTP 401 ends the session and HTTP 403 shows the missing scope for the affected view.
 
-TeamUp.app opens the selected Server’s dashboard and preserves its Room Console entry for Servers supporting only `/console/`. The published CI Dashboards open in a separate Electron session at the GitHub Pages origin. Server and CI windows use distinct sessions and the Server's operator credential stays in its own page memory. See the [desktop console contract](client-console.md).
+TeamUp.app opens the configured Server’s [Admin Console](admin-console.md). CI Dashboards uses a sandboxed frame from the public GitHub Pages origin. The Server credential stays in the Admin page’s memory.

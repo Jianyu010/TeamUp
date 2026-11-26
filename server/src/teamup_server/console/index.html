@@ -3,14 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>TeamUp Control Console</title>
-<link rel="stylesheet" href="console.css">
+<title>TeamUp</title>
+<link rel="stylesheet" href="/console/console.css">
 </head>
 <body>
 <div class="page">
   <header class="app-header">
     <div class="app-heading">
-      <h1>Control Console</h1>
+      <h1 id="pageTitle">TeamUp</h1>
     </div>
     <div class="app-side">
       <p class="status" id="statusLine" role="status" aria-live="polite">Signed out</p>
@@ -22,10 +22,16 @@
   </header>
   <hr class="rule">
   <main>
+    <nav class="console-views" id="consoleViews" aria-label="Console views" hidden>
+      <button type="button" id="roomsViewButton" aria-controls="mainView">Rooms</button>
+      <button type="button" id="maintenanceViewButton" aria-controls="maintenanceView" hidden>Server Dashboard</button>
+      <button type="button" id="ciViewButton" aria-controls="ciView">CI Dashboards</button>
+      <button type="button" id="accountsViewButton" aria-controls="accountsView" hidden>Accounts</button>
+    </nav>
     <section class="login-view" id="loginView" aria-labelledby="loginTitle">
       <form class="login-card" id="loginForm" novalidate>
         <h2 id="loginTitle">Sign in</h2>
-        <p class="login-note">Use your TeamUp account. The sign-in token is held in this tab's memory only and cleared on sign-out.</p>
+        <p class="login-note">Use your TeamUp username and password.</p>
         <label class="field-label" for="username">Username</label>
         <input class="field" id="username" name="username" autocomplete="username" spellcheck="false" required>
         <label class="field-label" for="password">Password</label>
@@ -85,8 +91,98 @@
         </article>
       </section>
     </section>
+    <section class="maintenance-view" id="maintenanceView" aria-labelledby="maintenanceTitle" hidden>
+      <section aria-labelledby="maintenanceTitle">
+        <div class="maintenance-heading">
+          <h2 id="maintenanceTitle">System health</h2>
+          <p class="pane-status" id="maintenanceHealthStatus" role="status"></p>
+        </div>
+        <div class="health-sources" id="maintenanceSources"></div>
+        <details class="maintenance-panel maintenance-traffic" id="maintenanceTrafficPanel" hidden>
+          <summary>Request traffic and latency</summary>
+          <p class="footnote">Totals and mean handler times since the Gateway started.</p>
+          <div class="traffic-tables" id="maintenanceTraffic"></div>
+        </details>
+      </section>
+      <section class="maintenance-panel" aria-labelledby="maintenanceRoomTitle">
+        <h2 id="maintenanceRoomTitle">Room load</h2>
+        <label class="field-label" for="maintenanceRoomSelect">Team room</label>
+        <select class="field room-load-select" id="maintenanceRoomSelect" disabled></select>
+        <p class="pane-status" id="maintenanceRoomStatus" role="status"></p>
+        <div id="maintenanceRoomMetrics"></div>
+      </section>
+      <section class="maintenance-panel" aria-labelledby="maintenanceEventsTitle">
+        <h2 id="maintenanceEventsTitle">Redacted events</h2>
+        <form class="maintenance-events-form" id="maintenanceEventsForm" novalidate>
+          <div>
+            <label class="field-label" for="maintenanceSince">Since (UTC)</label>
+            <input class="field" id="maintenanceSince" type="datetime-local" step="1" required>
+          </div>
+          <div>
+            <label class="field-label" for="maintenanceUntil">Until (UTC)</label>
+            <input class="field" id="maintenanceUntil" type="datetime-local" step="1" required>
+          </div>
+          <div>
+            <label class="field-label" for="maintenanceComponent">Component</label>
+            <select class="field" id="maintenanceComponent">
+              <option value="">All components</option>
+              <option value="host">Host</option>
+              <option value="gateway">Gateway</option>
+              <option value="collaboration">Collaboration</option>
+            </select>
+          </div>
+          <button class="primary" type="submit" id="maintenanceEventsSubmit" aria-describedby="maintenanceEventsNote">Load events</button>
+        </form>
+        <p class="footnote" id="maintenanceEventsNote">Choose a window of up to one hour. Successful queries are audited.</p>
+        <p class="pane-status" id="maintenanceEventsStatus" role="status"></p>
+        <div class="table-wrap" id="maintenanceEventsTable" hidden>
+          <table class="maintenance-table" aria-label="Redacted events">
+            <thead>
+              <tr>
+                <th scope="col">Time (UTC)</th>
+                <th scope="col">Component</th>
+                <th scope="col">Severity</th>
+                <th scope="col">Event</th>
+                <th scope="col">Request</th>
+              </tr>
+            </thead>
+            <tbody id="maintenanceEventsBody"></tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+    <section id="ciView" aria-label="CI Dashboards" hidden></section>
+    <section class="accounts-view" id="accountsView" aria-label="Accounts" hidden>
+      <div class="account-directory">
+        <h2>Accounts</h2>
+        <div class="table-wrap">
+          <table class="roster">
+            <thead><tr><th scope="col">Username</th><th scope="col">Status</th><th scope="col">Actions</th></tr></thead>
+            <tbody id="accountsRows"></tbody>
+          </table>
+        </div>
+      </div>
+      <form class="account-form" id="accountForm">
+        <h2 id="accountFormTitle">Create account</h2>
+        <label class="field-label" for="accountUsername">Username</label>
+        <input class="field" id="accountUsername" aria-describedby="accountUsernameHint" autocomplete="off" spellcheck="false" pattern="[a-z][a-z0-9_\-]{2,63}" maxlength="64" required>
+        <p class="footnote" id="accountUsernameHint">Use 3–64 lowercase letters, digits, underscores, or hyphens. Start with a letter.</p>
+        <label class="field-label" for="accountPassword">Password</label>
+        <input class="field" id="accountPassword" aria-describedby="accountPasswordHint" type="password" autocomplete="new-password" minlength="12" maxlength="128" required>
+        <label class="field-label" for="accountConfirm">Confirm password</label>
+        <input class="field" id="accountConfirm" type="password" autocomplete="new-password" minlength="12" maxlength="128" required>
+        <p class="footnote" id="accountPasswordHint">Use 12–128 characters.</p>
+        <div class="account-actions">
+          <button class="primary" type="submit" id="accountSubmit">Create account</button>
+          <button type="button" id="accountCancel" hidden>Cancel</button>
+        </div>
+      </form>
+      <p class="pane-status" id="accountStatus" role="status"></p>
+    </section>
   </main>
 </div>
-<script src="console.js" defer></script>
+<script src="/console/maintenance.js" defer></script>
+<script src="/console/accounts.js" defer></script>
+<script src="/console/console.js" defer></script>
 </body>
 </html>

@@ -3,6 +3,8 @@
 const LOGIN_PATH = "/v1/auth/login";
 const CONSOLE_BASE = "/v1/console";
 const PAGE_LIMIT = 50;
+const CI_DASHBOARDS_URL = "https://jianyu010.github.io/TeamUp/";
+const ENTRY_VIEW = location.pathname === "/dashboard/" ? "maintenance" : "rooms";
 
 const KIND_LABELS = {
   message: "message",
@@ -29,6 +31,8 @@ const MONTHS = [
 const state = {
   epoch: 0,
   session: null,
+  expiryTimer: null,
+  view: null,
   rooms: [],
   roomsPane: { loading: false, denied: false, error: "" },
   room: null,
@@ -44,6 +48,15 @@ const els = {
   loginStatus: document.getElementById("loginStatus"),
   loginSubmit: document.getElementById("loginSubmit"),
   mainView: document.getElementById("mainView"),
+  maintenanceView: document.getElementById("maintenanceView"),
+  consoleViews: document.getElementById("consoleViews"),
+  roomsViewButton: document.getElementById("roomsViewButton"),
+  maintenanceViewButton: document.getElementById("maintenanceViewButton"),
+  accountsView: document.getElementById("accountsView"),
+  accountsViewButton: document.getElementById("accountsViewButton"),
+  ciView: document.getElementById("ciView"),
+  ciViewButton: document.getElementById("ciViewButton"),
+  pageTitle: document.getElementById("pageTitle"),
   statusLine: document.getElementById("statusLine"),
   sessionActions: document.getElementById("sessionActions"),
   refreshButton: document.getElementById("refreshButton"),
@@ -68,6 +81,19 @@ const els = {
   chatsList: document.getElementById("chatsList"),
   chatsMore: document.getElementById("chatsMore"),
 };
+
+const maintenance = createMaintenanceView({
+  api, element, failureText, sessionExpired, basePath: CONSOLE_BASE,
+});
+
+const accounts = createAccountsView({
+  api, element, sessionExpired, basePath: CONSOLE_BASE,
+  accessDenied: () => {
+    els.accountsViewButton.hidden = true;
+    selectView("rooms");
+    setTopStatus("Account access changed.");
+  },
+});
 
 function element(tag, className, text) {
   const node = document.createElement(tag);
@@ -99,20 +125,16 @@ function abortPending() {
 
 async function api(path, options) {
   const settings = options || {};
-  if (
-    state.session &&
-    state.session.expiresAt &&
-    Date.now() >= state.session.expiresAt * 1000
-  ) {
-    sessionExpired();
+  if (expireIfDue()) {
     return { status: 401, payload: null };
   }
-  const controller = new AbortController();
+  const session = state.session;
+  const controller = settings.controller || new AbortController();
   state.controllers.push(controller);
   try {
     const headers = {};
-    if (state.session) {
-      headers.Authorization = "Bearer " + state.session.token;
+    if (session) {
+      headers.Authorization = "Bearer " + session.token;
     }
     if (settings.body !== undefined) {
       headers["Content-Type"] = "application/json";
@@ -136,6 +158,9 @@ async function api(path, options) {
       payload = await response.json();
     } catch {
       payload = null;
+    }
+    if (!controller.signal.aborted && session === state.session && expireIfDue()) {
+      return { status: 401, payload: null };
     }
     return { status: response.status, payload };
   } finally {
@@ -197,6 +222,20 @@ function shortId(id) {
   return typeof id === "string" ? id.slice(0, 8) : String(id);
 }
 
+function expireIfDue() {
+  const deadline = state.session?.expiresAt;
+  if (!deadline || Date.now() < deadline * 1000) return false;
+  sessionExpired();
+  return true;
+}
+
+function scheduleSessionExpiry() {
+  const deadline = state.session?.expiresAt;
+  if (!deadline || expireIfDue()) return;
+  const delay = Math.min(Math.max(1, deadline * 1000 - Date.now()), 2147483647);
+  state.expiryTimer = setTimeout(scheduleSessionExpiry, delay);
+}
+
 function sessionExpired() {
   if (state.session === null) {
     return;
@@ -231,12 +270,25 @@ function clearRoomPanes() {
 }
 
 function showLogin(message) {
+  clearTimeout(state.expiryTimer);
+  state.expiryTimer = null;
   state.session = null;
+  state.view = null;
   state.room = null;
   state.rooms = [];
   state.roomsPane = { loading: false, denied: false, error: "" };
   clearRoomPanes();
+  maintenance.close();
+  accounts.close();
+  els.accountsView.hidden = true;
+  els.accountsViewButton.hidden = true;
+  els.maintenanceViewButton.hidden = true;
+  els.ciView.replaceChildren();
+  els.ciView.hidden = true;
+  els.pageTitle.textContent = "TeamUp";
   els.mainView.hidden = true;
+  els.maintenanceView.hidden = true;
+  els.consoleViews.hidden = true;
   els.loginView.hidden = false;
   els.sessionActions.hidden = true;
   els.loginSubmit.disabled = false;
@@ -246,9 +298,12 @@ function showLogin(message) {
   els.username.focus();
 }
 
-function showConsole() {
+function showConsole(capabilities) {
+  els.pageTitle.textContent = "Admin";
+  els.maintenanceViewButton.hidden = !capabilities.maintenance;
+  els.accountsViewButton.hidden = !capabilities.accounts;
   els.loginView.hidden = true;
-  els.mainView.hidden = false;
+  els.consoleViews.hidden = false;
   els.sessionActions.hidden = false;
   els.roomEmpty.hidden = false;
   els.roomDetail.hidden = true;
@@ -260,6 +315,47 @@ function showConsole() {
       state.session.username +
       (ends ? " · session ends " + ends : "")
   );
+  const initial = capabilities.maintenance ? ENTRY_VIEW : "rooms";
+  selectView(initial);
+  if (initial === "maintenance") {
+    els.maintenanceViewButton.focus();
+  } else {
+    els.roomsViewButton.focus();
+  }
+}
+
+function selectView(view) {
+  if (!state.session || state.view === view) return;
+  const epoch = newEpoch();
+  state.view = view;
+  state.room = null;
+  state.rooms = [];
+  clearRoomPanes();
+  const showMaintenance = view === "maintenance";
+  els.mainView.hidden = view !== "rooms";
+  els.maintenanceView.hidden = !showMaintenance;
+  els.accountsView.hidden = view !== "accounts";
+  els.ciView.hidden = view !== "ci";
+  els.roomsViewButton.setAttribute("aria-current", String(view === "rooms"));
+  els.maintenanceViewButton.setAttribute("aria-current", String(showMaintenance));
+  els.accountsViewButton.setAttribute("aria-current", String(view === "accounts"));
+  els.ciViewButton.setAttribute("aria-current", String(view === "ci"));
+  if (showMaintenance) maintenance.open();
+  else maintenance.close();
+  if (view === "accounts") void accounts.refresh();
+  else accounts.close();
+  if (view === "ci") loadCiDashboard();
+  else els.ciView.replaceChildren();
+  if (view === "rooms" || showMaintenance) loadRoomsList(epoch);
+}
+
+function loadCiDashboard() {
+  const frame = element("iframe", "ci-dashboard");
+  frame.title = "TeamUp CI Dashboards";
+  frame.setAttribute("sandbox", "allow-scripts allow-same-origin");
+  frame.setAttribute("referrerpolicy", "no-referrer");
+  frame.src = CI_DASHBOARDS_URL;
+  els.ciView.replaceChildren(frame);
 }
 
 async function submitLogin(event) {
@@ -277,10 +373,10 @@ async function submitLogin(event) {
     method: "POST",
     body: { username, password, "purpose": "console" },
   });
-  els.loginSubmit.disabled = false;
   if (epoch !== state.epoch) {
     return;
   }
+  els.loginSubmit.disabled = false;
   const payload = result.payload;
   const token =
     payload && typeof payload["access_token"] === "string"
@@ -293,8 +389,17 @@ async function submitLogin(event) {
       expiresAt: Number(payload["expires_at"]) || 0,
     };
     els.password.value = "";
-    showConsole();
-    loadRoomsList(newEpoch());
+    if (expireIfDue()) return;
+    els.loginSubmit.disabled = true;
+    const capabilities = await api(CONSOLE_BASE + "/capabilities");
+    if (epoch !== state.epoch) return;
+    if (capabilities.status !== 200 || !capabilities.payload) {
+      showLogin("Sign-in failed. Check your account and try again.");
+      return;
+    }
+    els.loginSubmit.disabled = false;
+    scheduleSessionExpiry();
+    showConsole(capabilities.payload);
     return;
   }
   if (result.status === 401) {
@@ -339,6 +444,10 @@ async function loadRoomsList(epoch) {
 }
 
 function renderRooms() {
+  if (state.view === "maintenance") {
+    maintenance.setRooms(state.rooms, state.roomsPane);
+    return;
+  }
   const list = els.roomList;
   list.replaceChildren();
   if (state.roomsPane.loading) {
@@ -429,6 +538,19 @@ function selectRoom(roomId) {
 
 function refreshAll() {
   if (state.session === null) {
+    return;
+  }
+  if (state.view === "accounts") {
+    void accounts.refresh();
+    return;
+  }
+  if (state.view === "ci") {
+    loadCiDashboard();
+    return;
+  }
+  if (state.view === "maintenance") {
+    maintenance.refresh();
+    if (!state.roomsPane.loading && state.session) loadRoomsList(state.epoch);
     return;
   }
   const epoch = newEpoch();
@@ -864,6 +986,13 @@ function errorRow(message, retryAction) {
 els.loginForm.addEventListener("submit", submitLogin);
 els.logoutButton.addEventListener("click", logout);
 els.refreshButton.addEventListener("click", refreshAll);
+els.roomsViewButton.addEventListener("click", () => selectView("rooms"));
+els.maintenanceViewButton.addEventListener("click", () => selectView("maintenance"));
+els.accountsViewButton.addEventListener("click", () => selectView("accounts"));
+els.ciViewButton.addEventListener("click", () => selectView("ci"));
+document.addEventListener("visibilitychange", () => {
+  if (!expireIfDue()) maintenance.visibilityChanged();
+});
 els.tabTimeline.addEventListener("click", () => setTab("timeline"));
 els.tabChats.addEventListener("click", () => setTab("chats"));
 els.tabBar.addEventListener("keydown", (event) => {

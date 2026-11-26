@@ -119,3 +119,7 @@ With the room board acknowledged, post a task through `teamup_create_task`. Open
 Resize a joined room from desktop to compact width with a long local session label. Open Tasks, Chats, and the Board, and confirm the room controls and task lanes stay clear of Members. Expand an ongoing or finished task joined by a member from another Client and confirm the participant and task history show the member's room role.
 
 With two approved local sessions, join a different task from each session. Include an unjoined task and a task joined by a remote member. Verify that all four appear in Ongoing and that Taken switches to the corresponding joined task when Acting as changes.
+
+## Open Admin
+
+The local Client listener exposes `GET /api/access` to its authenticated console. It asks the Server for the enrollment account's current console capability and returns `{"admin_url":"<configured Server origin>/console/"}` when allowed, or an empty object. This gives an operator an **Admin** link beside **Live**. TeamUp.app also exposes **View → Admin** and checks access again before it opens the configured URL in the default browser. The desktop-only `POST /api/open-admin` takes no input and opens only that destination. See the [Admin Console contract](admin-console.md).

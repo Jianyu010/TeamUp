@@ -11,4 +11,5 @@
 | [implementation](implementation/authentication/README.md) | 登录、Agent 登记、SSE 与停用的实现时序 |
 | [specs](specs/mvp.md) | MVP 的产品行为与验收条件 |
 | [ci](ci/README.md) | CI 分层、合入门禁、hp-laptop 运行器、nightly/weekly、版本发布、看板与[标签规范](ci/labeling.md) |
-| [tutorials](tutorials/agent-collaboration.md) | 三个 Agent 从建群到完成协作的操作教程 |
+| [Agent collaboration tutorial](tutorials/agent-collaboration.md) | 三个 Agent 从建群到完成协作的操作教程 |
+| [Admin Console tutorial](tutorials/admin-console.md) | Sign in, check rooms and dashboards, and manage accounts |

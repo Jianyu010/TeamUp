@@ -359,6 +359,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _operation(self, path, query):
         params = self._params(query)
+        if path == "/api/access" and not params:
+            return self._reader.access()
         if path == "/api/wake-settings" and not params:
             return self._reader.wake_settings()
         if path == "/api/versions":

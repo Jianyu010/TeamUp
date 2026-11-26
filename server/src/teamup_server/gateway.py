@@ -6,6 +6,7 @@ import pathlib
 import re
 from collections.abc import AsyncGenerator
 from contextlib import aclosing, asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from importlib.metadata import PackageNotFoundError, version
 from typing import Annotated, Literal
 from urllib.parse import unquote_to_bytes
@@ -27,6 +28,10 @@ from starlette.exceptions import HTTPException
 from starlette.types import Send
 
 from .collaboration import Collaboration, CollaborationError, ObserveInbox
+from .gateway_observations import ERROR_CODE_KEY, GatewayObservations, GatewayTraffic
+from .host_observations import HOST_METRIC_NAMES, HostObservations
+from .operational_events import OperationalEvents
+from .ops_metrics import ObservationSource, utc_timestamp
 from .presence import Presence
 
 _ERRORS = {
@@ -46,13 +51,17 @@ _ERRORS = {
 _UUID = re.compile(r"[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}")
 _KEEPALIVE_SECONDS = 15
 _LOGGER = logging.getLogger(__name__)
+_LOG_TIMESTAMP = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
+    r"(?:\.[0-9]{1,6})?(?:Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])"
+)
 
 _CONSOLE_STATIC_DIR = pathlib.Path(__file__).parent / "console"
 _CONSOLE_HEADERS = {
     "Content-Security-Policy": (
         "default-src 'none'; script-src 'self'; style-src 'self'; "
         "connect-src 'self'; base-uri 'none'; form-action 'none'; "
-        "frame-ancestors 'none'"
+        "frame-ancestors 'none'; frame-src https://jianyu010.github.io"
     ),
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "no-referrer",
@@ -94,10 +103,22 @@ _Before = Annotated[int, Query(ge=1)]
 _MEMBERSHIP_PATTERN = r"^[0-9a-f]{32}$"
 _MembershipID = Annotated[str, Query(pattern=_MEMBERSHIP_PATTERN)]
 _Limit = Annotated[int, Query(ge=1, le=100)]
+_LogLimit = Annotated[int, Query(ge=1, le=500)]
+_LogTime = Annotated[str, Query(min_length=20, max_length=32)]
+_LogComponent = Literal["host", "gateway", "collaboration"]
 
 
 def _no_store(response: Response) -> None:
     response.headers["Cache-Control"] = "no-store"
+
+
+def _log_time(value: str) -> datetime:
+    if _LOG_TIMESTAMP.fullmatch(value):
+        try:
+            return datetime.fromisoformat(value).astimezone(UTC)
+        except (ValueError, OverflowError):
+            pass
+    raise CollaborationError("invalid_request")
 
 
 _SearchText = Annotated[
@@ -119,6 +140,18 @@ class _Login(_Body):
     username: Annotated[str, StringConstraints(strict=True)]
     password: Annotated[str, StringConstraints(strict=True)]
     purpose: Literal["console"] | None = None
+
+
+class _NewPassword(_Body):
+    password: Annotated[
+        str, StringConstraints(strict=True, min_length=12, max_length=128)
+    ]
+
+
+class _NewAccount(_NewPassword):
+    username: Annotated[
+        str, StringConstraints(strict=True, min_length=3, max_length=64)
+    ]
 
 
 class _Enrollment(_Body):
@@ -196,9 +229,7 @@ class _TaskCreate(_Body):
     @field_validator("addressed_member_ids")
     @classmethod
     def distinct_members(cls, value: list[str] | None) -> list[str] | None:
-        if value is not None and (
-            len(value) > 100 or len(set(value)) != len(value)
-        ):
+        if value is not None and (len(value) > 100 or len(set(value)) != len(value)):
             raise ValueError("Address each member of this room at most once")
         return value
 
@@ -296,13 +327,19 @@ class Gateway:
         presence: Presence,
         *,
         task_tracer_period: float | None = None,
+        host: HostObservations | None = None,
+        event_log: OperationalEvents | None = None,
     ):
         self._stopping = False
         self._streams: set[asyncio.Event] = set()
         self._task_tracer_period = task_tracer_period
+        observations = GatewayObservations(event_log, frozenset(_ERRORS))
+        unavailable_host = ObservationSource("host", HOST_METRIC_NAMES)
 
         @asynccontextmanager
         async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
+            if event_log is not None:
+                event_log.server_started()
             if self._task_tracer_period is None:
                 yield
                 return
@@ -311,9 +348,7 @@ class Gateway:
             async def trace() -> None:
                 while not stopped.is_set():
                     try:
-                        await run_in_threadpool(
-                            collaboration.scan_task_reminders
-                        )
+                        await run_in_threadpool(collaboration.scan_task_reminders)
                     except Exception:
                         _LOGGER.exception("The task reminder scan failed")
                     try:
@@ -335,23 +370,28 @@ class Gateway:
             redirect_slashes=False,
             lifespan=lifespan,
         )
+        app.add_middleware(GatewayTraffic, observations=observations)
 
         @app.exception_handler(CollaborationError)
         async def collaboration_error(
-            _: Request, exc: CollaborationError
+            request: Request, exc: CollaborationError
         ) -> JSONResponse:
+            request.scope[ERROR_CODE_KEY] = exc.code
             return _error(exc.code)
 
         @app.exception_handler(RequestValidationError)
         async def validation_error(
-            _: Request, __: RequestValidationError
+            request: Request, _: RequestValidationError
         ) -> JSONResponse:
+            request.scope[ERROR_CODE_KEY] = "invalid_request"
             return _error("invalid_request")
 
         @app.exception_handler(HTTPException)
-        async def http_error(_: Request, exc: HTTPException) -> JSONResponse:
+        async def http_error(request: Request, exc: HTTPException) -> JSONResponse:
             if exc.status_code == 404:
+                request.scope[ERROR_CODE_KEY] = "not_found"
                 return _error("not_found")
+            request.scope[ERROR_CODE_KEY] = "invalid_request"
             return _error(
                 "invalid_request", status_code=405 if exc.status_code == 405 else None
             )
@@ -375,10 +415,106 @@ class Gateway:
                 body.username, body.password, body.purpose or "enrollment"
             )
 
+        @app.get("/v1/auth/capabilities", dependencies=[Depends(_reject_body)])
+        def account_capabilities(token: _Bearer, response: Response) -> dict:
+            _no_store(response)
+            return collaboration.account_capabilities(token)
+
+        @app.get("/v1/console/capabilities", dependencies=[Depends(_reject_body)])
+        def console_capabilities(token: _Bearer, response: Response) -> dict:
+            _no_store(response)
+            return collaboration.console_capabilities(token)
+
+        @app.get("/v1/console/accounts", dependencies=[Depends(_reject_body)])
+        def console_accounts(token: _Bearer, response: Response) -> dict:
+            _no_store(response)
+            return collaboration.console_accounts(token)
+
+        @app.post(
+            "/v1/console/accounts",
+            status_code=201,
+            dependencies=[Depends(_require_utf8)],
+        )
+        def create_account(
+            token: _Bearer, body: _NewAccount, response: Response
+        ) -> dict:
+            _no_store(response)
+            collaboration.create_account(
+                body.username, body.password, operator_token=token
+            )
+            return {"username": body.username}
+
+        @app.post(
+            "/v1/console/accounts/{username}/password",
+            dependencies=[Depends(_require_utf8)],
+        )
+        def reset_account_password(
+            token: _Bearer, username: str, body: _NewPassword, response: Response
+        ) -> dict:
+            _no_store(response)
+            collaboration.reset_account_password(
+                username, body.password, operator_token=token
+            )
+            return {"username": username}
+
+        @app.post(
+            "/v1/console/accounts/{username}/disable",
+            dependencies=[Depends(_reject_body)],
+        )
+        def disable_account(token: _Bearer, username: str, response: Response) -> dict:
+            _no_store(response)
+            collaboration.disable_account(username, operator_token=token)
+            return {"username": username}
+
         @app.get("/v1/console/rooms")
         def console_rooms(token: _Bearer, response: Response) -> dict:
             _no_store(response)
             return collaboration.list_console_rooms(token)
+
+        @app.get("/v1/console/maintenance/health")
+        def maintenance_health(token: _Bearer, response: Response) -> dict:
+            collaboration_snapshot = collaboration.console_maintenance_snapshot(token)
+            host_snapshot = host.read() if host else unavailable_host.read(lambda: None)
+            gateway_snapshot = observations.read()
+            _no_store(response)
+            return {
+                "generated_at": utc_timestamp(),
+                "sources": {
+                    "host": host_snapshot,
+                    "gateway": gateway_snapshot,
+                    "collaboration": collaboration_snapshot,
+                },
+            }
+
+        @app.get("/v1/console/maintenance/logs")
+        def maintenance_logs(
+            token: _Bearer,
+            since: _LogTime,
+            until: _LogTime,
+            response: Response,
+            component: _LogComponent | None = None,
+            limit: _LogLimit = 100,
+        ) -> dict:
+            collaboration.authorize_console_logs(token)
+            start, end = _log_time(since), _log_time(until)
+            if not timedelta(0) < end - start <= timedelta(hours=1):
+                raise CollaborationError("invalid_request")
+            result: dict = (
+                event_log.query(
+                    since=start, until=end, component=component, limit=limit
+                )
+                if event_log is not None
+                else {"state": "unavailable", "entries": [], "truncated": False}
+            )
+            collaboration.audit_console_logs(
+                token,
+                since=start.isoformat(),
+                until=end.isoformat(),
+                component=component,
+                result_count=len(result["entries"]),
+            )
+            _no_store(response)
+            return result
 
         @app.get("/v1/console/rooms/{room_id}")
         def console_room_detail(
@@ -386,6 +522,13 @@ class Gateway:
         ) -> dict:
             _no_store(response)
             return collaboration.console_room_detail(token, room_id)
+
+        @app.get("/v1/console/rooms/{room_id}/load")
+        def maintenance_room_load(
+            token: _Bearer, room_id: _Identifier, response: Response
+        ) -> dict:
+            _no_store(response)
+            return collaboration.console_room_load(token, room_id)
 
         @app.get("/v1/console/rooms/{room_id}/timeline")
         def console_timeline(
@@ -410,6 +553,7 @@ class Gateway:
             return collaboration.console_transcript(token, room_id, before, limit)
 
         @app.get("/console/")
+        @app.get("/dashboard/")
         def console_index() -> FileResponse:
             return _console_asset("index.html", "text/html; charset=utf-8")
 
@@ -420,6 +564,14 @@ class Gateway:
         @app.get("/console/console.js")
         def console_script() -> FileResponse:
             return _console_asset("console.js", "text/javascript; charset=utf-8")
+
+        @app.get("/console/accounts.js")
+        def accounts_script() -> FileResponse:
+            return _console_asset("accounts.js", "text/javascript; charset=utf-8")
+
+        @app.get("/console/maintenance.js")
+        def maintenance_script() -> FileResponse:
+            return _console_asset("maintenance.js", "text/javascript; charset=utf-8")
 
         @app.post("/v1/members", dependencies=[Depends(_require_utf8)])
         def enroll(token: _Bearer, body: _Enrollment) -> dict:
@@ -494,7 +646,9 @@ class Gateway:
         @app.get("/v1/rooms")
         def list_rooms(token: _Bearer, include_membership: bool = False) -> dict:
             return {
-                "rooms": collaboration.list_rooms(token, include_membership=include_membership)
+                "rooms": collaboration.list_rooms(
+                    token, include_membership=include_membership
+                )
             }
 
         @app.get("/v1/room-directory", dependencies=[Depends(_reject_body)])
@@ -508,7 +662,9 @@ class Gateway:
             return collaboration.room_directory(token, after, limit)
 
         @app.get("/v1/rooms/{room_id}", dependencies=[Depends(_reject_body)])
-        def room_detail(token: _Bearer, room_id: _Identifier, response: Response) -> dict:
+        def room_detail(
+            token: _Bearer, room_id: _Identifier, response: Response
+        ) -> dict:
             _no_store(response)
             return collaboration.room_detail(token, room_id)
 
@@ -616,8 +772,13 @@ class Gateway:
             delivery: bool = False,
         ) -> dict:
             return collaboration.history(
-                token, room_id, after, limit, before,
-                membership_id=membership_id, delivery=delivery,
+                token,
+                room_id,
+                after,
+                limit,
+                before,
+                membership_id=membership_id,
+                delivery=delivery,
             )
 
         @app.get(
@@ -632,9 +793,7 @@ class Gateway:
         ) -> dict:
             return collaboration.search(token, room_id, q, after, limit)
 
-        @app.post(
-            "/v1/rooms/{room_id}/tasks", dependencies=[Depends(_require_utf8)]
-        )
+        @app.post("/v1/rooms/{room_id}/tasks", dependencies=[Depends(_require_utf8)])
         def create_task(
             token: _Bearer, room_id: _Identifier, body: _TaskCreate
         ) -> dict:
@@ -705,9 +864,7 @@ class Gateway:
             after: _After = 0,
             limit: _Limit = 50,
         ) -> dict:
-            return collaboration.task_history(
-                token, room_id, task_id, after, limit
-            )
+            return collaboration.task_history(token, room_id, task_id, after, limit)
 
         @app.get(
             "/v1/task-reminders",
@@ -716,9 +873,7 @@ class Gateway:
         def task_reminders(
             token: _Bearer, after: _After = 0, limit: _Limit = 50
         ) -> dict:
-            return {
-                "reminders": collaboration.task_reminders(token, after, limit)
-            }
+            return {"reminders": collaboration.task_reminders(token, after, limit)}
 
         @app.post(
             "/v1/task-reminders/{reminder_id}/claim",

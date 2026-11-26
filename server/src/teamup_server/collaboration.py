@@ -18,10 +18,13 @@ from pathlib import Path
 from secrets import token_bytes
 from threading import BoundedSemaphore, Lock
 from time import monotonic, time
+from typing import NoReturn
 from uuid import UUID, uuid4
 
 from argon2 import PasswordHasher, Type
 from argon2.exceptions import VerifyMismatchError
+
+from .ops_metrics import ObservationSource, SourceSnapshot
 
 _LOGGER = logging.getLogger(__name__)
 _SQLITE_MAX_ID = (1 << 63) - 1
@@ -49,6 +52,25 @@ _LOGIN_WINDOW_SECONDS = 60
 _LOGIN_CHECKS_PER_WINDOW = 60
 _LOGIN_FAILURES_PER_USERNAME = 5
 _SESSION_PURPOSES = ("enrollment", "console")
+_MAINTENANCE_SCOPES = ("maintenance_read", "logs_read")
+_LOG_COMPONENTS = ("host", "gateway", "collaboration")
+_LOG_WINDOW_MICROS = 3_600_000_000
+_LOG_RESULT_LIMIT = 500
+_OBSERVATION_FIELDS = (
+    "db_size_bytes",
+    "schema_version",
+    "sqlite_busy_errors_total",
+    "transactions_total",
+    "transaction_duration_seconds_total",
+    "members_stored",
+    "team_rooms_stored",
+    "messages_stored",
+    "pending_inbox_events",
+    "oldest_pending_age_seconds",
+    "login_failures_total",
+    "rate_limited_total",
+    "authorization_denials_total",
+)
 _PASSWORD_HASHER = PasswordHasher(
     time_cost=2, memory_cost=19 * 1024, parallelism=1, type=Type.ID
 )
@@ -395,7 +417,6 @@ _TASK_SCHEMA = (
 )
 
 _READ_SCHEMA = (
-
     """
     CREATE TABLE room_activity (
         activity_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -426,6 +447,26 @@ _READ_SCHEMA = (
     )
     """,
     "CREATE INDEX transcript_access_audit_room ON transcript_access_audit (room_id)",
+)
+
+_MAINTENANCE_SCHEMA = (
+    """
+    CREATE TABLE IF NOT EXISTS operator_maintenance_grants (
+        owner_id TEXT NOT NULL REFERENCES accounts(owner_id),
+        scope TEXT NOT NULL CHECK (scope IN ('maintenance_read', 'logs_read')),
+        PRIMARY KEY (owner_id, scope)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS log_access_audit (
+        owner_id TEXT NOT NULL REFERENCES accounts(owner_id),
+        window_since TEXT NOT NULL,
+        window_until TEXT NOT NULL,
+        component TEXT CHECK (component IN ('host', 'gateway', 'collaboration')),
+        result_count INTEGER NOT NULL CHECK (result_count BETWEEN 0 AND 500),
+        at TEXT NOT NULL
+    )
+    """,
 )
 
 _ACTIVITY = "activity_id, room_id, kind, at, message_id, actor_member_id"
@@ -1324,6 +1365,18 @@ class Collaboration:
         self._login_checks_lock = Lock()
         self._password_checks = BoundedSemaphore(4)
         self._unknown_password_digest = _PASSWORD_HASHER.hash(token_bytes(32))
+        self._metrics_lock = Lock()
+        self._sqlite_busy_errors_total = 0
+        self._transactions_total = 0
+        self._transaction_duration_seconds_total = 0.0
+        self._login_failures_total = 0
+        self._rate_limited_total = 0
+        self._authorization_denials = dict.fromkeys(
+            ("missing_session", "wrong_purpose", "inactive_session", "missing_grant"), 0
+        )
+        self._maintenance_observations = ObservationSource(
+            "collaboration", _OBSERVATION_FIELDS, clock=monotonic, timestamp=self._now
+        )
         with suppress(FileExistsError):
             os.close(
                 os.open(self._db_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -1432,6 +1485,16 @@ class Collaboration:
                             f"ALTER TABLE {table} ADD COLUMN {column} TEXT"
                         )
                 connection.execute("PRAGMA user_version = 11")
+            # Keep the schema version so Servers at that version can reopen it.
+            for statement in _MAINTENANCE_SCHEMA:
+                connection.execute(statement)
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS account_admin_grants (
+                    owner_id TEXT PRIMARY KEY REFERENCES accounts (owner_id)
+                )
+                """
+            )
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self._db_path, isolation_level=None)
@@ -1445,9 +1508,29 @@ class Collaboration:
 
     @contextmanager
     def _transaction(self, *, write: bool = False) -> Iterator[sqlite3.Connection]:
-        with closing(self._connect()) as connection, connection:
-            connection.execute("BEGIN IMMEDIATE" if write else "BEGIN")
-            yield connection
+        started = monotonic()
+        with self._metrics_lock:
+            self._transactions_total += 1
+        try:
+            with closing(self._connect()) as connection, connection:
+                connection.execute("BEGIN IMMEDIATE" if write else "BEGIN")
+                yield connection
+        except sqlite3.Error as error:
+            self._record_sqlite_busy(error)
+            raise
+        finally:
+            duration = monotonic() - started
+            with self._metrics_lock:
+                self._transaction_duration_seconds_total += duration
+
+    def _record_sqlite_busy(self, error: sqlite3.Error) -> None:
+        # The low byte of an extended SQLite result code is its primary code.
+        if getattr(error, "sqlite_errorcode", 0) & 0xFF in (
+            sqlite3.SQLITE_BUSY,
+            sqlite3.SQLITE_LOCKED,
+        ):
+            with self._metrics_lock:
+                self._sqlite_busy_errors_total += 1
 
     def _now_datetime(self) -> datetime:
         value = self._clock()
@@ -1476,11 +1559,23 @@ class Collaboration:
             for task in tasks
         ]
 
-    def create_account(self, username: str, password: str) -> None:
-        _validate_username(username)
+    def _new_password_digest(self, password: str, operator_token: str | None) -> str:
         _validate_password(password, minimum=12)
-        digest = _PASSWORD_HASHER.hash(password)
+        if operator_token is not None:
+            # Reject unauthorized callers before starting expensive password hashing.
+            with self._transaction() as connection:
+                self._account_admin(connection, operator_token)
+        with self._password_checks:
+            return _PASSWORD_HASHER.hash(password)
+
+    def create_account(
+        self, username: str, password: str, *, operator_token: str | None = None
+    ) -> None:
+        _validate_username(username)
+        digest = self._new_password_digest(password, operator_token)
         with self._transaction(write=True) as connection:
+            if operator_token is not None:
+                self._account_admin(connection, operator_token)
             created = connection.execute(
                 """
                 INSERT INTO accounts (owner_id, username, password_digest) VALUES (?, ?, ?)
@@ -1493,19 +1588,34 @@ class Collaboration:
 
     def list_accounts(self) -> list[dict]:
         with self._transaction() as connection:
-            return [
-                dict(row)
-                for row in connection.execute(
-                    "SELECT username, owner_id, disabled FROM accounts ORDER BY username"
-                )
-            ]
+            return [dict(row) for row in self._accounts(connection)]
 
-    def reset_account_password(self, username: str, password: str) -> None:
+    @staticmethod
+    def _accounts(connection: sqlite3.Connection) -> Iterator[sqlite3.Row]:
+        return iter(
+            connection.execute(
+                "SELECT username, owner_id, disabled FROM accounts ORDER BY username"
+            )
+        )
+
+    def reset_account_password(
+        self, username: str, password: str, *, operator_token: str | None = None
+    ) -> None:
         _validate_username(username)
-        _validate_password(password, minimum=12)
-        digest = _PASSWORD_HASHER.hash(password)
+        digest = self._new_password_digest(password, operator_token)
         with self._transaction(write=True) as connection:
+            actor = (
+                self._account_admin(connection, operator_token)
+                if operator_token is not None
+                else None
+            )
             account = self._account(connection, username)
+            if (
+                actor is not None
+                and actor != account["owner_id"]
+                and self._is_operator(connection, account["owner_id"])
+            ):
+                raise CollaborationError("forbidden")
             if account["disabled"]:
                 raise CollaborationError("conflict")
             connection.execute(
@@ -1514,14 +1624,109 @@ class Collaboration:
             )
             self._revoke_account_sessions(connection, account["owner_id"])
 
-    def disable_account(self, username: str) -> None:
+    def disable_account(
+        self, username: str, *, operator_token: str | None = None
+    ) -> None:
         _validate_username(username)
         with self._transaction(write=True) as connection:
+            actor = (
+                self._account_admin(connection, operator_token)
+                if operator_token is not None
+                else None
+            )
             owner_id = self._account(connection, username)["owner_id"]
+            if actor is not None and self._is_operator(connection, owner_id):
+                raise CollaborationError("forbidden")
             connection.execute(
                 "UPDATE accounts SET disabled = 1 WHERE owner_id = ?", (owner_id,)
             )
             self._revoke_account_sessions(connection, owner_id)
+
+    def set_account_admin(self, username: str, *, granted: bool) -> None:
+        _validate_username(username)
+        with self._transaction(write=True) as connection:
+            owner_id = self._account(connection, username)["owner_id"]
+            if granted:
+                connection.execute(
+                    "INSERT INTO account_admin_grants (owner_id) VALUES (?) ON CONFLICT DO NOTHING",
+                    (owner_id,),
+                )
+            else:
+                connection.execute(
+                    "DELETE FROM account_admin_grants WHERE owner_id = ?", (owner_id,)
+                )
+
+    @staticmethod
+    def _is_account_admin(connection: sqlite3.Connection, owner_id: str) -> bool:
+        return (
+            connection.execute(
+                "SELECT 1 FROM account_admin_grants WHERE owner_id = ?", (owner_id,)
+            ).fetchone()
+            is not None
+        )
+
+    @staticmethod
+    def _is_operator(connection: sqlite3.Connection, owner_id: str) -> bool:
+        return (
+            connection.execute(
+                """
+            SELECT 1 FROM operator_grants WHERE owner_id = ?
+            UNION ALL SELECT 1 FROM operator_maintenance_grants WHERE owner_id = ?
+            UNION ALL SELECT 1 FROM account_admin_grants WHERE owner_id = ?
+            LIMIT 1
+            """,
+                (owner_id, owner_id, owner_id),
+            ).fetchone()
+            is not None
+        )
+
+    def _account_admin(self, connection: sqlite3.Connection, token: str) -> str:
+        actor = self._console_operator(connection, token)
+        self._require_grant(connection, actor, "console_read")
+        if not self._is_account_admin(connection, actor):
+            self._deny_console("forbidden", "missing_grant")
+        return actor
+
+    def console_accounts(self, token: str) -> dict:
+        with self._transaction() as connection:
+            actor = self._account_admin(connection, token)
+            accounts = []
+            for account in self._accounts(connection):
+                owner_id = account["owner_id"]
+                active = not account["disabled"]
+                standard = not self._is_operator(connection, owner_id)
+                accounts.append(
+                    {
+                        "username": account["username"],
+                        "disabled": not active,
+                        "can_reset_password": active
+                        and (standard or owner_id == actor),
+                        "can_disable": active and standard,
+                    }
+                )
+            return {"accounts": accounts}
+
+    def account_capabilities(self, token: str) -> dict:
+        with self._transaction() as connection:
+            owner_id = self._enrollment_owner(connection, token, allow_legacy=False)
+            console_read = connection.execute(
+                "SELECT 1 FROM operator_grants WHERE owner_id = ? AND scope = 'console_read'",
+                (owner_id,),
+            ).fetchone()
+            return {"admin": console_read is not None}
+
+    def console_capabilities(self, token: str) -> dict:
+        with self._transaction() as connection:
+            owner_id = self._console_operator(connection, token)
+            self._require_grant(connection, owner_id, "console_read")
+            maintenance = connection.execute(
+                "SELECT 1 FROM operator_maintenance_grants WHERE owner_id = ? AND scope = 'maintenance_read'",
+                (owner_id,),
+            ).fetchone()
+            return {
+                "maintenance": maintenance is not None,
+                "accounts": self._is_account_admin(connection, owner_id),
+            }
 
     def grant_console_read(self, username: str) -> None:
         _validate_username(username)
@@ -1543,6 +1748,26 @@ class Collaboration:
                 "DELETE FROM operator_grants WHERE owner_id = ? AND scope = 'console_read'",
                 (owner_id,),
             )
+
+    def set_maintenance_grant(self, username: str, scope: str, granted: bool) -> None:
+        _validate_username(username)
+        if scope not in _MAINTENANCE_SCOPES or type(granted) is not bool:
+            raise CollaborationError("invalid_request")
+        with self._transaction(write=True) as connection:
+            owner_id = self._account(connection, username)["owner_id"]
+            if granted:
+                connection.execute(
+                    """
+                    INSERT INTO operator_maintenance_grants (owner_id, scope)
+                    VALUES (?, ?) ON CONFLICT DO NOTHING
+                    """,
+                    (owner_id, scope),
+                )
+            else:
+                connection.execute(
+                    "DELETE FROM operator_maintenance_grants WHERE owner_id = ? AND scope = ?",
+                    (owner_id, scope),
+                )
 
     def grant_transcript_read(self, username: str, room_id: str) -> None:
         room_id = _validate_room_id(room_id)
@@ -1625,26 +1850,34 @@ class Collaboration:
         _validate_password(password)
         if purpose not in _SESSION_PURPOSES:
             raise CollaborationError("invalid_request")
-        check = self._start_password_check(username)
-        with self._transaction() as connection:
-            account = connection.execute(
-                """
-                SELECT owner_id, password_digest FROM accounts
-                WHERE username = ? AND disabled = 0
-                """,
-                (username,),
-            ).fetchone()
-        digest = (
-            account["password_digest"] if account else self._unknown_password_digest
-        )
-        with self._password_checks:
-            try:
-                _PASSWORD_HASHER.verify(digest, password)
-            except VerifyMismatchError:
-                raise CollaborationError("unauthorized") from None
-        if account is None:
-            raise CollaborationError("unauthorized")
-        session = self._issue_account_session(account["owner_id"], digest, purpose)
+        try:
+            check = self._start_password_check(username)
+            with self._transaction() as connection:
+                account = connection.execute(
+                    """
+                    SELECT owner_id, password_digest FROM accounts
+                    WHERE username = ? AND disabled = 0
+                    """,
+                    (username,),
+                ).fetchone()
+            digest = (
+                account["password_digest"] if account else self._unknown_password_digest
+            )
+            with self._password_checks:
+                try:
+                    _PASSWORD_HASHER.verify(digest, password)
+                except VerifyMismatchError:
+                    raise CollaborationError("unauthorized") from None
+            if account is None:
+                raise CollaborationError("unauthorized")
+            session = self._issue_account_session(account["owner_id"], digest, purpose)
+        except CollaborationError as error:
+            with self._metrics_lock:
+                if error.code == "rate_limited":
+                    self._rate_limited_total += 1
+                elif error.code == "unauthorized":
+                    self._login_failures_total += 1
+            raise
         with self._login_checks_lock:
             check.succeeded = True
         return session
@@ -2048,6 +2281,184 @@ class Collaboration:
             )
             return [_member_profile(row) for row in rows]
 
+    def console_maintenance_snapshot(self, token: str) -> SourceSnapshot:
+        with self._transaction() as connection:
+            self._maintenance_operator(connection, token, "maintenance_read")
+            return self._maintenance_observations.read(
+                partial(self._collect_maintenance_values, connection)
+            )
+
+    def _collect_maintenance_values(
+        self, connection: sqlite3.Connection
+    ) -> dict | None:
+        try:
+            sampled_at = self._now_datetime()
+            db_size = self._db_path.stat().st_size
+            with suppress(FileNotFoundError):
+                wal = self._db_path.with_name(f"{self._db_path.name}-wal")
+                db_size += wal.stat().st_size
+            schema_version = connection.execute("PRAGMA user_version").fetchone()[0]
+            counts = connection.execute(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM members) AS members_stored,
+                    (SELECT COUNT(*) FROM rooms) AS team_rooms_stored,
+                    (SELECT COUNT(*) FROM messages WHERE room_id IS NOT NULL)
+                        AS messages_stored
+                """
+            ).fetchone()
+            pending = self._pending_room_load(connection, sampled_at)
+        except OSError:
+            return None
+        except sqlite3.Error as error:
+            self._record_sqlite_busy(error)
+            return None
+
+        with self._metrics_lock:
+            return {
+                **dict(counts),
+                **pending,
+                "db_size_bytes": db_size,
+                "schema_version": schema_version,
+                "sqlite_busy_errors_total": self._sqlite_busy_errors_total,
+                "transactions_total": self._transactions_total,
+                "transaction_duration_seconds_total": self._transaction_duration_seconds_total,
+                "login_failures_total": self._login_failures_total,
+                "rate_limited_total": self._rate_limited_total,
+                "authorization_denials_total": self._authorization_denials.copy(),
+            }
+
+    def console_room_load(self, token: str, room_id: str) -> dict:
+        with self._transaction() as connection:
+            self._maintenance_operator(connection, token, "maintenance_read")
+            self._console_room(connection, room_id)
+            sampled_at = self._now_datetime()
+            room = {
+                "room_id": room_id,
+                "sampled_at": None,
+                "state": "unavailable",
+                "member_count": None,
+                "messages_stored": None,
+                "pending_inbox_events": None,
+                "oldest_pending_age_seconds": None,
+                "last_activity_at": None,
+                "load_rates": None,
+            }
+            try:
+                pending = self._pending_room_load(connection, sampled_at, room_id)
+                counts = connection.execute(
+                    """
+                    SELECT
+                        (SELECT COUNT(*) FROM room_members WHERE room_id = :room_id)
+                            AS member_count,
+                        (SELECT COUNT(*) FROM messages WHERE room_id = :room_id)
+                            AS messages_stored,
+                        (SELECT teamup_expiry_micros(at) FROM room_activity
+                            WHERE room_id = :room_id AND teamup_expiry_micros(at) IS NOT NULL
+                            ORDER BY activity_id DESC LIMIT 1) AS last_activity_micros
+                    """,
+                    {"room_id": room_id},
+                ).fetchone()
+            except sqlite3.Error as error:
+                self._record_sqlite_busy(error)
+                return {"room": room}
+
+            last_activity = counts["last_activity_micros"]
+            room.update(
+                **pending,
+                sampled_at=_rfc3339(sampled_at),
+                state="fresh",
+                member_count=counts["member_count"],
+                messages_stored=counts["messages_stored"],
+                last_activity_at=(
+                    _rfc3339(_EPOCH + timedelta(microseconds=last_activity))
+                    if last_activity is not None
+                    else None
+                ),
+            )
+            return {"room": room}
+
+    @staticmethod
+    def _pending_room_load(
+        connection: sqlite3.Connection, sampled_at: datetime, room_id: str | None = None
+    ) -> dict:
+        _register_expiry_clock(connection)
+        condition = "m.room_id IS NOT NULL" if room_id is None else "m.room_id = ?"
+        parameters = () if room_id is None else (room_id,)
+        pending = connection.execute(
+            f"""
+            SELECT COUNT(*) AS pending_inbox_events,
+                MIN(teamup_expiry_micros(m.created_at)) AS oldest_micros
+            FROM inbox_events AS e JOIN messages AS m USING (message_id)
+            WHERE e.acknowledged = 0 AND {condition}
+            """,
+            parameters,
+        ).fetchone()
+        oldest = pending["oldest_micros"]
+        return {
+            "pending_inbox_events": pending["pending_inbox_events"],
+            "oldest_pending_age_seconds": (
+                max(0.0, (_utc_micros(sampled_at) - oldest) / 1_000_000)
+                if oldest is not None
+                else None
+            ),
+        }
+
+    def authorize_console_logs(self, token: str) -> None:
+        with self._transaction() as connection:
+            self._maintenance_operator(connection, token, "logs_read")
+
+    def audit_console_logs(
+        self,
+        token: str,
+        *,
+        since: str,
+        until: str,
+        component: str | None,
+        result_count: int,
+    ) -> None:
+        with self._transaction(write=True) as connection:
+            operator_id = self._maintenance_operator(connection, token, "logs_read")
+            start = _expiry_micros(since)
+            end = _expiry_micros(until)
+            if (
+                start is None
+                or end is None
+                or not 0 < end - start <= _LOG_WINDOW_MICROS
+                or (component is not None and component not in _LOG_COMPONENTS)
+                or type(result_count) is not int
+                or not 0 <= result_count <= _LOG_RESULT_LIMIT
+            ):
+                raise CollaborationError("invalid_request")
+            connection.execute(
+                """
+                INSERT INTO log_access_audit (
+                    owner_id, window_since, window_until, component, result_count, at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    operator_id,
+                    _rfc3339(_EPOCH + timedelta(microseconds=start)),
+                    _rfc3339(_EPOCH + timedelta(microseconds=end)),
+                    component,
+                    result_count,
+                    self._now(),
+                ),
+            )
+
+    def _maintenance_operator(
+        self, connection: sqlite3.Connection, token: str, scope: str
+    ) -> str:
+        owner_id = self._console_operator(connection, token)
+        self._require_grant(connection, owner_id, "console_read")
+        grant = connection.execute(
+            "SELECT 1 FROM operator_maintenance_grants WHERE owner_id = ? AND scope = ?",
+            (owner_id, scope),
+        ).fetchone()
+        if grant is None:
+            self._deny_console("forbidden", "missing_grant")
+        return owner_id
+
     def list_console_rooms(self, token: str) -> dict:
         with self._transaction() as connection:
             owner_id = self._console_operator(connection, token)
@@ -2248,14 +2659,21 @@ class Collaboration:
             """,
             (digest,),
         ).fetchone()
-        if session is None or session["purpose"] != "console":
-            raise CollaborationError("unauthorized")
+        if session is None:
+            self._deny_console("unauthorized", "missing_session")
+        if session["purpose"] != "console":
+            self._deny_console("unauthorized", "wrong_purpose")
         if session["disabled"] or session["expires_at"] <= int(time()):
-            raise CollaborationError("unauthorized")
+            self._deny_console("unauthorized", "inactive_session")
         return session["owner_id"]
 
-    @staticmethod
+    def _deny_console(self, code: str, reason: str) -> NoReturn:
+        with self._metrics_lock:
+            self._authorization_denials[reason] += 1
+        raise CollaborationError(code)
+
     def _require_grant(
+        self,
         connection: sqlite3.Connection,
         owner_id: str,
         scope: str,
@@ -2266,7 +2684,7 @@ class Collaboration:
             (owner_id, scope, room_id),
         ).fetchone()
         if granted is None:
-            raise CollaborationError("forbidden")
+            self._deny_console("forbidden", "missing_grant")
 
     def create_room(
         self,
@@ -2348,7 +2766,8 @@ class Collaboration:
             self._notify((member_id,))
         return (
             {"room_id": room_id, "departure_event_id": event_id}
-            if notify else {"room_id": room_id}
+            if notify
+            else {"room_id": room_id}
         )
 
     def remove_room_member(
@@ -2364,7 +2783,11 @@ class Collaboration:
             )
         if event_id is not None:
             self._notify((member_id,))
-        return {"room_id": room_id, "member_id": member_id, "departure_event_id": event_id}
+        return {
+            "room_id": room_id,
+            "member_id": member_id,
+            "departure_event_id": event_id,
+        }
 
     @staticmethod
     def _end_room_membership(
@@ -2870,9 +3293,16 @@ class Collaboration:
     ) -> dict:
         with self._transaction() as connection:
             membership = _authorized_membership(connection, token, room_id)
-            if membership_id is not None and membership["membership_id"] != membership_id:
+            if (
+                membership_id is not None
+                and membership["membership_id"] != membership_id
+            ):
                 raise CollaborationError("membership_changed")
-            floor = membership["joined_after"] if delivery else _transcript_floor(membership)
+            floor = (
+                membership["joined_after"]
+                if delivery
+                else _transcript_floor(membership)
+            )
             cursor = min(max(after, floor), _SQLITE_MAX_ID)
             upper = None if before is None or before > _SQLITE_MAX_ID else before
             rows = _room_transcript(

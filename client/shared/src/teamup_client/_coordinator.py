@@ -722,6 +722,19 @@ class Coordinator:
             "older": str(page[0]["message_id"]) if len(rows) > page_size else None,
         }
 
+    async def console_access(self) -> dict:
+        if (token := self._account_token) is None:
+            return {}
+        try:
+            capabilities = await self._upstream.request(
+                "GET", "/auth/capabilities", token, member_auth=False
+            )
+        except ClientError:
+            return {}
+        if capabilities.get("admin") is True:
+            return {"admin_url": self._server_url + "/console/"}
+        return {}
+
     async def console_wake_settings(self, enabled: bool | None = None) -> dict:
         if not self._signed_in_console:
             return {"state": "unavailable"}

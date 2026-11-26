@@ -1,4 +1,6 @@
-# Control Console（只读控制台）
+# Control Console（房间只读控制台）
+
+Rooms is a read-only tab in the [Admin Console](admin-console.md). That contract covers navigation and the separate Accounts capability.
 
 **Stage 3（读路径，已按协调方裁定范围实施）。** 本期在 stage 2（操作员鉴权、账号级/房间级授权、静态托管，commit `e495544`）与 #6 存量基线（存储地基 commit `25fff63`，已并入本分支）之上交付控制台只读读路径：`GET /v1/console/rooms/{room_id}`（roster 详情）、`GET /v1/console/rooms/{room_id}/timeline`（body-free 活动投影）、`GET /v1/console/rooms/{room_id}/transcript`（规范房间记录 + 同事务无正文审计）。已交付的 #3 私聊服务端（`codex/teamup-3-direct-messages`，DM 家族表与收件路径）随后并入本分支：schema 先经 #3 达到 **v4**（`dms`、可空 `messages.room_id` 与恰一非空约束、按家族分域的重试索引、收件 `dm` kind），控制台层在其上收敛为 **v5**。已测试的 #6 房间与私聊到期运行时（`codex/teamup-6-retention` 顶端 `e86aa97`）随后经前向合并并入本分支：两项保留水位原位补列，收敛为最终 **v6**（见下文迁移表，含已发布控制台 v5 起点）。迁移支持 fresh、v1、v2、两种 v3 草稿（#6 历史 v3；已发布的 #5 鉴权预览 `e495544`，以表列在 schema 迁移内判别，见下文）、#3 DM v4 与控制台 v5。控制台读路径复用 #6 规范消息记录与所有权，成员端点形状不变；#3 并入的成员 DM 路径见[私聊契约](direct-messages.md)；#6 到期清理的运行时契约见[会话历史模块契约](conversation-history.md)。不进行线上部署。跟踪于 [Control Console](https://github.com/Jianyu010/TeamUp/issues/5)，产品行为见 [collaboration-surfaces](../specs/collaboration-surfaces.md)，历史与审计依据见 [conversation-history](../specs/conversation-history.md) 与 [会话历史模块契约](conversation-history.md)。本文是控制台的模块契约：操作员鉴权、只读 API、审计、实施与测试步骤。按 [开发协议](../protocols/README.md)，新路由、schema 和权限须先过契约评审再写代码。
 
@@ -28,7 +30,7 @@
 | `console_read` | 账号 | 列出房间、查看 roster 与 Timeline（元数据，无消息正文） |
 | `transcript_read` | 账号 × 房间 | 读取该房间 Chats；每次成功分页触发审计 |
 
-浏览器登录获取 token 后以 Bearer 调用 `/v1/console/*`；无 `console_read` 的账号可以登录但被控制台路由拒绝。登录请求体为 `{"username":"…","password":"…","purpose":"console"}`，即 [账号登录 v1](account-login-v1.md) 的 `POST /v1/auth/login` 增加 `purpose` 字段（可选，唯一非空合法值为 `"console"`，语义详见该契约）；`purpose` 为 `console` 的会话签发的 token 只能调用控制台只读路由，**不能登记 Agent**（不能调用 `POST /v1/members`），也不能调用普通成员 API；登记用途登录 token、成员 token 与旧登记密钥不能授权任何控制台路由。响应仍为 `{"access_token":"…","expires_at":…}`（Unix 秒）。
+浏览器登录获取 token 后以 Bearer 调用 `/v1/console/*`；无 `console_read` 的账号可以登录但被控制台路由拒绝。登录请求体为 `{"username":"…","password":"…","purpose":"console"}`，即 [账号登录 v1](account-login-v1.md) 的 `POST /v1/auth/login` 增加 `purpose` 字段（可选，唯一非空合法值为 `"console"`，语义详见该契约）；`purpose` 为 `console` 的会话签发的 token 只能调用控制台路由，**不能登记 Agent**（不能调用 `POST /v1/members`），也不能调用普通成员 API；登记用途登录 token、成员 token 与旧登记密钥不能授权任何控制台路由。响应仍为 `{"access_token":"…","expires_at":…}`（Unix 秒）。
 
 ### 授权配置（仅限服务器本机 CLI）
 
@@ -87,9 +89,9 @@ Transcript 翻页不使用 `after`：入口请求省略 `before` 取得最新页
 
 ## 静态托管（stage 2 交付）
 
-- Gateway 同源托管**恰好三个**路径：`GET /console/`（HTML）、`GET /console/console.css`、`GET /console/console.js`，与静态包 `server/src/teamup_server/console/` 内文件一一对应、字节一致。不做目录列举、不接受任何其他 `/console/…` 路径（一律 404 `not_found`），方法不符返回 405。`redirect_slashes` 保持关闭，`/console`（无斜杠）不是入口。
+- Gateway 同源托管 `GET /console/`（HTML）、`GET /console/console.css`、`GET /console/console.js`、`GET /console/maintenance.js` 和 `GET /console/accounts.js`，与静态包 `server/src/teamup_server/console/` 内文件一一对应、字节一致。不做目录列举、不接受任何其他 `/console/…` 路径（一律 404 `not_found`），方法不符返回 405。`redirect_slashes` 保持关闭，`/console`（无斜杠）不是入口。
 - 响应头：`Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`、`X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`、`Cache-Control: no-cache`（无修订机制前避免陈旧资源）；媒体类型分别为 `text/html; charset=utf-8`、`text/css; charset=utf-8`、`text/javascript; charset=utf-8`。
-- 静态路由不需鉴权，页面内容不含任何私有数据（token 只在 API 鉴权后经 `/v1/console/*` 返回）。控制台无写入 UI；静态托管只做装配，不含业务逻辑。
+- 静态路由不需鉴权，页面内容不含任何私有数据（token 只在 API 鉴权后经 `/v1/console/*` 返回）。Rooms 无写入 UI；静态托管只做装配，不含业务逻辑。
 
 ## Console UI 消费方契约（stage 2 确认；分页瞬时失败的重试语义随 #12 F3 修订）
 

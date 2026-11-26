@@ -340,3 +340,35 @@ test("remembered sign-in stays on the desktop side of the bridge", async (t) => 
   assert.deepEqual(await manual.json(), {state: "ready"});
   assert.equal(saved, null);
 });
+
+test("opens only the current operator's configured console and forwards no renderer URL", async (t) => {
+  let destination = "https://teamup.example/console/";
+  const server = http.createServer((request, response) => {
+    assert.equal(request.url, "/api/access");
+    assert.equal(request.method, "GET");
+    assert.equal(request.headers.authorization, `Bearer ${token}`);
+    response.writeHead(200, {"Content-Type": "application/json"});
+    response.end(JSON.stringify(destination ? {admin_url: destination} : {}));
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => server.close());
+  const opened = [];
+  const visibility = [];
+  const handle = createConsoleHandler(assets, () => ({port: server.address().port, token}),
+    undefined, undefined, {
+      show: (visible) => visibility.push(visible),
+      open: async (url) => opened.push(url),
+    });
+  const open = {method: "POST"};
+  assert.equal((await handle(consoleRequest("/api/open-admin", open, "https://example.com"))).status, 403);
+  assert.equal((await handle(consoleRequest("/api/open-admin", {...open, body: "{}"}))).status, 400);
+  assert.deepEqual(await (await handle(consoleRequest("/api/access"))).json(), {admin_url: destination});
+  assert.deepEqual(await (await handle(consoleRequest("/api/open-admin", open))).json(), {state: "opened"});
+  assert.deepEqual(opened, [destination]);
+  destination = "http://not-loopback.example/console/";
+  assert.equal((await handle(consoleRequest("/api/open-admin", open))).status, 403);
+  destination = undefined;
+  assert.deepEqual(await (await handle(consoleRequest("/api/access"))).json(), {});
+  assert.deepEqual(visibility, [true, true, false, false]);
+});

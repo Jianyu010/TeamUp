@@ -728,6 +728,31 @@ get("sign-in-form").addEventListener("submit", async (event) => {
 let workspaceRequest = 0;
 let workspaceTimer;
 
+const adminEntry = get("admin-entry");
+
+function showAdminEntry(url) {
+  adminEntry.hidden = !url;
+  if (url) adminEntry.href = url;
+  else adminEntry.removeAttribute("href");
+}
+
+async function refreshAdminEntry(request) {
+  let url;
+  try {
+    ({admin_url: url} = await read("/api/access"));
+  } catch {}
+  if (request === workspaceRequest) showAdminEntry(url);
+}
+
+adminEntry.addEventListener("click", async (event) => {
+  if (!desktop) return;
+  event.preventDefault();
+  try {
+    if ((await read("/api/open-admin", null, {})).state === "opened") return;
+  } catch {}
+  showAdminEntry();
+});
+
 async function refresh() {
   clearTimeout(workspaceTimer);
   const request = ++workspaceRequest;
@@ -737,9 +762,12 @@ async function refresh() {
     if (request === workspaceRequest) {
       displayWorkspace();
       applyWorkspace(snapshot);
+      void refreshAdminEntry(request);
     }
   } catch (error) {
     if (request !== workspaceRequest) return;
+    showAdminEntry();
+    if (desktop) void refreshAdminEntry(request);
     if (error.message === "sign_in_required") {
       state.workspace = {sessions: [], rooms: []};
       state.chat = null;

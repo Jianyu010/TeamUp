@@ -1,9 +1,9 @@
-const { app, BrowserWindow, Menu, dialog, protocol, safeStorage, session } = require("electron");
+const { app, BrowserWindow, Menu, dialog, protocol, safeStorage, session, shell } = require("electron");
 const { execFile } = require("node:child_process");
 const { userInfo } = require("node:os");
 const { join, resolve } = require("node:path");
 const { promisify } = require("node:util");
-const { CONSOLE_URL, createConsoleHandler, parseConsoleEndpoint } = require("./console-protocol.cjs");
+const { CONSOLE_URL, createConsoleHandler, parseConsoleEndpoint, readAdminUrl } = require("./console-protocol.cjs");
 
 const {createDesktopLogin} = require("./console-login.cjs");
 const {createKeychain} = require("./keychain.cjs");
@@ -85,6 +85,7 @@ async function openConsole() {
   consoleWindow.once("closed", () => {
     window = null;
     endpointPromise = null;
+    showAdminMenu(false);
   });
   consoleWindow.webContents.on("will-navigate", (event) => event.preventDefault());
   consoleWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
@@ -117,6 +118,23 @@ async function forgetSavedCredentials() {
   }
 }
 
+function showAdminMenu(visible) {
+  const item = Menu.getApplicationMenu()?.getMenuItemById("admin");
+  if (item) item.visible = visible;
+}
+
+async function openAdminFromMenu() {
+  try {
+    const url = await readAdminUrl(await getEndpoint());
+    if (url) {
+      await shell.openExternal(url);
+      return;
+    }
+  } catch {}
+  showAdminMenu(false);
+  dialog.showErrorBox("Could not open Admin", "Check your Server connection and TeamUp sign-in.");
+}
+
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
@@ -128,7 +146,10 @@ if (!app.requestSingleInstanceLock()) {
     consoleSession.setPermissionCheckHandler(() => false);
     consoleSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
     consoleSession.protocol.handle(
-      "teamup", createConsoleHandler(assetDirectory, getEndpoint, resetEndpoint, desktopLogin),
+      "teamup", createConsoleHandler(assetDirectory, getEndpoint, resetEndpoint, desktopLogin, {
+        show: showAdminMenu,
+        open: (url) => shell.openExternal(url),
+      }),
     );
     if (process.platform === "darwin") {
       Menu.setApplicationMenu(Menu.buildFromTemplate([
@@ -145,7 +166,18 @@ if (!app.requestSingleInstanceLock()) {
           {role: "quit"},
         ]},
         {role: "editMenu"},
-        {role: "viewMenu"},
+        {label: "View", submenu: [
+          {id: "admin", label: "Admin", visible: false, click: openAdminFromMenu},
+          {role: "reload"},
+          {role: "forceReload"},
+          {role: "toggleDevTools"},
+          {type: "separator"},
+          {role: "resetZoom"},
+          {role: "zoomIn"},
+          {role: "zoomOut"},
+          {type: "separator"},
+          {role: "togglefullscreen"},
+        ]},
         {role: "windowMenu"},
       ]));
     }

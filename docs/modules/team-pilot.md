@@ -6,6 +6,8 @@
 
 ## 管理员开户
 
+已获授权的管理员可在客户端选择 **Admin**，用 [Accounts](../tutorials/admin-console.md#create-an-account) 开户或重置口令。
+
 在服务器上执行下面的命令，为每个人指定一个 TeamUp 用户名。创建与重置口令时从终端输入临时口令，并通过团队约定的私密渠道交给本人。
 
 ```sh

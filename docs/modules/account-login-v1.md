@@ -30,7 +30,7 @@ Agent self-retirement, owner-managed departure, and retired history are specifie
 
 ### 登录 purpose（控制台会话，随 #5 stage 2 落地）
 
-- `purpose` 随会话持久化：`"console"` 会话签发的 token 只能调用 [Control Console](control-console.md) 发布的 `/v1/console/*` 只读路由；省略 `purpose` 的会话（含存量库中的全部旧会话，迁移时一律记为登记用途）保持登记语义。两类会话共用同一账号生命周期、同一登录限流、同一口令摘要域与同一 32 字节凭证摘要域（新 token 的摘要不得与任何成员 token、旧登记密钥或另一会话摘要碰撞）。
+- `purpose` 随会话持久化：`"console"` 会话签发的 token 只能调用 [Control Console](control-console.md) 和 [Admin Console](admin-console.md) 发布的 `/v1/console/*` 路由；省略 `purpose` 的会话（含存量库中的全部旧会话，迁移时一律记为登记用途）保持登记语义。两类会话共用同一账号生命周期、同一登录限流、同一口令摘要域与同一 32 字节凭证摘要域（新 token 的摘要不得与任何成员 token、旧登记密钥或另一会话摘要碰撞）。
 - 跨用途隔离双向成立：`console` 会话的 token 不能登记 Agent（`POST /v1/members` 返回 401 `unauthorized`），也不能调用普通成员 API（成员路由返回 401）；登记用途登录 token、成员 token 与旧登记密钥不能授权任何 `/v1/console/*` 路由（返回 401）。`console` 会话的 token 不能作为 `POST /v1/members` 的 `member_token`（返回 422 `invalid_request`）。
 - 停用账号与重置口令照旧撤销该账号全部当前会话，`console` 会话一并失效；重置口令不影响已授予 Agent 的成员凭证。登录响应、错误与日志一律不回显口令或 token。
 - 会话 purpose 由 Collaboration 持久化（schema v5：`account_sessions` 带 `purpose` 列，存量行默认登记用途；`operator_grants` 表见 Control Console 契约）。v2 存量库、#6 历史 v3 草稿库、#3 DM v4 库与已发布的 #5 鉴权预览 v3 库（`e495544`，在 schema 迁移内以表列判别）都在 Collaboration 内部迁移到 v5，无外部迁移工具；预览 v3 的既有 purpose、会话与授权原样保留。
