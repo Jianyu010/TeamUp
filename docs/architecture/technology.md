@@ -1,13 +1,13 @@
-# TeamUp 技术选型
+# TeamUp Technology Choices
 
-MVP 按 **Python 3.12+** 排布 Server、Client 和 MCP 源码，使用类型注解和明确的公开包入口。首版主要验证一次跨机器协作中的授权、事务、收件、恢复和 harness 接入，工作量集中在网络和进程交互。
+The MVP uses **Python 3.12+** for the Server, Client, and MCP packages, with type annotations and explicit public package interfaces. The first release focuses on validating authorization, transactions, inbox delivery, recovery, and harness integration in a collaboration scenario spanning two machines. Most of the work centers on network and interprocess communication.
 
-| 选项 | 适用条件与代价 |
+| Option | When it fits and what it costs |
 | --- | --- |
-| **Python** | 同一语言完成 HTTPS/SSE、SQLite、MCP 和本机进程集成。团队能尽快跑完两机验收。交付时需要管理 Python 环境，模块隔离靠包公开入口、依赖检查和契约测试。 |
-| **Rust** | 若 Client 明确需要轻量原生可执行文件、较紧的资源上限或长期跨平台后台部署，值得评估。官方 `rmcp` 可作为 MCP 接入起点。首版采用 Rust 会增加并发与打包的验证工作。 |
-| **C++** | 适合已有必须链接的 C++ 库或运行时约束。首版各组件目前没有这类依赖。选择 C++ 需要额外维护 MCP、网络和跨平台构建集成。 |
+| **Python** | Handles HTTPS and SSE, SQLite, MCP, and local process integration in one language. It lets the team get through two-machine acceptance testing quickly. Distribution requires managing the Python environment. Public package interfaces, dependency checks, and contract tests enforce module boundaries. |
+| **Rust** | Worth evaluating if the Client needs a lightweight native executable, tighter resource limits, or long-term deployment as a cross-platform background service. The official `rmcp` SDK provides a starting point for MCP integration. Using Rust in the first release would add concurrency and packaging verification work. |
+| **C++** | Makes sense when required C++ libraries or runtime constraints dictate the choice. The first release's components are free of such dependencies. C++ would add maintenance work for MCP, networking, and cross-platform build integration. |
 
-Server 采用 FastAPI 和单实例 SQLite。Client 采用异步 HTTP 和本机 IPC，MCP 进程使用官方 Python SDK 的 stdio 支持。`uv` workspace 为三个包提供统一依赖解析，并保留各包各自的入口。首个实现锁定依赖版本并提供安装和启动命令。 [FastAPI](https://fastapi.tiangolo.com/advanced/custom-response/) · [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk) · [MCP Rust SDK](https://github.com/modelcontextprotocol/rust-sdk) · [uv workspaces](https://docs.astral.sh/uv/concepts/projects/workspaces/)
+The Server uses FastAPI and a single SQLite instance. The Client uses asynchronous HTTP and local IPC. The MCP process uses the official Python SDK's stdio transport. A `uv` workspace resolves dependencies together for all three packages while each package retains its own entry points. The first implementation pins dependency versions and provides install and startup commands. [FastAPI](https://fastapi.tiangolo.com/advanced/custom-response/) · [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk) · [MCP Rust SDK](https://github.com/modelcontextprotocol/rust-sdk) · [uv workspaces](https://docs.astral.sh/uv/concepts/projects/workspaces/)
 
-接入更多 harness 通过新增 Driver 实现。语言选择独立于 MCP、TeamUp API 和本机 IPC 契约。若以后测得部署或性能瓶颈，可按公开契约替换对应组件。
+Each additional harness is supported by implementing another Driver. The MCP, TeamUp API, and local IPC contracts are independent of the implementation language. If measurements later uncover a deployment or performance bottleneck, the affected component can be replaced behind its public contract.

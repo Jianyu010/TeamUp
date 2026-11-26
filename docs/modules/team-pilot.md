@@ -1,29 +1,31 @@
-# TeamUp 可信团队试用
+# TeamUp pilot for trusted teams
 
-试用机通过 SSH 隧道提供 TeamUp。每位开发者用自己的 TeamUp 账号登录。试用机的 SSH 账号属于信任边界，共用账号下的服务器管理员能访问 TeamUp 的运行数据。
+[简体中文](team-pilot.zh-CN.md)
 
-不需要 SSH 隧道时可参考可选的 [HTTPS 直连](team-https.md)。当前线上试点仍使用 SSH 隧道，HTTPS 直连尚未在真实部署中验证。
+The pilot host provides access to TeamUp through an SSH tunnel. Each developer signs in with an individual TeamUp account. The host's SSH account is part of the trust boundary. Server administrators using a shared account can access TeamUp runtime data.
 
-## 管理员开户
+For access without a tunnel, see [Direct HTTPS access](team-https.md). The live pilot still uses SSH tunneling. Direct HTTPS has yet to be verified in a live deployment.
 
-在服务器上执行下面的命令，为每个人指定一个 TeamUp 用户名。创建与重置口令时从终端输入临时口令，并通过团队约定的私密渠道交给本人。
+## Provision accounts
+
+Run the following commands on the server and assign each person a TeamUp username. When creating an account or resetting a password, enter the temporary password at the terminal and deliver it to the account holder through the team's agreed private channel.
 
 ```sh
 sudo -u teamup-pilot /opt/teamup-pilot/bin/teamup-server accounts --db /var/lib/teamup-pilot/teamup.db create alice
 sudo -u teamup-pilot /opt/teamup-pilot/bin/teamup-server accounts --db /var/lib/teamup-pilot/teamup.db list
 ```
 
-同一入口支持 `reset-password alice` 和 `disable alice`。停用会使登录和该账号的 Agent 凭证一起失效。
+The same command supports `reset-password alice` and `disable alice`. Disabling an account revokes both sign-in access and that account's agent credentials.
 
-## 开发者连接与安装
+## Connect and install the Client
 
-在 Client 所在的 macOS 或 Linux 终端运行 SSH 隧道，并保留该终端。Windows 试跑时，在运行 Client 的 WSL2 发行版里启动隧道。
+On the Mac or Linux machine running the Client, start the SSH tunnel in a terminal and leave it running. On Windows, start the tunnel in the same WSL2 distribution as the Client.
 
 ```sh
 ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:18765:127.0.0.1:8765 ubuntu@SSH_HOST
 ```
 
-另开一个本机终端，取回配套源码并安装，然后为本机 Claude Code 安装生成一份接入配置。
+In a second local terminal, retrieve and install the matching source distribution. Then generate a registration entry for your local Claude Code installation.
 
 ```sh
 scp ubuntu@SSH_HOST:/opt/teamup-pilot/teamup-client-src.tar.gz .
@@ -33,22 +35,22 @@ uv sync --locked --all-packages --python 3.12
 uv run --no-sync teamup-client init-install claude-code-local
 ```
 
-按 [Client 配置示例](quickstart.md#启动-client) 把生成的条目加入权限为 `0600` 的私有 JSON 的 `installs`。将 `server_url` 设为 `http://127.0.0.1:18765`，省略 `enrollment_key`。打开 TeamUp.app，在控制台输入 TeamUp 用户名和口令。使用浏览器时，先运行 `uv run --no-sync teamup-client serve --config /private/path/client.json --console`，再打开输出的回环地址登录。
+Follow the [Client configuration example](quickstart.md#start-the-client) to add the generated entry to `installs` in your private JSON file with mode `0600`. Set `server_url` to `http://127.0.0.1:18765` and omit `enrollment_key`. Open TeamUp.app and enter your TeamUp username and password in the console. To sign in with a browser, run `uv run --no-sync teamup-client serve --config /private/path/client.json --console` and open the loopback URL it prints.
 
-macOS 控制台的 **Remember me on this Mac** 需要验证 HTTPS 服务端或使用私有 Unix socket 转发。保留原来的 `server_url`。使用 SSH 隧道时，在仅当前用户可进入的目录内增加一个本地 socket 转发，例如在 macOS 上执行下列命令。仍需 TCP 转发的工具可在同一 SSH 命令中保留原来的 `-L 127.0.0.1:18765:127.0.0.1:8765` 选项。
+The macOS console's **Remember me on this Mac** option requires a verified HTTPS server or a private Unix socket forward. Keep your existing `server_url`. If you use an SSH tunnel, add a local socket forward in a directory accessible only to your user. The command below shows how on macOS. If other tools still need TCP forwarding, keep the original `-L 127.0.0.1:18765:127.0.0.1:8765` option on the same SSH command.
 
 ```sh
 ssh -N -o ExitOnForwardFailure=yes -o StreamLocalBindUnlink=yes \
   -L "$HOME/.config/teamup/server.sock:127.0.0.1:8765" ubuntu@SSH_HOST
 ```
 
-在私有 Client JSON 中增加 `"server_socket": "/absolute/path/to/server.sock"`，重启 Client 后登录。socket 和它的直接父目录必须归当前用户所有，且不能向其他用户开放。
+Add `"server_socket": "/absolute/path/to/server.sock"` to your private Client JSON, restart the Client, and sign in. Your user must own both the socket and its immediate parent directory, and neither can be accessible to other users.
 
-无控制台的终端或后台部署可以继续使用以下命令。
+For a headless terminal or background deployment, use the following commands.
 
 ```sh
 uv run --no-sync teamup-client login --config /private/path/client.json --username alice
 uv run --no-sync teamup-client serve --config /private/path/client.json
 ```
 
-按 [本机 MCP 装载步骤](quickstart.md#装载本机-mcp) 给 Claude Code 安装配置一次 stdio MCP。各会话单独登记和批准，恢复同一会话会沿用原成员。人类登录的 token 到期后，需要登记新会话时再登录一次。
+Follow the [local MCP setup instructions](quickstart.md#set-up-local-mcp) to configure stdio MCP once for your Claude Code installation. Each session registers and is approved separately. Resuming a session reuses its member identity. If the human sign-in token expires, sign in again when you need to register a new session.

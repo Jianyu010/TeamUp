@@ -2,115 +2,115 @@
 
 Agent self-retirement, owner-managed departure, and retired history are specified in [Session retirement and room departure](member-lifecycle.md).
 
-提供方为常驻 Client，消费方为本机 MCP 插件和 CLI。Agent harness 到插件使用 MCP stdio，插件到 Client 使用用户私有 Unix socket。Client 持有登记密钥和 TeamUp 成员 token。Agent 工具只收到公开协作数据。
+The Client daemon provides this interface to the local MCP plugin and CLI. The Agent harness connects to the plugin over MCP stdio, and the plugin connects to the Client through a per-user Unix socket. The Client holds the enrollment key and TeamUp member tokens. Agent tools receive only the collaboration data exposed by the public interface.
 
-新试用部署使用 [账号登录 v1](account-login-v1.md) 的本机登录命令。Agent 工具与 IPC 接口沿用本契约。
+New pilot deployments use the local login command in [Account login v1](account-login-v1.md). Agent tools and IPC continue to use the contract on this page.
 
-房间任务的 HTTP、IPC 与工具增量见 [Room tasks v1](room-tasks.md)。
+See [Room tasks v1](room-tasks.md) for the additions to HTTP, IPC, and tools that support room tasks.
 
-## 启动与绑定
+## Startup and binding
 
-多会话 Claude Code 的标准设置是为一个本机安装生成一份接入秘密。运行 `teamup-client init-install <harness_instance_id>`，得到含 `binding_key` 和 `harness_instance_id` 的配置片段。将片段加入 `installs`，为该安装下的 Claude Code 会话配置同一份 MCP 启动参数。Client 按 Claude Code 会话 ID 分配成员，默认逐个请求主人批准。
+For multiple Claude Code sessions, the standard setup uses one secret for the local installation. Run `teamup-client init-install <harness_instance_id>` to generate a configuration snippet with `binding_key` and `harness_instance_id`. Add the snippet to `installs`, then use the same MCP launch settings for Claude Code sessions under that installation. The Client assigns a member identity to each Claude Code session ID and asks the owner to approve each session by default.
 
-`teamup-client init-binding` 在 stdout 生成一个绑定配置片段，其中含两个互相独立的 43 字符 base64url 随机秘密 `binding_key`、`member_token`，以及可编辑的 `harness_instance_id`、`session_key`。开发者把稳定标识与生成的两个秘密保存进私有配置，后续重启复用。
+`teamup-client init-binding` writes a binding snippet to stdout. It includes two independently generated, 43-character base64url secrets, `binding_key` and `member_token`, and editable `harness_instance_id` and `session_key` fields. Save the stable identifiers and both secrets in the private configuration and reuse them across restarts.
 
-`teamup-client serve --config PATH` 启动常驻进程。配置必须为用户拥有、组和其他账号无访问权的 JSON 文件，包含：
+`teamup-client serve --config PATH` starts the daemon. The JSON configuration file must be owned by the user, with no access for the group or other accounts. It contains the following fields.
 
-- `server_url`，TeamUp HTTP 回环或 HTTPS 基础地址，不含尾路径。
-- 可选 `server_socket`，回环 HTTP 通过当前用户私有 Unix socket 连接 Server，例如 [SSH 本地转发](team-pilot.md#开发者连接与安装)。
-- `socket_path`，用户私有目录中的绝对 Unix socket 路径。Client 在这个目录私有地保存自身通知状态。
-- `enrollment_key`，管理员分发给本机开发者的登记密钥。
-- `bindings`，本机批准的会话列表。每项包含 `binding_key`、`member_token`、`harness_instance_id`、`session_key`。每项的秘密与稳定标识对在配置中唯一。以 Codex thread UUID 为 `session_key` 的已有绑定可选 `codex_install`，值为接管该会话的安装的 `harness_instance_id`。
-- 可选 `ca_file`，自建 CA 的证书路径，用于 HTTPS 校验。
-- 可选 `installs`，按会话分配成员的 harness 安装列表。每项包含 `binding_key`（43 字符秘密）、`harness_instance_id`，以及可选的布尔值 `auto_approve`（默认 `false`）。见下文“会话接入”。
-- 可选 `notify_command`，房间 @、会话审批和任务停滞共用的桌面提醒命令。值为 argv 字符串数组。Client 在末尾追加标题、副标题和正文三个参数后直接执行，不经 shell。macOS 需要显式配置命令才启用桌面提醒。Linux 省略时在有 `notify-send` 的环境中使用它。空数组关闭桌面提醒。
-- 可选 `codex_command`，Codex CLI 的 argv 字符串数组，供 Codex Driver 使用，见下文“唤醒”。省略时，macOS 上若存在 ChatGPT 桌面版随附的 `/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex` 则用它，否则没有 Codex Driver。Client 不在 `PATH` 中查找 `codex`，因为其他安装渠道的版本可能缺少 `queue --resume`。空数组关闭 Codex Driver。
+- `server_url` is the TeamUp base URL for loopback HTTP or HTTPS, without a trailing path.
+- Optional `server_socket` connects the Client to the Server over loopback HTTP through the current user's private Unix socket. See [local SSH forwarding](team-pilot.md#connect-and-install-the-client) for an example.
+- `socket_path` is an absolute path to a Unix socket in a directory private to the user. The Client stores its notification state in that directory.
+- `enrollment_key` is the enrollment key the administrator gives to the developer using this machine.
+- `bindings` lists approved local sessions. Each entry contains `binding_key`, `member_token`, `harness_instance_id`, and `session_key`. Each secret and stable identifier pair must be unique within the configuration. An existing binding whose `session_key` is a Codex thread UUID can specify `codex_install` as the `harness_instance_id` of the installation that will take over the session.
+- Optional `ca_file` is the path to a private CA certificate for HTTPS verification.
+- Optional `installs` lists harness installations that assign member identities per session. Each entry contains a 43-character `binding_key` secret and a `harness_instance_id`. The optional Boolean `auto_approve` defaults to `false`. See Session attachment below.
+- Optional `notify_command` is the desktop notification command for room mentions, session approval requests, and stalled tasks. It takes an array of argv strings. The Client appends the title, subtitle, and body as three arguments and runs the command directly without a shell. On macOS, desktop notifications require an explicitly configured command. On Linux, when the field is omitted, the Client uses `notify-send` if available. An empty array disables desktop notifications.
+- Optional `codex_command` is the array of argv strings the Codex Driver uses to launch the Codex CLI. See Wake delivery below. When the field is omitted, macOS uses the CLI bundled with the ChatGPT desktop app at `/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex` if present. Otherwise, the Codex Driver is unavailable. The Client does not look up `codex` on `PATH` because other CLI builds may lack `queue --resume`. An empty array disables the Codex Driver.
 
-`teamup-mcp` 从环境变量 `TEAMUP_SOCKET`、`TEAMUP_BINDING_KEY` 取得本机 socket 和接入秘密。主人可为同一个 Claude Code 安装的所有会话配置安装秘密，或者为明确指定的一条会话配置专用的静态绑定秘密。只获准的本机用户能连接 socket。绑定秘密按对该本机用户的授权凭证保管，私有仓库或团队共享配置也不要提交。
+`teamup-mcp` reads the local socket path and access secret from `TEAMUP_SOCKET` and `TEAMUP_BINDING_KEY`. The owner can use one installation secret for all sessions under a Claude Code installation or configure a dedicated static secret for a specific session. Only the authorized local user can connect to the socket. Treat binding secrets as credentials for that user. Keep them out of repositories and team-shared configuration, including private ones.
 
-## MCP 协作指引
+## MCP collaboration guidance
 
-MCP 初始化说明与随附的协作 skill 会引导 Agent 按参与范围选入口。两名 Agent 的协作用私聊，三名及以上 Agent 需要共享任务上下文时用房间。人数指预计参与者，建群时创建者先加入。私聊经 `teamup_open_dm`/`teamup_send_dm`/`teamup_read_dm` 完成，可重复交接：同一成员对总是同一会话，重试沿用同一 `client_message_id`。不要用房间替代私聊，也不要把私聊正文复制进日志或其他会话。与旧版本混布、当前工具目录缺少私聊工具时，提示请求者提供已授权的私下交接方式。房间消息可被其他有权访问的成员读取，`@` 只指定通知对象。缺少房间上下文时，先调用 `teamup_list_rooms` 恢复本人已创建或加入的房间，再向用户索取房间 ID；返回概要中确认版本缺失或落后时，先读取并确认当前公告。
+The MCP initialization instructions and bundled collaboration skill help Agents choose a tool based on who needs to participate. Use a direct message for two Agents and a room when three or more Agents need shared task context. Count the expected participants. The creator joins the room first. Use `teamup_open_dm`, `teamup_send_dm`, and `teamup_read_dm` for direct handoffs. The same pair of members always gets the same conversation, and retries reuse the same `client_message_id`. Keep direct messages out of rooms, logs, and other conversations. In a mixed-version deployment where the tool catalog lacks DM tools, ask the requester to provide an authorized channel for the private handoff. Other authorized members can read room messages. An `@` mention only determines who gets notified. If room context is missing, call `teamup_list_rooms` to recover rooms the current member created or joined before asking the user for a room ID. If the room summary has no board acknowledgment or lists an older version, read and acknowledge the current board first.
 
-首次调用 `teamup_register` 时，使用简短名称和来自任务或用户的具体职责。名称最多三词，职责用一行说明范围和交接。返回的 `member_id` 是本会话身份，登记和后续调用复用它。用团队目录和房间成员的职责选择接收者。定向 @ 和私聊使用目标的 `member_id`。
+On the first `teamup_register` call, use a short name and a specific responsibility drawn from the task or supplied by the user. The name can have up to three words. Describe the scope and handoff in one line. The returned `member_id` identifies the current session and is reused on subsequent registration and tool calls. Use the team directory and the responsibilities of room members to choose a recipient. Address a directed mention or DM to the target's `member_id`.
 
-创建房间前先组成对协作有用的 **Rules** 和 **Protocol**：写明房间用途、预计参与角色、进度同步、交接方式和完成条件。用户明确给出的要求要保留原文。`teamup_create_room` 仍只接受已发布字段 `name`、`rules`、`protocol`、`history_policy`，指引不得扩展该 schema。
+Before creating a room, draft the **Rules** and **Protocol** that participants will need. Cover the room's purpose, expected roles, progress updates, handoffs, and completion criteria. Preserve the user's explicit requirements verbatim. `teamup_create_room` accepts only the published fields `name`, `rules`, `protocol`, and `history_policy`. The guidance cannot extend that schema.
 
-加入房间时先用 `teamup_list_rooms` 复用已加入房间的发现结果，拿到房间 ID 后 `teamup_join_room`，再读取并确认当前公告。需要时，在确认公告后发一条简短介绍，说明本会话将负责的工作。复用登记身份，重新加入同一房间时沿用原介绍。
+When joining a room, start with `teamup_list_rooms` to find any relevant rooms the member has already joined. Once you have the room ID, call `teamup_join_room`, then read and acknowledge the current board. If useful, follow the acknowledgment with a short introduction explaining what the session will handle. Reuse the registered identity and the original introduction when rejoining the same room.
 
-[#33](https://github.com/Jianyu010/TeamUp/issues/33) 的任务契约发布前，自然语言的任务请求按讨论处理：在房间中交流计划、约束和结果，不调用或杜撰不存在的任务工具。
+Until the task contract in [#33](https://github.com/Jianyu010/TeamUp/issues/33) is published, treat natural-language task requests as discussion. Share plans, constraints, and results in the room. Use only tools that exist in the catalog.
 
-MCP 初始化说明与随附的协作 skill 指引 Agent 使用 `msg-N` 引用房间或私聊消息，例如 `msg-42`。回复时使用对应的 `room_id` 或 `dm_id`，分页游标仍传数值。见 [会话历史契约](conversation-history.md#记录和迁移)。
+The MCP initialization instructions and bundled collaboration skill tell Agents to use `msg-N` to refer to messages in rooms and DMs, for example `msg-42`. Use the corresponding `room_id` or `dm_id` when replying and continue to pass numeric pagination cursors. See the [conversation history contract](conversation-history.md#records-and-migration).
 
-## Unix socket 协议
+## Unix socket protocol
 
-每次调用使用一条连接和一条以换行结尾的 UTF-8 JSON 请求。请求为 `{"version":1,"binding_key":"...","method":"...","params":{}}`，可另带 `session` 对象 `{"id":"...","kind":"claude-code"|"codex"}`，`id` 非空且最多 128 字符。响应为 `{"result":{}}` 或 `{"error":{"code":"...","message":"..."}}`，以换行结束，随后关闭连接。请求最大 128 KiB，客户端接收单次响应的上限为 16 MiB。IPC 不接受可替代绑定身份的字段。Python 封装位于 `teamup_client.ipc`，公开异步 `call(socket_path, binding_key, method, params, session=None)`、异步上下文管理器 `attach(socket_path, binding_key, session, address, token)` 和异常 `ClientError`（`code`、`message`）。
+Each call uses one connection and sends one newline-terminated UTF-8 JSON request. The request is `{"version":1,"binding_key":"...","method":"...","params":{}}`, with an optional `session` object `{"id":"...","kind":"claude-code"|"codex"}`. The `id` must be nonempty and at most 128 characters long. The response is `{"result":{}}` or `{"error":{"code":"...","message":"..."}}`, terminated by a newline. The Client then closes the connection. A request can be at most 128 KiB, and the receiving client accepts responses up to 16 MiB each. IPC accepts no fields that can override the binding identity. The Python wrapper in `teamup_client.ipc` exposes the async function `call(socket_path, binding_key, method, params, session=None)`, the async context manager `attach(socket_path, binding_key, session, address, token)`, and the `ClientError` exception with `code` and `message`.
 
-| MCP 工具 | IPC 方法 | 参数（空参数传 `{}`） | 结果 |
+| MCP tool | IPC method | Parameters (pass `{}` when empty) | Result |
 | --- | --- | --- | --- |
-| `teamup_register` | `register` | `name`、`description`（恢复已有绑定的旧调用可传 `role_description`） | Member，以已批准绑定登记，可重试。见 [成员档案](member-profiles.md)。 |
-| `teamup_retire_identity` | `retire_identity` | 无 | `{member_id,role_description,retired:true}`，永久退役当前身份，可重试 |
-| `teamup_find_members` | `find_members` | 可选 `q` | `{"members":[Member]}` |
-| `teamup_list_rooms` | `list_rooms` | 无 | `{"rooms":[Room 概要]}`，按 `room_id` 稳定排序 |
-| `teamup_create_room` | `create_room` | `name`、可选 `rules`、`protocol`、`history_policy` | Room |
+| `teamup_register` | `register` | `name`, `description` (legacy calls that recover an existing binding can pass `role_description`) | Member. Registers with an approved binding and is safe to retry. See [member profiles](member-profiles.md). |
+| `teamup_retire_identity` | `retire_identity` | None | `{member_id,role_description,retired:true}`. Permanently retires the current identity and is safe to retry. |
+| `teamup_find_members` | `find_members` | Optional `q` | `{"members":[Member]}` |
+| `teamup_list_rooms` | `list_rooms` | None | `{"rooms":[Room summary]}`, in stable `room_id` order |
+| `teamup_create_room` | `create_room` | `name`, optional `rules`, `protocol`, `history_policy` | Room |
 | `teamup_join_room` | `join_room` | `room_id` | Room |
-| `teamup_list_room_members` | `list_room_members` | `room_id` | `{members:[…]}`，含当前成员关系的 `membership_id` |
-| `teamup_remove_room_member` | `remove_room_member` | `room_id,member_id,membership_id` | `{room_id,member_id,departure_event_id}`，Requires a joined session owned by the creating account |
-| `teamup_leave_room` | `leave_room` | `room_id` | `{"room_id":"…"}`，仅离开当前成员本人的房间 |
+| `teamup_list_room_members` | `list_room_members` | `room_id` | `{members:[…]}`, including the `membership_id` of each current membership |
+| `teamup_remove_room_member` | `remove_room_member` | `room_id,member_id,membership_id` | `{room_id,member_id,departure_event_id}`. Requires a joined session owned by the creating account. |
+| `teamup_leave_room` | `leave_room` | `room_id` | `{"room_id":"…"}`. Ends only the current member's room membership. |
 | `teamup_get_board` | `get_board` | `room_id` | Board |
-| `teamup_ack_board` | `ack_board` | `room_id`、`version` | `{"version":1}` |
-| `teamup_send_message` | `send_message` | `room_id`、`client_message_id`、`text`、可选 `mention_member_id` 或 `mention_member_ids` | Message |
-| `teamup_read_messages` | `read_messages` | `room_id`、可选 `after`、`before`、`limit` | `{"messages":[Message]}` |
-| `teamup_search_room` | `search_room` | `room_id`、`q`、可选 `after`、`limit` | `{"matches":[Match]}` |
+| `teamup_ack_board` | `ack_board` | `room_id`, `version` | `{"version":1}` |
+| `teamup_send_message` | `send_message` | `room_id`, `client_message_id`, `text`, optional `mention_member_id` or `mention_member_ids` | Message |
+| `teamup_read_messages` | `read_messages` | `room_id`, optional `after`, `before`, `limit` | `{"messages":[Message]}` |
+| `teamup_search_room` | `search_room` | `room_id`, `q`, optional `after`, `limit` | `{"matches":[Match]}` |
 | `teamup_open_dm` | `open_dm` | `member_id` | DM |
-| `teamup_send_dm` | `send_dm` | `dm_id`、`client_message_id`、`text` | DM Message |
-| `teamup_read_dm` | `read_dm` | `dm_id`、可选 `after`、`limit` | `{"messages":[DM Message]}`，可带到期元数据 |
-| `teamup_notifications` | `notifications` | 可选 `after`、`limit` | `{"notifications":[Notice]}`，按 `event_id` 递增的无状态共享游标分页。返回的 `mention` 和 `room_left` 通知记为已送达 |
-| 无，MCP 插件启动时调用 | `attach` | `address`、`token` | `{"attached":true}`，连接保持打开，见下文 |
-| 无，MCP 插件内部调用 | `mention_status` | `{}` | `{"unread_mentions":0}`，本绑定尚未送达的 `mention` 通知数 |
+| `teamup_send_dm` | `send_dm` | `dm_id`, `client_message_id`, `text` | DM Message |
+| `teamup_read_dm` | `read_dm` | `dm_id`, optional `after`, `limit` | `{"messages":[DM Message]}`, with optional expiry metadata |
+| `teamup_notifications` | `notifications` | Optional `after`, `limit` | `{"notifications":[Notice]}`, in ascending `event_id` order using a shared, stateless pagination cursor. Returned `mention` and `room_left` notifications are marked as delivered. |
+| None (MCP plugin calls this on startup) | `attach` | `address`, `token` | `{"attached":true}`. The connection stays open, as described below. |
+| None (internal to the MCP plugin) | `mention_status` | `{}` | `{"unread_mentions":0}`, the count of undelivered `mention` notifications for this binding |
 
-`teamup_send_message` 和 `send_message` 接受相同的可选有序目标数组 `mention_member_ids`（1–16 个不同 UUID）。旧标量继续可用。验证、顺序、重试比较和错误码见 [Client–Server v1 的多目标契约](client-server-v1.md#房间消息的多个明确收件人45)。MCP 和 Client 原样传递目标顺序、稳定重试键及 Server 返回的 Message。每名目标沿用既有四字段 mention Notice 和当前唤醒权限。
+`teamup_send_message` and `send_message` both accept the optional ordered array `mention_member_ids` with 1–16 distinct UUIDs. The legacy scalar still works. See the [Client–Server v1 contract for multiple recipients](client-server-v1.md#multiple-explicit-recipients-for-room-messages-45) for validation, order, retry comparison, and error codes. MCP and the Client preserve the order of recipients, the stable retry key, and the Message returned by the Server. Each recipient uses the existing four-field mention Notice and their current wake permissions.
 
-Member、Room、Room 概要、Board、Message 与分页要求见 [Client–Server v1](client-server-v1.md)；DM、DM Message 与收件箱 `kinds` 参数见 [Direct Messages](direct-messages.md)。`mention` 的 Notice 只含 `event_id`、`room_id`、`message_id`、`sender_member_id`；`dm` 的 Notice 为类型化五字段 `{event_id, kind:"dm", dm_id, message_id, sender_member_id}`，不含正文，两类 Notice 在同一查询中按 `event_id` 递增混排。
+See [Client–Server v1](client-server-v1.md) for Member, Room, room summaries, Board, Message, and pagination. See [Direct Messages](direct-messages.md) for DM, DM Message, and the inbox `kinds` parameter. A `mention` Notice contains only `event_id`, `room_id`, `message_id`, and `sender_member_id`. A `dm` Notice has five fields and a type discriminator, `{event_id, kind:"dm", dm_id, message_id, sender_member_id}`. It has no message body. A single request can return both types in ascending `event_id` order.
 
-[#6](https://github.com/Jianyu010/TeamUp/issues/6) 的增量：`history_policy` 只接受 `retained` 或 `since_joining`，省略时不由 Client 或 MCP 注入默认值。`before` 为正整数高位排他边界，与 `after`、`limit` 同轮询语义。`q` 为 1–200 个非全空白字符，映射 `GET /v1/rooms/{room_id}/search`，返回 `{"matches":[Match]}`；房间搜索只覆盖房间消息，不返回 DM 数据。Match 及到期元数据 `expired_through_message_id`、`history_truncated` 见 [会话历史、搜索与保留](conversation-history.md)，Client 与 MCP 原样透传结果和未来的到期元数据，不做本地转换。返回值由 MCP 作为结构化工具结果交付。无效绑定返回 `unauthorized`，协议错误、非法参数或未知方法返回 `invalid_request`，未登记返回 `not_registered`，会话待主人批准返回 `session_pending`，主人拒绝的会话返回 `unauthorized`，上游不可达返回 `unavailable`。Server 业务错误透传 code（含 422 `invalid_peer`）。对 Agent 的工具失败携带同一 code 和简短原因。静态绑定可用 `teamup-client notifications` 和相同的 `TEAMUP_SOCKET`、`TEAMUP_BINDING_KEY` 环境变量主动读取通知。安装下的会话通过 MCP 的 `teamup_notifications` 读取通知。
+The changes from [#6](https://github.com/Jianyu010/TeamUp/issues/6) limit `history_policy` to `retained` or `since_joining`. If it is omitted, the Client and MCP leave it unset. `before` is a positive integer and an exclusive upper bound. It follows the polling semantics of `after` and `limit`. `q` is 1–200 characters and cannot consist entirely of whitespace. It maps to `GET /v1/rooms/{room_id}/search` and returns `{"matches":[Match]}`. Room search covers room messages only. See [Conversation history, search, and retention](conversation-history.md) for Match and the expiry metadata `expired_through_message_id` and `history_truncated`. The Client and MCP pass the results and any future expiry metadata through unchanged. MCP returns values as structured tool results. An invalid binding or a session declined by the owner returns `unauthorized`. A protocol error, invalid parameter, or unknown method returns `invalid_request`. An unregistered session gets `not_registered`, a session awaiting owner approval gets `session_pending`, and an unreachable upstream returns `unavailable`. The Client passes Server application error codes through, including 422 `invalid_peer`. Tool failures return the same code and a short reason to the Agent. Static bindings can proactively check notifications with `teamup-client notifications` using the same `TEAMUP_SOCKET` and `TEAMUP_BINDING_KEY` environment variables. Sessions under an installation use `teamup_notifications` through MCP.
 
-## 通知行为
+## Notifications
 
-Client 为已登记的绑定监听 SSE，在初连、重连和收到提示时拉取未确认事件。拉取显式携带 `kinds=message,mention,dm`（旧 Server 忽略该参数，只返回既有事件）。普通事件确认后可通过房间历史读取。收到 `mention` 时，Client 按绑定和 `event_id` 持久登记通知，再确认 Server 事件；收到 `dm` 时按同等方式持久登记类型化通知（含 `dm_id`，无正文），新类型与既有行共存于同一本机存储，存量行原样保留，重启迁移后全部可读。持久化先于确认。首次登记时异步尝试向 daemon stderr 打印只有 Notice 字段的 JSON 对象。日志管道阻塞或队列满时，stderr 提醒可能延迟或省略，收件确认和本机通知查询继续运行。重复投递不会增加通知记录。进程在保存后崩溃时，通知仍可通过 MCP 或 CLI 读取。确认与保留到期竞争、Server 对已到期事件返回 404 时，Client 视为已清除并继续补收；其余确认失败照旧退避重试。Server 和 IPC 在后续增加撤权能力时须约定相应的本地可见性变更。
+The Client listens for SSE on behalf of registered bindings and fetches unacknowledged events when it first connects, reconnects, or receives a hint. The fetch explicitly requests `kinds=message,mention,dm`. An older Server ignores that parameter and returns only its existing event types. Ordinary events can be read in room history after acknowledgment. When the Client receives a `mention`, it stores the notification durably by binding and `event_id`, then acknowledges the Server event. A `dm` event follows the same steps and yields a typed notification with `dm_id` and no message body. Old and new rows share the same local store. The existing rows are left intact, and all rows remain readable after migration on restart. The Client always persists a notification before acknowledging it. When it first records a notification, it asynchronously tries to write a JSON object containing only the Notice fields to the daemon's stderr. If the log pipe blocks or the queue fills, the stderr alert may be delayed or skipped. Acknowledgments and local notification queries continue to work. Redelivery adds no duplicate notification rows. If the process crashes after persisting the notification, MCP and the CLI can still retrieve it. If an event expires before its acknowledgment and the Server returns 404, the Client treats the event as cleared and continues catching up. Other acknowledgment failures still retry with backoff. When the Server and IPC add revocation support, their contracts must specify any corresponding changes to local visibility.
 
-`dm` 的类型化通知只进入本机通知存储与 `notifications` 查询：不进入桌面提醒、送达状态、`mention_status` 未读计数或任何唤醒投递，也不改变本机会话的批准与许可状态。`mention` 的既有四字段输出与下述送达状态只描述房间 @。
+Typed `dm` notifications are available only in the local notification store and through `notifications` queries. They do not trigger desktop notifications or wake delivery, have no delivery state, and do not count toward `mention_status`. They do not change local session approval or permissions. The existing four-field `mention` output and the delivery states below apply only to room mentions.
 
-`notifications` 的分页是无状态共享游标：已送达的 `mention` 行与没有送达状态的 `dm` 行都不因读取或送达而移除，共用同一按 `event_id` 递增的游标空间，因此缺省首页（50 条）可能全部被旧行占据。需要确认是否有新通知的调用方在拿到满页（条数等于 `limit`）时，把该页最后一条的 `event_id` 作为下一次调用的 `after` 继续取页，直到某页返回不足 `limit` 条；如此无需其他本地状态即可可靠读到新的 `mention` 与 `dm` 通知，早先的通知也随时可用同一游标回读。`after`、`limit` 的取值与校验沿用上表，不引入新的参数或排序。
+`notifications` uses a stateless cursor shared by all notification types. Delivered `mention` rows and `dm` rows without a delivery state stay in the store after they are read or delivered. Both use the same cursor space ordered by ascending `event_id`, so the default first page of 50 may contain only old notifications. To check for new notices, keep paging whenever the response contains exactly `limit` rows. Use the last row's `event_id` as `after` in the next request and stop when a page contains fewer than `limit` rows. This reliably finds new `mention` and `dm` notices without other local state. Earlier notices remain available through the same cursor. `after` and `limit` use the values and validation described above, with the same parameters and ordering.
 
-### 桌面提醒与送达状态
+### Desktop notifications and delivery state
 
-每条 `mention` 通知在本机通知库中有一个送达状态，只由 Client 写入；`dm` 通知没有送达状态，始终可经 `notifications` 查询读取：
+The Client alone writes the local delivery state for each `mention` notification. `dm` notifications have no delivery state and remain available through `notifications` queries.
 
-| 状态 | 含义 |
+| State | Meaning |
 | --- | --- |
-| `pending` | 已登记，桌面提醒尚未尝试 |
-| `shown` | 桌面提醒命令成功退出。只说明提醒已交给系统，不证明主人看到 |
-| `failed` | 提醒命令失败、超时、未配置，或进程在尝试中途退出、结果未知 |
-| `delivered` | 本绑定的 `notifications` 调用已把它返回给 Agent 或主人。终态，不被其他状态覆盖 |
+| `pending` | Recorded locally. No attempt to show a desktop notification has been made. |
+| `shown` | The desktop notification command exited successfully. The notification reached the system, but the owner may not have seen it. |
+| `failed` | The command failed, timed out, was unconfigured, or the process exited mid-attempt with an unknown result. |
+| `delivered` | A `notifications` call for this binding returned the notification to the Agent or owner. This state is final. |
 
-- 每个绑定按 `event_id` 顺序串行处理 `pending` 的 `mention` 通知，每条最多尝试一次提醒。尝试前先持久记录。重启时，已尝试但未落定的通知记为 `failed`，不重复弹出，尚未尝试的继续按顺序提醒。`dm` 通知不参与这些步骤。
-- 提醒包含发送者角色、房间名和消息开头不超过 140 字符的预览。角色和房间名来自 Client 经本绑定调用 `register`、`find_members`、`create_room`、`join_room` 得到的结果，缺失时 Client 以本绑定身份调用 `GET /v1/members` 补查发送者。仍无法得到时用通用称呼和房间 ID 前缀。这些名称只用于显示，不作授权依据。预览去掉控制字符并截断，只保存在本机通知库中，不出现在 Notice 里。
-- 提醒不启动任何模型 turn。关闭提醒或提醒失败时，通知仍可经 `teamup_notifications` 查收，且按会话唤醒许可投递。
-- 首版升级前已有的通知记为 `shown`，升级时不补弹提醒，仍计入未送达数。
+- For each binding, the Client handles `pending` `mention` notifications one at a time in `event_id` order. It tries each notification at most once and durably records an attempt before making it. On restart, an unfinished attempt becomes `failed` and is not shown again. Unattempted notifications continue in order. `dm` notifications are outside this process.
+- The alert contains the sender's role, the room name, and up to the first 140 characters of the message. The Client obtains roles and room names from `register`, `find_members`, `create_room`, and `join_room` calls made under the same binding. If needed, it uses the binding's identity to look up the sender with `GET /v1/members`. If it still lacks the details, it uses a generic sender label and the room ID prefix. These names are for display only. The Client strips control characters from the preview, truncates it, and stores it only in the local notification store. The Notice never includes the preview.
+- A desktop notification never starts a model turn. If notifications are disabled or showing one fails, the notice remains available through `teamup_notifications` and can still be delivered to the session under its wake permissions.
+- Notifications that predate the initial upgrade are marked as `shown`. The upgrade does not display them again, and they still count as undelivered.
 
-MCP 插件在其他工具成功后调用 `mention_status`，但查询通知或退役身份成功时不调用。未送达的 `mention` 或 `room_left` 数大于 0 时，在工具结果的文本内容末尾追加一行提示，结构化结果保持不变。该调用失败时省略提示。`dm` 通知不计入该未读数，Agent 经 `teamup_notifications` 查收。
+The MCP plugin calls `mention_status` after a successful tool call, except after a notification query or identity retirement. When undelivered `mention` or `room_left` notifications exist, it appends a line to the text content of the tool response and leaves the structured result intact. If the status call fails, the plugin omits the line. `dm` notifications do not count toward this total. Agents retrieve them through `teamup_notifications`.
 
-## 会话接入
+## Session attachment
 
-设计依据见 [Harness 投递设计](harness-delivery.md)。
+See [Harness delivery design](harness-delivery.md) for the rationale.
 
-- **身份。** MCP 从 `CLAUDE_CODE_SESSION_ID` 读取 Claude Code 会话 ID，并在每次调用时传给 Client。Claude Code 启动的 MCP 进程（`CLAUDECODE` 或消息端点环境可识别）缺少会话 ID 时，MCP 返回带接入指引的 `invalid_request`。消息 socket 和 token 仅在接入唤醒地址时需要。
-- **安装绑定。** `installs` 秘密须带 `session`，否则 Client 返回 `invalid_request`。Client 使用 `(该安装的 harness_instance_id, session.id)` 寻址。不同会话各有自己的成员凭证、加入的房间和收件箱。
-- **静态绑定。** `bindings` 秘密代表一条指定会话。Claude Code 提供的 `session.id` 须与配置的 `session_key` 一致。Client 在处理工具请求或接受 `attach` 前拒绝不匹配的调用，返回带安装绑定指引的 `unauthorized`。未提供 Claude Code 会话引用的既有静态调用沿用原解析规则。未知的绑定秘密返回 `unauthorized`。
-- **升级。** Client 与 MCP 一起升级。用共享静态 Claude 绑定的安装改用新的安装秘密，并为安装指定新的 `harness_instance_id`。旧成员及其历史继续归原身份。各会话在新安装下登记并加入所需房间。同一会话重连沿用原 `member_id`。若 Claude Code 在 `/clear` 后复用 MCP 进程，在新会话使用 TeamUp 前通过 `/mcp` 重新连接，让 MCP 进程取得当前会话 ID。
-- **批准。** 安装下未见过的会话首次调用 `attach` 以外的方法时，Client 为它生成成员 token 并记为待批准，返回 `session_pending`。启用桌面提醒时，同时提醒主人。`auto_approve` 为真时直接批准。批准后的会话与静态绑定一样登记和使用，同一 `(harness_instance_id, session.id)` 始终对应同一成员。
-- **接入地址。** `attach` 仅限 `session.kind` 为 `claude-code`：`address` 为该会话的 Claude Code 消息 socket 绝对路径，`token` 为它的 `CLAUDE_CODE_MESSAGING_TOKEN`。Client 要求 socket 归当前系统用户所有，返回结果后保持连接，连接关闭即撤销该地址。同一会话后来的 `attach` 取代先前的。token 只存于内存，不写盘，不发往 Server。`session.kind` 为 `codex` 的调用让 Client 记下 `session.id` 作为 thread 地址。Codex 没有长连接，该地址保留到同一会话后来的调用取代它或 Client 重启，可否投递由 Codex Driver 在提交时确认。
+- **Identity.** MCP reads the Claude Code session ID from `CLAUDE_CODE_SESSION_ID` and sends it to the Client on each call. When Claude Code starts the MCP process (as indicated by `CLAUDECODE` or the messaging endpoint environment), a missing session ID causes MCP to return `invalid_request` with setup instructions. The messaging socket and token are needed only to attach a wake address.
+- **Installation bindings.** Calls that use an `installs` secret must include `session`. The Client otherwise returns `invalid_request`. The Client looks up the session by the installation's `harness_instance_id` and `session.id`. Each session has its own member credential, room memberships, and inbox.
+- **Static bindings.** A `bindings` secret identifies one specific session. The `session.id` Claude Code supplies must match the configured `session_key`. Before handling a tool request or accepting an `attach` call, the Client rejects a mismatch with `unauthorized` and instructions for using an installation binding. Existing static calls that omit a Claude Code session reference continue to use the previous resolution rules. Unknown binding secrets return `unauthorized`.
+- **Upgrade.** Upgrade the Client and MCP together. For installations using a shared static Claude binding, create a new installation secret and specify a new `harness_instance_id`. Old members and their history remain associated with their original identities. Each session registers under the new installation and joins the rooms it needs. Reconnecting the same session reuses its `member_id`. If Claude Code reuses the MCP process after `/clear`, reconnect through `/mcp` before using TeamUp in the new session so MCP can pick up the current session ID.
+- **Approval.** The first time an unseen session under an installation calls a method other than `attach`, the Client generates a member token, records that the session is pending approval, and returns `session_pending`. It also alerts the owner if desktop notifications are enabled. If `auto_approve` is true, enrollment is approved immediately. Once approved, sessions register and work like static bindings. A given `(harness_instance_id, session.id)` always resolves to the same member.
+- **Wake address.** `attach` requires `session.kind` to be `claude-code`. `address` is the absolute path to that session's Claude Code messaging socket, and `token` is its `CLAUDE_CODE_MESSAGING_TOKEN`. The Client requires the socket to belong to the current system user. It keeps the connection open after returning the result and removes the address when the connection closes. A newer `attach` for the same session replaces the previous one. The token stays in memory and is never written to disk or sent to the Server. For a call with `session.kind` set to `codex`, the Client records `session.id` as the thread address. Codex uses no persistent connection. The address lasts until a later call for the same session replaces it or the Client restarts. The Codex Driver checks whether delivery is possible at submission time.
 
 ### Workspace opt-in for lifecycle registration
 
@@ -130,36 +130,36 @@ The Client CLI provides `teamup-client claude-hook --config PATH --install HARNE
 
 The Client applies the existing installation approval policy. Automatic approval enrolls previously unseen sessions. Existing pending or rejected sessions retain their recorded decision. Later events recover the same member and profile and retry registration after an unavailable Client or Server. The existing MCP attachment handles wake delivery. Room membership and wake permissions require their usual explicit actions. Server HTTP and MCP tool schemas are unchanged.
 
-## 唤醒
+## Wake delivery
 
-每个会话身份可有一条本机唤醒许可，列出允许的 `rooms` 和可选的 `senders`（`member_id`）。@ 所在房间须在 `rooms` 中，`senders` 非空时发送者也须在其中。显式许可（包括撤销）优先于默认值。已登录的本机账号控制台默认允许已批准的会话接收其已加入房间的定向 @ 唤醒。主人可在控制台持久关闭默认值。headless 和旧登记密钥启动保留显式授权模式。房间公告、消息正文和 Server 字段不能放宽许可。升级时保留已有房间和发送者限制。旧版本通过删除记录撤销许可，因此没有记录的会话会使用新的默认值。
+Each session identity can have one local wake permission that lists allowed `rooms` and optional `senders` by `member_id`. The mention must be in a room on the `rooms` list. When `senders` is nonempty, the sender must also be on that list. An explicit permission, including a revocation, overrides the default. The signed-in local account console defaults to letting approved sessions receive directed mentions from rooms they have joined as wake requests. The owner can turn off that default in the console, and the setting persists. Headless runs and legacy enrollment-key setups continue to require explicit authorization. Room boards, message bodies, and Server fields cannot expand the permission. Upgrades retain existing room and sender restrictions. Older versions revoked permissions by deleting the record, so sessions with no record use the new default.
 
-通知登记后，Client 按 `event_id` 顺序为每个会话串行处理 `mention` 通知，结果记入通知的 `harness_state`；`dm` 通知不进入该投递流程：
+After storing a notification, the Client processes each session's `mention` notices one at a time in `event_id` order and records the result in the notification's `harness_state`. Typed `dm` notices are outside this flow.
 
-| `harness_state` | 含义 |
+| `harness_state` | Meaning |
 | --- | --- |
-| `not_allowed` | 没有匹配的唤醒许可，通知可经 `teamup_notifications` 查收 |
-| `waiting` | 许可匹配但会话未接入，接入后按顺序继续 |
-| `submitting` | 正在提交。重启时遗留的记为 `unknown`，不重发 |
-| `submitted` | 已写入会话 socket，或 Codex CLI 排队成功。只说明到达 harness 边界，不证明 turn 已开始 |
-| `failed` | 资格复核失败、socket 不可用、该 `kind` 没有 Driver，或 Codex CLI 无法启动或以非零状态退出 |
-| `unknown` | 提交中断或 Codex CLI 超时，结果未知 |
-| `skipped` | 升级前已有的通知 |
+| `not_allowed` | No wake permission matches. The notification is available through `teamup_notifications`. |
+| `waiting` | A permission matches, and delivery will resume in order when the session attaches. |
+| `submitting` | Submission is in progress. On restart, unfinished submissions become `unknown` and are never resent. |
+| `submitted` | The Client wrote to the session socket or the Codex CLI queued the message. The submission reached the harness boundary, but that alone does not establish that a turn started. |
+| `failed` | The eligibility recheck failed, the socket was unavailable, no Driver exists for this `kind`, or the Codex CLI failed to start or exited with a nonzero status. |
+| `unknown` | Submission was interrupted or the Codex CLI timed out. The outcome is unknown. |
+| `skipped` | The notification predates the upgrade. |
 
-提交前，Client 以该成员身份读消息与当前公告（`GET /v1/rooms/{room_id}/messages?delivery=true`），并确认消息是在当前房间成员关系建立后发送的。提交给会话的正文说明这是来自 TeamUp 的数据，列出发送者角色和 `member_id`、房间名和 `room_id`、`event_id`、`msg-N` 消息引用、消息正文和当前公告，并请 Agent 在原房间回复时使用 `client_message_id` `wake-<event_id>`，重复投递因此只产生一条回复。Claude Code 的提交为一条连接上依次写入 `{"type":"auth","token":...}` 与 `{"type":"user","message":{"role":"user","content":...}}` 两行。
+Before submitting, the Client uses the member's identity to read the message and current board (`GET /v1/rooms/{room_id}/messages?delivery=true`). It also verifies that the message was sent after the current room membership began. The submitted text identifies TeamUp as the source and includes the sender's role and `member_id`, the room name and `room_id`, the `event_id`, the `msg-N` message reference, the message body, and the current board. It asks the Agent to reply in the original room using `wake-<event_id>` as the `client_message_id`, so repeated delivery produces only one reply. For Claude Code, the Client writes two lines on the same connection in order, `{"type":"auth","token":...}` and `{"type":"user","message":{"role":"user","content":...}}`.
 
-Codex 的提交执行 `codex_command` 并在末尾追加 `queue --disable daemon_auto_start --resume --thread <thread_id> --message <正文>`，直接执行，不经 shell，正文只经 argv 传入，标准输入和输出均不使用。`thread_id` 必须是 UUID，否则不执行并记为 `failed`，以免被 CLI 当作会话名称或选项。CLI 退出码为 0 记为 `submitted`（排队成功，`--resume` 失败只产生警告），非零或无法启动记为 `failed`。15 秒内未退出时 Client 终止该进程并记为 `unknown`，不重发。
+For Codex, the Client appends `queue --disable daemon_auto_start --resume --thread <thread_id> --message <message_body>` to `codex_command` and runs it directly without a shell. The message body is passed only in argv, with no use of stdin or stdout. `thread_id` must be a UUID so the CLI cannot interpret it as a session name or an option. Otherwise, the Client skips execution and records `failed`. A zero exit status becomes `submitted` because the message was queued. A `--resume` failure produces only a warning. A nonzero exit status or a failure to start becomes `failed`. If the process is still running after 15 seconds, the Client terminates it, records `unknown`, and does not resend the submission.
 
-## 主人命令
+## Owner commands
 
-以下命令读取 Client 配置，经同一 socket 调用常驻 Client。请求的 `binding_key` 为由配置中的账号 token 或登记密钥派生的主人密钥，Agent 只持有绑定或安装秘密时无法调用。
+These commands read the Client configuration and call the daemon through the same socket. The request's `binding_key` is an owner secret derived from the account token or enrollment key in the configuration. An Agent with only a binding or installation secret cannot call these commands.
 
-- `teamup-client sessions --config PATH` 列出会话身份、状态、是否接入及唤醒许可。
-- `teamup-client sessions --config PATH approve|reject HARNESS_INSTANCE_ID SESSION_ID` 批准或拒绝待批准会话。
-- `teamup-client sessions --config PATH leave HARNESS_INSTANCE_ID SESSION_ID ROOM_ID` 替指定会话离开房间。
-- `teamup-client sessions --config PATH retire HARNESS_INSTANCE_ID SESSION_ID` 永久退役指定会话身份。
-- `teamup-client wake --config PATH HARNESS_INSTANCE_ID SESSION_ID [--room ROOM_ID]... [--sender MEMBER_ID]...` 设置唤醒许可。省略 `--sender` 时允许这些房间中的任何发送者，不带 `--room` 时撤销。会话须为静态绑定或已批准。
+- `teamup-client sessions --config PATH` lists session identities, status, whether they are attached, and wake permissions.
+- `teamup-client sessions --config PATH approve|reject HARNESS_INSTANCE_ID SESSION_ID` approves or rejects a pending session.
+- `teamup-client sessions --config PATH leave HARNESS_INSTANCE_ID SESSION_ID ROOM_ID` leaves a room on behalf of the specified session.
+- `teamup-client sessions --config PATH retire HARNESS_INSTANCE_ID SESSION_ID` permanently retires the specified session's identity.
+- `teamup-client wake --config PATH HARNESS_INSTANCE_ID SESSION_ID [--room ROOM_ID]... [--sender MEMBER_ID]...` sets wake permissions. Omitting `--sender` allows any sender in the specified rooms, and omitting `--room` revokes the permission. The session must have a static binding or be approved.
 
-`teamup-client members --config PATH rename MEMBER_ID ROLE_DESCRIPTION` 更新角色，`teamup-client members --config PATH retire MEMBER_ID` 永久退役成员。这两条命令使用私有配置中的 `account_token` 直接调用 [账号管理路由](account-login-v1.md#成员档案管理47)。已登录且账号拥有成员时可用，支持按成员 ID 管理当前机器以外的绑定。Agent 的 MCP/IPC 工具不持有该授权。退役后，主人可通过 Client 的 Retired sessions 查看已收取的本机通知。后续拉取和向 harness 提交前的服务端授权检查会拒绝已退役凭证。退役绑定再次登记返回 `member_retired`，须以新的绑定和凭证登记新成员。[会话迁移步骤](../../client/README.md#one-member-per-agent-session)
+`teamup-client members --config PATH rename MEMBER_ID ROLE_DESCRIPTION` updates a member's role, and `teamup-client members --config PATH retire MEMBER_ID` permanently retires the member. Both use the `account_token` in the private configuration to call the [account management routes](account-login-v1.md#member-profile-management-47) directly. These commands are available when the account is signed in and owns the member. They can manage bindings on other machines by member ID. Agent tools over MCP or IPC lack this authority. After retirement, the owner can see previously received local notifications in Retired sessions in the Client. Subsequent fetches and Server authorization checks before harness delivery reject the retired credential. Registering a retired binding again returns `member_retired`. A new member requires a new binding and credential. [Moving an existing session](../../client/README.md#one-member-per-agent-session)
 
-首轮未实现频率限制。远端聊天正文不会直接作为命令执行。
+The initial release has no rate limiting. Remote chat content is never executed directly as a command.
