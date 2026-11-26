@@ -1,5 +1,7 @@
 # TeamUp for macOS
 
+For Windows, see [the Windows launcher over MCP](windows/README.md).
+
 TeamUp.app opens a single desktop window for the local Client console. It can use an existing profile and reuse a Client started by the previous TeamUp launcher.
 
 ## Build and open
