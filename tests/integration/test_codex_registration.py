@@ -9,6 +9,7 @@ import tempfile
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
 from test_codex_wake import call
 from test_loop import ROOT, available_port, process, tcp_is_ready, wait_for
 from test_wake import InstallDeveloper
@@ -21,7 +22,11 @@ async def hook(
     *,
     command="codex-hook",
     install="codex-local",
+    cwd=None,
+    scoped=True,
 ):
+    directory = developer.config_path.parent
+    workspace_args = ["--workspace", str(directory)] if scoped else []
     child = await asyncio.create_subprocess_exec(
         sys.executable,
         "-m",
@@ -31,6 +36,7 @@ async def hook(
         str(developer.config_path),
         "--install",
         install,
+        *workspace_args,
         env=os.environ | {"PYTHONPATH": str(ROOT / "client/shared/src")},
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
@@ -43,7 +49,7 @@ async def hook(
                     "hook_event_name": event,
                     "session_id": thread,
                     "prompt": "private prompt sentinel",
-                    "cwd": "/private/workspace/sentinel",
+                    "cwd": str(directory if cwd is None else cwd),
                     "transcript_path": "/private/transcript/sentinel",
                 }
             ).encode()
@@ -69,6 +75,32 @@ def server(root, port, developer):
         root / "server.log",
         {"TEAMUP_ENROLLMENT_KEYS": json.dumps({"operator": developer.enrollment_key})},
     )
+
+
+@pytest.mark.parametrize("command", ["codex-hook", "claude-hook"])
+def test_hook_requires_workspace_opt_in(command):
+    async def verify(root):
+        developer = InstallDeveloper(root, "operator", available_port(), auto_approve=True)
+        configure(developer)
+        workspace = developer.config_path.parent
+        outside = root / "operator-other"
+        outside.mkdir()
+        escape = workspace / "escape"
+        escape.symlink_to(outside, target_is_directory=True)
+        child = workspace / "child"
+        child.mkdir()
+        allowed = str(uuid4())
+        with developer.daemon():
+            await hook(developer, str(uuid4()), command=command, scoped=False)
+            assert developer.sessions() == {}
+            for cwd in (outside, escape, "relative", workspace / "missing"):
+                await hook(developer, str(uuid4()), command=command, cwd=cwd)
+            assert developer.sessions() == {}
+            await hook(developer, allowed, "UserPromptSubmit", command=command, cwd=child)
+            assert set(developer.sessions()) == {allowed}
+
+    with tempfile.TemporaryDirectory(prefix="tu-scope-", dir="/tmp") as root:
+        asyncio.run(verify(Path(root)))
 
 
 async def check_auto_registration(root, port):

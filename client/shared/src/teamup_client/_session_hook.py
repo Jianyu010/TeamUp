@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 from contextlib import suppress
+from pathlib import Path
 
 from ._config import ConfigError, read_config
 from ._protocol import RESPONSE_LIMIT, decode_json, is_string, is_uuid
@@ -11,7 +12,21 @@ from .ipc import ClientError, call
 HARNESS_NAMES = {"codex": "Codex", "claude-code": "Claude"}
 
 
-async def register_session(config_path, harness_instance_id, stdin, *, kind):
+def _workspace_contains(workspace: Path | None, cwd: object) -> bool:
+    if workspace is None or not workspace.is_absolute() or not isinstance(cwd, str):
+        return False
+    directory = Path(cwd)
+    if not directory.is_absolute():
+        return False
+    try:
+        root = workspace.resolve(strict=True)
+        directory = directory.resolve(strict=True)
+        return root.is_dir() and directory.is_dir() and directory.is_relative_to(root)
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+async def register_session(config_path, harness_instance_id, stdin, *, kind, workspace):
     try:
         data = stdin.read(RESPONSE_LIMIT + 1)
         if len(data) > RESPONSE_LIMIT:
@@ -23,6 +38,8 @@ async def register_session(config_path, harness_instance_id, stdin, *, kind):
         "SessionStart",
         "UserPromptSubmit",
     ):
+        return
+    if not _workspace_contains(workspace, event.get("cwd")):
         return
     session_id = event.get("session_id")
     if is_uuid(session_id):
