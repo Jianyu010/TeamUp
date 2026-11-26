@@ -56,20 +56,24 @@ function scheduleExpiry(list, onExpiry) {
   if (expired) onExpiry?.();
 }
 
-function memberNames(members) {
+export function memberNames(members, nameTag = "span") {
+  const names = members.map(({id, name, role}) => ({id, name: name ?? role}));
   const counts = new Map();
-  for (const {role} of members) counts.set(role, (counts.get(role) || 0) + 1);
-  return members.map(({id, role}) => {
-    const name = element("span", "", "member-name");
-    name.append(element("span", role));
-    if (counts.get(role) > 1) {
+  for (const {name} of names) counts.set(name, (counts.get(name) || 0) + 1);
+  return names.map(({id, name}) => {
+    const view = element("span", "", "member-name");
+    let label = name;
+    view.append(element(nameTag, name));
+    if (counts.get(name) > 1) {
       const prefix = id.slice(0, 8);
-      const shared = members.some((other) => other.id !== id && other.role === role && other.id.startsWith(prefix));
-      const qualifier = element("small", "(" + (shared ? id : prefix) + ")");
+      const shared = names.some((other) => other.id !== id && other.name === name && other.id.startsWith(prefix));
+      const suffix = "(" + (shared ? id : prefix) + ")";
+      const qualifier = element("small", suffix);
+      label += " " + suffix;
       qualifier.title = id;
-      name.append(document.createTextNode(" "), qualifier);
+      view.append(qualifier);
     }
-    return name;
+    return {view, label};
   });
 }
 
@@ -78,14 +82,69 @@ export function renderTeam(result, requestedAt) {
   const members = result.members || [];
   const names = memberNames(members);
   list.replaceChildren(...members.map((member, index) => {
-    const row = element("li");
-    row.append(names[index], presenceBadge(member.presence, requestedAt));
+    const row = element("tr");
+    const identity = element("th");
+    identity.scope = "row";
+    names[index].view.title = names[index].label;
+    identity.append(names[index].view, presenceBadge(member.presence, requestedAt));
+    row.append(identity, element("td", member.owner_username ?? "—", "team-user"),
+      element("td", member.description ?? "—"));
     return row;
   }));
   scheduleExpiry(list);
 }
 
-export function roomMembers({read, subject, chat, policyChanged}) {
+export function renderSessionChoices(chooser, sessions, selected, empty) {
+  const rich = CSS.supports("appearance", "base-select");
+  const options = sessions.map((session) => {
+    const duplicate = sessions.some(({id, label}) => id !== session.id && label === session.label);
+    const label = duplicate ? session.label + " · " + (session.member_id ?? session.id).slice(0, 8) : session.label;
+    const option = new Option(label, session.id, false, session.id === selected);
+    const owner = session.owner_username ? "by " + session.owner_username : null;
+    if (owner) option.dataset.owner = owner;
+    if (rich) {
+      const name = element("span", label, "session-option-name");
+      name.title = label;
+      option.replaceChildren(name);
+      if (owner) {
+        option.setAttribute("aria-label", label);
+        option.setAttribute("aria-description", owner);
+        option.append(element("small", owner, "member-owner"));
+      }
+    } else option.title = owner ?? label;
+    return option;
+  });
+  if (!options.length && empty) options.push(new Option(empty));
+  if (rich) {
+    const button = element("button");
+    button.type = "button";
+    button.append(element("selectedcontent"));
+    chooser.replaceChildren(button, ...options);
+  } else chooser.replaceChildren(...options);
+
+  const owner = chooser.nextElementSibling;
+  const showOwner = () => {
+    owner.textContent = chooser.selectedOptions[0]?.dataset.owner ?? "";
+    owner.hidden = rich || !owner.textContent;
+  };
+  chooser.onchange = showOwner;
+  showOwner();
+}
+
+function actionIcon(kind) {
+  const ns = "http://www.w3.org/2000/svg";
+  const icon = document.createElementNS(ns, "svg");
+  const path = document.createElementNS(ns, "path");
+  icon.setAttribute("viewBox", "0 0 24 24");
+  icon.setAttribute("aria-hidden", "true");
+  path.setAttribute("d", kind === "leave"
+    ? "M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4m7 4 5 5-5 5m5-5H9"
+    : "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M16 9h6M13 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0Z");
+  icon.append(path);
+  return icon;
+}
+
+export function roomMembers({read, subject, chat, policyChanged, namesChanged, actionFor}) {
   const rail = get("roster");
   const panel = get("member-detail");
   let page = null;
@@ -132,7 +191,10 @@ export function roomMembers({read, subject, chat, policyChanged}) {
     const recent = recentCommunication.get(member.id)?.message;
     const receipt = member.acknowledged === page.current
       ? "Acknowledged version " + page.current : "Awaiting acknowledgment of version " + page.current;
-    const content = [element("h3", selected.querySelector(".member-name").textContent), element("p", receipt), element("h4", "Recent communication")];
+    const content = [element("h3", selected.dataset.label)];
+    if (member.owner_username) content.push(element("small", "by " + member.owner_username, "member-owner"));
+    if (member.description) content.push(element("p", member.description, "member-responsibility"));
+    content.push(element("p", receipt), element("h4", "Recent communication"));
     if (recent) {
       const stamp = Date.parse(recent.created_at);
       content.push(element("p", recent.sender + " · " +
@@ -189,27 +251,27 @@ export function roomMembers({read, subject, chat, policyChanged}) {
       }
     }
 
-    const ordered = rows.map(({button, badge}) => ({
-      button,
+    const ordered = rows.map(({row, badge}) => ({
+      row,
       online: Number(badge.dataset.presence === "online"),
-      activity: recentCommunication.get(button.dataset.member)?.index ?? -1,
+      activity: recentCommunication.get(row.dataset.member)?.index ?? -1,
     }));
     ordered.sort((a, b) => b.online - a.online || b.activity - a.activity);
     const focused = document.activeElement;
     let next = null;
     let moved = false;
-    // Place rows from the end so siblings can move around the focused button.
-    for (const {button} of ordered.reverse()) {
-      if (button !== focused && (button.parentElement !== rail || button.nextElementSibling !== next)) {
-        rail.insertBefore(button, next);
+    // Move siblings around the focused row to retain keyboard focus.
+    for (const {row} of ordered.reverse()) {
+      if (!row.contains(focused) && (row.parentElement !== rail || row.nextElementSibling !== next)) {
+        rail.insertBefore(row, next);
         moved = true;
       }
-      next = button;
+      next = row;
     }
     details(moved);
   }
 
-  function reset() {
+  function reset({preserveNames = false} = {}) {
     close();
     page = null;
     request = null;
@@ -219,6 +281,7 @@ export function roomMembers({read, subject, chat, policyChanged}) {
     scheduleExpiry(rail);
     get("roster-title").textContent = "Members";
     get("roster-status").textContent = "";
+    if (!preserveNames) namesChanged?.(new Map());
     policyChanged();
   }
 
@@ -228,23 +291,58 @@ export function roomMembers({read, subject, chat, policyChanged}) {
     get("roster-title").textContent = ready ? "Members (" + result.members.length + ")" : "Members";
     get("roster-status").textContent = !ready ? "Room members unavailable."
       : !result.members.length ? "No room members." : "";
-    const existing = new Map(Array.from(rail.children, (button) => [button.dataset.member, button]));
+    const existing = new Map(rows.map((entry) => [entry.row.dataset.member, entry]));
     const members = result.members || [];
     const names = memberNames(members);
     rows = members.map((member, index) => {
-      const button = existing.get(member.id) || element("button");
+      let entry = existing.get(member.id);
+      if (!entry) {
+        const row = element("div", undefined, "member-row");
+        const button = element("button", undefined, "member-details");
+        row.dataset.member = member.id;
+        button.type = "button";
+        button.dataset.member = member.id;
+        button.setAttribute("aria-controls", panel.id);
+        row.append(button);
+        entry = {row, button, control: null};
+      }
       existing.delete(member.id);
-      button.type = "button";
-      button.dataset.member = member.id;
-      button.setAttribute("aria-controls", panel.id);
-      button.setAttribute("aria-expanded", String(selected === button));
-      const badge = presenceBadge(member.presence, started);
-      button.replaceChildren(names[index], badge);
-      return {button, badge};
+      entry.button.setAttribute("aria-expanded", String(selected === entry.button));
+      entry.badge = presenceBadge(member.presence, started);
+      entry.button.dataset.label = names[index].label;
+      entry.button.replaceChildren(names[index].view, entry.badge);
+      const action = actionFor?.(member);
+      if (entry.control?.dataset.kind !== action?.kind) {
+        entry.control?.remove();
+        entry.control = null;
+        if (action) {
+          const label = action.kind === "leave" ? "Leave this room" : "Remove from room";
+          entry.control = element("button", undefined, "member-action");
+          entry.control.type = "button";
+          entry.control.title = label;
+          entry.control.setAttribute("aria-label", label);
+          entry.control.dataset.kind = action.kind;
+          entry.control.append(actionIcon(action.kind));
+          entry.row.append(entry.control);
+        }
+      }
+      if (entry.control) {
+        const control = entry.control;
+        control.onclick = async () => {
+          control.disabled = true;
+          try {
+            await action.run();
+          } finally {
+            control.disabled = false;
+          }
+        };
+      }
+      return entry;
     });
-    for (const button of existing.values()) button.remove();
+    for (const {row} of existing.values()) row.remove();
     reorder();
     scheduleExpiry(rail, reorder);
+    namesChanged?.(new Map(members.map(({id}, index) => [id, names[index].label])));
     policyChanged();
   }
 
@@ -266,12 +364,12 @@ export function roomMembers({read, subject, chat, policyChanged}) {
   }
 
   rail.addEventListener("pointerover", (event) => {
-    const button = event.target.closest("button");
+    const button = event.target.closest(".member-details");
     if (button && event.pointerType !== "touch") open(button);
   });
   rail.addEventListener("pointerleave", delayClose);
   rail.addEventListener("focusin", (event) => {
-    const button = event.target.closest("button");
+    const button = event.target.closest(".member-details");
     if (button) {
       if (selected !== button) pinned = false;
       open(button);
@@ -279,7 +377,7 @@ export function roomMembers({read, subject, chat, policyChanged}) {
   });
   rail.addEventListener("focusout", delayClose);
   rail.addEventListener("click", (event) => {
-    const button = event.target.closest("button");
+    const button = event.target.closest(".member-details");
     if (!button) return;
     if (selected === button && pinned) close();
     else open(button, true);

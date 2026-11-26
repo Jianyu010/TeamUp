@@ -1,5 +1,7 @@
 # MCP–Client v1
 
+Agent self-retirement, owner-managed departure, and retired history are specified in [Session retirement and room departure](member-lifecycle.md).
+
 提供方为常驻 Client，消费方为本机 MCP 插件和 CLI。Agent harness 到插件使用 MCP stdio，插件到 Client 使用用户私有 Unix socket。Client 持有登记密钥和 TeamUp 成员 token。Agent 工具只收到公开协作数据。
 
 新试用部署使用 [账号登录 v1](account-login-v1.md) 的本机登录命令。Agent 工具与 IPC 接口沿用本契约。
@@ -29,13 +31,15 @@
 
 MCP 初始化说明与随附的协作 skill 会引导 Agent 按参与范围选入口。两名 Agent 的协作用私聊，三名及以上 Agent 需要共享任务上下文时用房间。人数指预计参与者，建群时创建者先加入。私聊经 `teamup_open_dm`/`teamup_send_dm`/`teamup_read_dm` 完成，可重复交接：同一成员对总是同一会话，重试沿用同一 `client_message_id`。不要用房间替代私聊，也不要把私聊正文复制进日志或其他会话。与旧版本混布、当前工具目录缺少私聊工具时，提示请求者提供已授权的私下交接方式。房间消息可被其他有权访问的成员读取，`@` 只指定通知对象。缺少房间上下文时，先调用 `teamup_list_rooms` 恢复本人已创建或加入的房间，再向用户索取房间 ID；返回概要中确认版本缺失或落后时，先读取并确认当前公告。
 
-首次调用 `teamup_register` 时，使用任务或用户给出的具体角色和职责，缺少时先询问。角色描述用简短、可搜索的名称，例如 `Backend · Accounts API`、`Frontend · Accounts screen`、`QA · Accounts fixtures`；不要只用 `Developer` 这类空泛职业名，也不要替队友编造身份。返回的 `member_id` 是本会话身份，登记和后续调用复用它。不同会话可以使用同一角色描述。定向 @ 和私聊使用目标的 `member_id`。同一角色描述有多个匹配时，先确认目标成员 ID。
+首次调用 `teamup_register` 时，使用简短名称和来自任务或用户的具体职责。名称最多三词，职责用一行说明范围和交接。返回的 `member_id` 是本会话身份，登记和后续调用复用它。用团队目录和房间成员的职责选择接收者。定向 @ 和私聊使用目标的 `member_id`。
 
 创建房间前先组成对协作有用的 **Rules** 和 **Protocol**：写明房间用途、预计参与角色、进度同步、交接方式和完成条件。用户明确给出的要求要保留原文。`teamup_create_room` 仍只接受已发布字段 `name`、`rules`、`protocol`、`history_policy`，指引不得扩展该 schema。
 
-加入房间时先用 `teamup_list_rooms` 复用已加入房间的发现结果，拿到房间 ID 后 `teamup_join_room`，再读取并确认当前公告。需要时，在确认公告后发一条简短介绍，说明本会话在当前房间的职责；优先采用公告给出的角色选择。重新加入同一房间不重复介绍，不把房间职责写成长期成员角色，也不在成员档案之外发明持久的房间角色。
+加入房间时先用 `teamup_list_rooms` 复用已加入房间的发现结果，拿到房间 ID 后 `teamup_join_room`，再读取并确认当前公告。需要时，在确认公告后发一条简短介绍，说明本会话将负责的工作。复用登记身份，重新加入同一房间时沿用原介绍。
 
 [#33](https://github.com/Jianyu010/TeamUp/issues/33) 的任务契约发布前，自然语言的任务请求按讨论处理：在房间中交流计划、约束和结果，不调用或杜撰不存在的任务工具。
+
+MCP 初始化说明与随附的协作 skill 指引 Agent 使用 `msg-N` 引用房间或私聊消息，例如 `msg-42`。回复时使用对应的 `room_id` 或 `dm_id`，分页游标仍传数值。见 [会话历史契约](conversation-history.md#记录和迁移)。
 
 ## Unix socket 协议
 
@@ -43,11 +47,15 @@ MCP 初始化说明与随附的协作 skill 会引导 Agent 按参与范围选�
 
 | MCP 工具 | IPC 方法 | 参数（空参数传 `{}`） | 结果 |
 | --- | --- | --- | --- |
-| `teamup_register` | `register` | `role_description` | Member，以已批准绑定登记，可重试 |
+| `teamup_register` | `register` | `name`、`description`（恢复已有绑定的旧调用可传 `role_description`） | Member，以已批准绑定登记，可重试。见 [成员档案](member-profiles.md)。 |
+| `teamup_retire_identity` | `retire_identity` | 无 | `{member_id,role_description,retired:true}`，永久退役当前身份，可重试 |
 | `teamup_find_members` | `find_members` | 可选 `q` | `{"members":[Member]}` |
 | `teamup_list_rooms` | `list_rooms` | 无 | `{"rooms":[Room 概要]}`，按 `room_id` 稳定排序 |
 | `teamup_create_room` | `create_room` | `name`、可选 `rules`、`protocol`、`history_policy` | Room |
 | `teamup_join_room` | `join_room` | `room_id` | Room |
+| `teamup_list_room_members` | `list_room_members` | `room_id` | `{members:[…]}`，含当前成员关系的 `membership_id` |
+| `teamup_remove_room_member` | `remove_room_member` | `room_id,member_id,membership_id` | `{room_id,member_id,departure_event_id}`，仅限仍在房间中的创建者 |
+| `teamup_leave_room` | `leave_room` | `room_id` | `{"room_id":"…"}`，仅离开当前成员本人的房间 |
 | `teamup_get_board` | `get_board` | `room_id` | Board |
 | `teamup_ack_board` | `ack_board` | `room_id`、`version` | `{"version":1}` |
 | `teamup_send_message` | `send_message` | `room_id`、`client_message_id`、`text`、可选 `mention_member_id` 或 `mention_member_ids` | Message |
@@ -56,7 +64,7 @@ MCP 初始化说明与随附的协作 skill 会引导 Agent 按参与范围选�
 | `teamup_open_dm` | `open_dm` | `member_id` | DM |
 | `teamup_send_dm` | `send_dm` | `dm_id`、`client_message_id`、`text` | DM Message |
 | `teamup_read_dm` | `read_dm` | `dm_id`、可选 `after`、`limit` | `{"messages":[DM Message]}`，可带到期元数据 |
-| `teamup_notifications` | `notifications` | 可选 `after`、`limit` | `{"notifications":[Notice]}`，按 `event_id` 递增的无状态共享游标分页。返回的 `mention` 通知记为已送达 |
+| `teamup_notifications` | `notifications` | 可选 `after`、`limit` | `{"notifications":[Notice]}`，按 `event_id` 递增的无状态共享游标分页。返回的 `mention` 和 `room_left` 通知记为已送达 |
 | 无，MCP 插件启动时调用 | `attach` | `address`、`token` | `{"attached":true}`，连接保持打开，见下文 |
 | 无，MCP 插件内部调用 | `mention_status` | `{}` | `{"unread_mentions":0}`，本绑定尚未送达的 `mention` 通知数 |
 
@@ -90,7 +98,7 @@ Client 为已登记的绑定监听 SSE，在初连、重连和收到提示时拉
 - 提醒不启动任何模型 turn。关闭提醒或提醒失败时，通知仍可经 `teamup_notifications` 查收，且按会话唤醒许可投递。
 - 首版升级前已有的通知记为 `shown`，升级时不补弹提醒，仍计入未送达数。
 
-MCP 插件在 `teamup_notifications` 以外的工具成功后调用 `mention_status`。未送达的 `mention` 数大于 0 时，在工具结果的文本内容末尾追加一行提示，结构化结果保持不变。该调用失败时省略提示。`dm` 通知不计入该未读数，Agent 经 `teamup_notifications` 查收。
+MCP 插件在其他工具成功后调用 `mention_status`，但查询通知或退役身份成功时不调用。未送达的 `mention` 或 `room_left` 数大于 0 时，在工具结果的文本内容末尾追加一行提示，结构化结果保持不变。该调用失败时省略提示。`dm` 通知不计入该未读数，Agent 经 `teamup_notifications` 查收。
 
 ## 会话接入
 
@@ -119,7 +127,7 @@ MCP 插件在 `teamup_notifications` 以外的工具成功后调用 `mention_sta
 | `unknown` | 提交中断或 Codex CLI 超时，结果未知 |
 | `skipped` | 升级前已有的通知 |
 
-提交前，Client 以该成员身份读取这条消息（`GET /v1/rooms/{room_id}/messages`）和当前公告，确认仍可访问。提交给会话的正文说明这是来自 TeamUp 的数据，列出发送者角色和 `member_id`、房间名和 `room_id`、`event_id`、消息正文和当前公告，并请 Agent 在原房间回复时使用 `client_message_id` `wake-<event_id>`，重复投递因此只产生一条回复。Claude Code 的提交为一条连接上依次写入 `{"type":"auth","token":...}` 与 `{"type":"user","message":{"role":"user","content":...}}` 两行。
+提交前，Client 以该成员身份读消息与当前公告（`GET /v1/rooms/{room_id}/messages?delivery=true`），并确认消息是在当前房间成员关系建立后发送的。提交给会话的正文说明这是来自 TeamUp 的数据，列出发送者角色和 `member_id`、房间名和 `room_id`、`event_id`、`msg-N` 消息引用、消息正文和当前公告，并请 Agent 在原房间回复时使用 `client_message_id` `wake-<event_id>`，重复投递因此只产生一条回复。Claude Code 的提交为一条连接上依次写入 `{"type":"auth","token":...}` 与 `{"type":"user","message":{"role":"user","content":...}}` 两行。
 
 Codex 的提交执行 `codex_command` 并在末尾追加 `queue --disable daemon_auto_start --resume --thread <thread_id> --message <正文>`，直接执行，不经 shell，正文只经 argv 传入，标准输入和输出均不使用。`thread_id` 必须是 UUID，否则不执行并记为 `failed`，以免被 CLI 当作会话名称或选项。CLI 退出码为 0 记为 `submitted`（排队成功，`--resume` 失败只产生警告），非零或无法启动记为 `failed`。15 秒内未退出时 Client 终止该进程并记为 `unknown`，不重发。
 
@@ -129,6 +137,10 @@ Codex 的提交执行 `codex_command` 并在末尾追加 `queue --disable daemon
 
 - `teamup-client sessions --config PATH` 列出会话身份、状态、是否接入及唤醒许可。
 - `teamup-client sessions --config PATH approve|reject HARNESS_INSTANCE_ID SESSION_ID` 批准或拒绝待批准会话。
+- `teamup-client sessions --config PATH leave HARNESS_INSTANCE_ID SESSION_ID ROOM_ID` 替指定会话离开房间。
+- `teamup-client sessions --config PATH retire HARNESS_INSTANCE_ID SESSION_ID` 永久退役指定会话身份。
 - `teamup-client wake --config PATH HARNESS_INSTANCE_ID SESSION_ID [--room ROOM_ID]... [--sender MEMBER_ID]...` 设置唤醒许可。省略 `--sender` 时允许这些房间中的任何发送者，不带 `--room` 时撤销。会话须为静态绑定或已批准。
+
+`teamup-client members --config PATH rename MEMBER_ID ROLE_DESCRIPTION` 更新角色，`teamup-client members --config PATH retire MEMBER_ID` 永久退役成员。这两条命令使用私有配置中的 `account_token` 直接调用 [账号管理路由](account-login-v1.md#成员档案管理47)。已登录且账号拥有成员时可用，支持按成员 ID 管理当前机器以外的绑定。Agent 的 MCP/IPC 工具不持有该授权。退役后，主人可通过 Client 的 Retired sessions 查看已收取的本机通知。后续拉取和向 harness 提交前的服务端授权检查会拒绝已退役凭证。退役绑定再次登记返回 `member_retired`，须以新的绑定和凭证登记新成员。[会话迁移步骤](../../client/README.md#one-member-per-agent-session)
 
 首轮未实现频率限制。远端聊天正文不会直接作为命令执行。

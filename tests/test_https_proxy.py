@@ -309,12 +309,14 @@ async def https_exchange(root):
                                 alice = await tool(
                                     agent_a,
                                     "register",
-                                    role_description="HTTPS backend",
+                                    name="HTTPS backend",
+                                    description="Verifies API behavior through the HTTPS proxy.",
                                 )
                                 bob = await tool(
                                     agent_b,
                                     "register",
-                                    role_description="HTTPS frontend",
+                                    name="HTTPS frontend",
+                                    description="Verifies Client behavior through the HTTPS proxy.",
                                 )
                                 assert alice["member_id"] != bob["member_id"]
                                 room = await tool(

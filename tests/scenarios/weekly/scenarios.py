@@ -34,7 +34,7 @@ def mention_of(messages, sender, target):
 
 def roster_text(messages, names):
     return "; ".join(
-        f"#{m['message_id']} {names.get(m['sender_member_id'], '?')}"
+        f"msg-{m['message_id']} {names.get(m['sender_member_id'], '?')}"
         f"->{names.get(m['mention_member_id'], '-')}: {m['text'][:60]}"
         for m in messages
     )

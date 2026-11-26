@@ -55,12 +55,29 @@ def tool(
 TOOLS = [
     tool(
         "register",
-        "Register this owner-approved session or recover its existing member ID.",
-        {"role_description": NAME},
+        "Register this owner-approved session or recover its existing member ID. "
+        "Reuse one identity across rooms.",
+        {
+            "name": {
+                **NAME,
+                "description": "Functional name of at most three words, e.g. Release Lead.",
+            },
+            "description": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160,
+                "description": "One line describing your scope and what you handle or hand off.",
+            },
+        },
+    ),
+    tool(
+        "retire_identity",
+        "Permanently retire your bound TeamUp identity and leave its rooms. "
+        "Earlier conversation history remains available to authorized readers.",
     ),
     tool(
         "find_members",
-        "Find teammates by a substring of their role description.",
+        "Find teammates by name or responsibility. Use the member ID to address them.",
         optional={"q": {"type": "string", "default": ""}},
     ),
     tool(
@@ -76,6 +93,21 @@ TOOLS = [
         {"rules": TEXT, "protocol": TEXT, "history_policy": HISTORY_POLICY},
     ),
     tool("join_room", "Join a team-visible room.", ROOM),
+    tool("leave_room", "Leave a room as this member. You can rejoin later.", ROOM),
+    tool(
+        "list_room_members",
+        "List current room members, their effective responsibilities, and membership IDs.",
+        ROOM,
+    ),
+    tool(
+        "remove_room_member",
+        "Remove a member from a room you created and are still joined to. "
+        "Use the target's membership ID from the roster. Reuse it on retry.",
+        ROOM | {
+            "member_id": {"type": "string", "format": "uuid"},
+            "membership_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+        },
+    ),
     tool("get_board", "Read the room's current rules, protocol and version.", ROOM),
     tool(
         "ack_board",
@@ -162,8 +194,8 @@ TOOLS = [
     ),
     tool(
         "notifications",
-        "List received mentions and DM notices after an event ID. "
-        "Open room or DM history for their text. Rows stay after delivery, "
+        "List received mentions, DM notices, and owner-requested room departures after an event ID. "
+        "Open room or DM history for message text. Rows stay after delivery, "
         "so a full first page can hold only older rows: when a page returns "
         "limit rows, pass its last event_id as after until a shorter page "
         "returns.",
@@ -204,8 +236,9 @@ async def hold_attachment(
             ) as closed:
                 delay = 0.5
                 await closed.wait()
-        except ClientError:
-            pass
+        except ClientError as exc:
+            if exc.code == "member_retired":
+                return
         await asyncio.sleep(delay)
         delay = min(delay * 2, 10)
 
@@ -220,11 +253,17 @@ async def unread_hint(
         )
     except ClientError:
         return None
-    count = status.get("unread_mentions")
-    if type(count) is not int or count < 1:
+    unread = []
+    for field, singular, plural in (
+        ("unread_mentions", "mention", "mentions"),
+        ("unread_room_departures", "room departure", "room departures"),
+    ):
+        count = status.get(field)
+        if type(count) is int and count > 0:
+            unread.append(f"{count} unread {singular if count == 1 else plural}")
+    if not unread:
         return None
-    noun = "mention" if count == 1 else "mentions"
-    return f"TeamUp: {count} unread {noun}. Call teamup_notifications to read them."
+    return f"TeamUp: {' and '.join(unread)}. Call teamup_notifications to read them."
 
 
 def create_mcp(
@@ -240,20 +279,21 @@ def create_mcp(
             "Use a DM for two agents. Use a shared room for three or more agents "
             "who need the same context. If DM tools are unavailable, ask for an "
             "approved private handoff. "
-            "Register the approved local session with a specific role and "
-            "responsibility from the task, or ask the user; keep the returned "
-            "member ID and existing approval requirements. Role descriptions can repeat. "
-            "Confirm the intended member ID if role search finds multiple matches. Short examples: "
-            "'Backend · Accounts API', 'Frontend · Accounts screen', 'QA · Accounts "
-            "fixtures'. Avoid bare titles like 'Developer' and do not invent a "
-            "teammate's role. Before creating a room, write rules and protocol for "
+            "Register the approved session with a functional name of up to three "
+            "words and one line describing its responsibility. For example, use "
+            "Release Lead with 'Coordinates releases and hands off deployment.' "
+            "Ask the user for the responsibility if needed. Keep the returned "
+            "member ID and reuse that identity across rooms. Read member "
+            "responsibilities in the team directory or room roster before choosing "
+            "the recipient. Before creating a room, write rules and protocol for "
             "its purpose, expected roles, progress, handoff, and completion, and "
             "preserve requirements the user gave explicitly. After joining or "
             "creating a room, read and acknowledge its current board. Reuse "
-            "teamup_list_rooms for joined-room discovery. Give a short room "
-            "responsibility introduction only when needed, prefer board role "
-            "choices, do not repeat it on rejoin, and do not invent a persistent "
-            "room role. Turn a natural request to assign work into an explicit room "
+            "teamup_list_rooms for joined-room discovery. Use teamup_leave_room "
+            "to end membership in one room and teamup_retire_identity to permanently "
+            "retire the current TeamUp identity. Introduce your responsibilities "
+            "once after joining if the room needs it. "
+            "Turn a natural request to assign work into an explicit room "
             "task: read and acknowledge the current board, then call "
             "teamup_create_task with a fresh client_task_id and reuse it on retry. "
             "Use teamup_join_task to take eligible open work, report progress with "
@@ -263,6 +303,8 @@ def create_mcp(
             "teamup_task_history; keep ordinary chat and mentions unchanged. "
             "Open a pair DM with the teammate's member ID; teamup_open_dm returns "
             "the same conversation on every repeat. "
+            "Cite TeamUp messages as msg-<message_id>, for example msg-42. "
+            "Reply via the corresponding room_id or dm_id and use numeric history cursors. "
             "To request someone's attention, pass their member ID as mention_member_id. "
             "Use mention_member_ids for an ordered list of room recipients. "
             "Use a fresh client_message_id for each new message and keep it on retry. "
@@ -295,7 +337,7 @@ def create_mcp(
                 socket_path, binding_key, methods[name], arguments, session=session
             )
             content = [TextContent(type="text", text=json.dumps(result, indent=2))]
-            if name != "teamup_notifications" and (
+            if name not in {"teamup_notifications", "teamup_retire_identity"} and (
                 hint := await unread_hint(socket_path, binding_key, session)
             ):
                 content.append(TextContent(type="text", text=hint))

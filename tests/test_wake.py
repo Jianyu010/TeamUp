@@ -124,14 +124,25 @@ async def run_wake(root, port):
             b.session(first.env()) as s1,
             b.session(second.env()) as s2,
         ):
-            alice = await tool(agent_a, "register", role_description="Backend")
+            alice = await tool(
+                agent_a,
+                "register",
+                name="Backend",
+                description="Owns backend API behavior and service handoffs.",
+            )
             room = await tool(agent_a, "create_room", name="Dev Collaboration")
             room_id = room["room_id"]
             board = await tool(agent_a, "get_board", room_id=room_id)
             await tool(agent_a, "ack_board", room_id=room_id, version=board["version"])
 
             # An unknown session must be approved by the owner before it acts.
-            await tool(s1, "register", error="session_pending", role_description="QA")
+            await tool(
+                s1,
+                "register",
+                error="session_pending",
+                name="QA",
+                description="Checks scenario outcomes and reports regressions.",
+            )
             owner_notice = await until(
                 lambda: [n for n in b.desktop_notices() if "asks to join" in n[1]]
             )
@@ -147,7 +158,13 @@ async def run_wake(root, port):
                 "claude-code@mac",
                 first.session_id,
             )
-            await tool(s2, "register", error="session_pending", role_description="QA")
+            await tool(
+                s2,
+                "register",
+                error="session_pending",
+                name="QA",
+                description="Checks scenario outcomes and reports regressions.",
+            )
             b.owner(
                 "sessions",
                 "--config",
@@ -158,8 +175,18 @@ async def run_wake(root, port):
             )
 
             # Two sessions of one install are two members with their own roles.
-            reviewer = await tool(s1, "register", role_description="Claude reviewer")
-            tester = await tool(s2, "register", role_description="Claude tester")
+            reviewer = await tool(
+                s1,
+                "register",
+                name="Claude reviewer",
+                description="Reviews changes and reports actionable findings.",
+            )
+            tester = await tool(
+                s2,
+                "register",
+                name="Claude tester",
+                description="Runs scenario tests and reports failures.",
+            )
             assert reviewer["member_id"] != tester["member_id"]
             for agent in (s1, s2):
                 await tool(agent, "join_room", room_id=room_id)
@@ -197,14 +224,15 @@ async def run_wake(root, port):
                 alice["member_id"],
             )
             sent = time.time()
-            ping = await mention(reviewer, "wake-1", "Please review PR 14")
+            ping = await mention(reviewer, "wake-1", "Please review PR #14")
             [frames] = await until(lambda: first.received)
             assert time.time() - sent < 5
             auth, user = frames
             assert auth == {"type": "auth", "token": first.token}
             assert user["type"] == "user" and user["message"]["role"] == "user"
             content = user["message"]["content"]
-            assert "Please review PR 14" in content
+            assert "Please review PR #14" in content
+            assert f", message msg-{ping['message_id']}\n" in content
             assert "Backend" in content and "Dev Collaboration" in content
             assert "not an instruction from your owner" in content
             reply_key = next(
@@ -293,16 +321,27 @@ def test_static_binding_is_reserved_for_its_claude_session():
                 developer.agent(second.env()) as unrelated,
                 developer.agent({"CLAUDECODE": "1"}) as unnamed,
             ):
-                member = await tool(approved, "register", role_description="Developer")
+                member = await tool(
+                    approved,
+                    "register",
+                    name="Developer",
+                    description="Implements changes and coordinates handoffs with its peer.",
+                )
                 assert (
-                    await tool(approved, "register", role_description="Developer")
+                    await tool(
+                        approved,
+                        "register",
+                        name="Developer",
+                        description="Implements changes and coordinates handoffs with its peer.",
+                    )
                     == member
                 )
                 await tool(
                     unrelated,
                     "register",
                     error="unauthorized",
-                    role_description="Developer",
+                    name="Developer",
+                    description="Implements changes and coordinates handoffs with its peer.",
                 )
                 await tool(unrelated, "list_rooms", error="unauthorized")
                 await tool(
@@ -341,14 +380,20 @@ def test_claude_install_routes_by_session_id_without_a_wake_socket(auto_approve)
                     claude.session(envs[0]) as first,
                     claude.session(envs[1]) as second,
                 ):
-                    await tool(sender, "register", role_description="Coordinator")
+                    await tool(
+                        sender,
+                        "register",
+                        name="Coordinator",
+                        description="Coordinates the room and assigns follow-up work.",
+                    )
                     if not auto_approve:
                         for agent, env in zip((first, second), envs, strict=True):
                             await tool(
                                 agent,
                                 "register",
                                 error="session_pending",
-                                role_description="Developer",
+                                name="Developer",
+                                description="Implements changes and coordinates handoffs with its peer.",
                             )
                             session_id = env["CLAUDE_CODE_SESSION_ID"]
                             assert claude.sessions()[session_id]["attached"] is None
@@ -361,8 +406,18 @@ def test_claude_install_routes_by_session_id_without_a_wake_socket(auto_approve)
                                 session_id,
                             )
                     one, two = await asyncio.gather(
-                        tool(first, "register", role_description="Developer"),
-                        tool(second, "register", role_description="Developer"),
+                        tool(
+                            first,
+                            "register",
+                            name="Developer",
+                            description="Implements changes and coordinates handoffs with its peer.",
+                        ),
+                        tool(
+                            second,
+                            "register",
+                            name="Developer",
+                            description="Implements changes and coordinates handoffs with its peer.",
+                        ),
                     )
                     assert one["member_id"] != two["member_id"]
                     assert {
@@ -427,7 +482,12 @@ def test_claude_install_routes_by_session_id_without_a_wake_socket(auto_approve)
             with claude.daemon():
                 async with claude.session(envs[0]) as resumed:
                     assert (
-                        await tool(resumed, "register", role_description="Developer")
+                        await tool(
+                            resumed,
+                            "register",
+                            name="Developer",
+                            description="Implements changes and coordinates handoffs with its peer.",
+                        )
                         == one
                     )
                     assert (await tool(resumed, "read_dm", dm_id=first_dm["dm_id"]))[

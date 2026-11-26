@@ -1,3 +1,5 @@
+import {renderSessionChoices} from "./console-members.js";
+
 export function roomBoard({get, request}) {
   const toggle = get("board-toggle");
   const panel = get("board-panel");
@@ -85,7 +87,8 @@ export function roomBoard({get, request}) {
   }
 
   function select(next) {
-    if (viewer?.id !== next?.id || viewer?.member_id !== next?.member_id) {
+    if (viewer?.id !== next?.id || viewer?.member_id !== next?.member_id ||
+        viewer?.membership_id !== next?.membership_id) {
       clear();
     } else if (viewer && next.current > viewer.current && editingVersion === null) {
       pending = null;
@@ -105,11 +108,7 @@ export function roomBoard({get, request}) {
     sessions = available;
     const next = sessions.find(({id}) => id === viewer?.id)
       ?? sessions.find(({id}) => id === preferred) ?? sessions[0] ?? null;
-    chooser.replaceChildren(...sessions.map((session) => {
-      const duplicate = sessions.some(({id, label}) => id !== session.id && label === session.label);
-      return new Option(duplicate ? session.label + " · " + session.id : session.label,
-        session.id, false, session.id === next?.id);
-    }));
+    renderSessionChoices(chooser, sessions, next?.id);
     get("board-session-label").hidden = sessions.length < 2;
     get("board-title").hidden = !next;
     if (!next) expand(false);

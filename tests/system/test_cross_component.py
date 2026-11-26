@@ -13,8 +13,18 @@ from _stack import deploy, tool, wait_for
 async def walk(server, alice, bob):
     api = server.api()
     async with alice.agent() as a, bob.agent() as b:
-        a_member = await tool(a, "register", role_description="Backend")
-        b_member = await tool(b, "register", role_description="Frontend")
+        responsibility = "Reviews database changes and coordinates backend releases."
+        a_member = await tool(
+            a, "register", name="Backend Lead", description=responsibility
+        )
+        assert a_member["name"] == "Backend Lead"
+        assert a_member["description"] == responsibility
+        b_member = await tool(
+            b,
+            "register",
+            name="Frontend",
+            description="Owns interface behavior and coordinates API integration.",
+        )
         assert a_member["member_id"] != b_member["member_id"]
 
         room = (await tool(a, "create_room", name="Cross", rules="Be kind"))["room_id"]
@@ -22,6 +32,11 @@ async def walk(server, alice, bob):
         await tool(a, "ack_board", room_id=room, version=board["version"])
 
         await tool(b, "join_room", room_id=room)
+        roster = (await tool(b, "list_room_members", room_id=room))["members"]
+        backend = next(
+            entry for entry in roster if entry["member_id"] == a_member["member_id"]
+        )
+        assert backend["description"] == responsibility
         board = await tool(b, "get_board", room_id=room)
         await tool(b, "ack_board", room_id=room, version=board["version"])
 

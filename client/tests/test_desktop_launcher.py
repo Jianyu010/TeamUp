@@ -80,6 +80,7 @@ def test_desktop_launcher_reuses_client_through_private_socketpair():
                 assert json.loads(response.read()) == {
                     "sessions": [],
                     "rooms": [],
+                    "retired_sessions": [],
                     "directory_available": False,
                 }
             finally:

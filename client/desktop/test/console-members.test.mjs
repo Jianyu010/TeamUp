@@ -12,10 +12,20 @@ class Element {
   }
 
   addEventListener() {}
-  setAttribute() {}
+  setAttribute(name, value) { this[name] = value; }
+
+  matches(selector) {
+    assert.equal(selector, ":popover-open");
+    return false;
+  }
 
   append(...items) {
+    for (const item of items) item.parentElement = this;
     this.children.push(...items);
+  }
+
+  contains(item) {
+    return this === item || this.children.some((child) => child.contains?.(item));
   }
 
   replaceChildren(...items) {
@@ -33,8 +43,13 @@ class Element {
 
   querySelectorAll(selector) {
     assert.equal(selector, ".presence[data-deadline]");
-    return this.children.flatMap((row) => row.children.filter((badge) =>
-      badge.className === "presence" && Object.hasOwn(badge.dataset, "deadline")));
+    const descendants = (item) => (item.children ?? []).flatMap((child) => [child, ...descendants(child)]);
+    return descendants(this).filter((badge) =>
+      badge.className === "presence" && Object.hasOwn(badge.dataset, "deadline"));
+  }
+
+  remove() {
+    this.parentElement.replaceChildren(...this.parentElement.children.filter((child) => child !== this));
   }
 
   removeAttribute(attribute) {
@@ -50,13 +65,15 @@ function message(id, sender_member_id, recipient_member_ids = []) {
   return {id, sender_member_id, recipient_member_ids, created_at: null};
 }
 
-function room(t, members, messages) {
+function room(t, members, messages, options = {}) {
   const elements = new Map(["roster", "roster-title", "roster-status", "member-detail"]
     .map((id) => [id, new Element()]));
   const rail = elements.get("roster");
   globalThis.document = {
     getElementById: (id) => elements.get(id),
     createElement: () => new Element(),
+    createElementNS: () => new Element(),
+    createTextNode: (text) => ({textContent: text}),
     addEventListener() {},
   };
   globalThis.window = {addEventListener() {}};
@@ -74,14 +91,19 @@ function room(t, members, messages) {
     subject: () => ({room: "room", session: "session"}),
     chat: () => transcript,
     policyChanged() {},
+    ...options,
   });
   return {
     refresh: roster.refresh,
+    reset: roster.reset,
     orderedIds: () => rail.children.map((row) => row.dataset.member),
+    action: (id) => rail.children.find((row) => row.dataset.member === id)?.children
+      .find((child) => child.className === "member-action"),
     focus(id) {
-      document.activeElement = rail.children.find((row) => row.dataset.member === id);
+      const row = rail.children.find((item) => item.dataset.member === id);
+      document.activeElement = row.children[0];
     },
-    focusedId: () => document.activeElement?.dataset.member,
+    focusedId: () => document.activeElement?.parentElement?.dataset.member,
     setTranscript(result) {
       transcript = result;
       roster.chatChanged();
@@ -134,4 +156,75 @@ test("an expired Online badge moves its member into the remaining group", async 
 
   roster.advanceTime(10);
   assert.deepEqual(roster.orderedIds(), ["b", "a"]);
+});
+
+test("room role labels reflect the current authorized roster and clear on reset", async (t) => {
+  const reads = [];
+  const updates = [];
+  const roster = room(t, [], [], {
+    read: () => new Promise((resolve) => reads.push(resolve)),
+    namesChanged: (names) => updates.push(names),
+  });
+  const firstRead = roster.refresh();
+  reads.shift()({state: "ready", members: [
+    {id: "11111111-old", role: "Coordinator"},
+    {id: "22222222-old", role: "Coordinator"},
+    {id: "33333333-old", role: "Reviewer"},
+  ]});
+  await firstRead;
+  assert.deepEqual(updates.at(-1), new Map([
+    ["11111111-old", "Coordinator (11111111)"],
+    ["22222222-old", "Coordinator (22222222)"],
+    ["33333333-old", "Reviewer"],
+  ]));
+
+  const oldRead = roster.refresh();
+  const oldResponse = reads.shift();
+  roster.reset();
+  assert.deepEqual(updates.at(-1), new Map());
+
+  const nextRead = roster.refresh();
+  reads.shift()({state: "ready", members: [{id: "44444444-new", role: "Editor"}]});
+  await nextRead;
+  oldResponse({state: "ready", members: [{id: "33333333-old", role: "Reviewer"}]});
+  await oldRead;
+  assert.deepEqual(updates.at(-1), new Map([["44444444-new", "Editor"]]));
+
+  const deniedRead = roster.refresh();
+  reads.shift()({state: "not_found", members: []});
+  await deniedRead;
+  assert.deepEqual(updates.at(-1), new Map());
+});
+
+test("a board refresh preserves known role labels while the roster reloads", async (t) => {
+  const updates = [];
+  const roster = room(t, [{id: "member", role: "Reviewer"}], [], {
+    namesChanged: (names) => updates.push(names),
+  });
+  await roster.refresh();
+  roster.reset({preserveNames: true});
+
+  assert.deepEqual(updates, [new Map([["member", "Reviewer"]])]);
+  assert.deepEqual(roster.orderedIds(), []);
+});
+
+test("the roster renders icon actions only on eligible rows", async (t) => {
+  const called = [];
+  const roster = room(t, [
+    member("mine", "online"), member("target", "online"), member("other", "online"),
+  ], [], {
+    actionFor: ({id}) => ({
+      mine: {kind: "leave", run: () => called.push("mine")},
+      target: {kind: "remove", run: () => called.push("target")},
+    })[id],
+  });
+  await roster.refresh();
+  const leave = roster.action("mine");
+  assert.equal(leave?.title, "Leave this room");
+  assert.equal(leave["aria-label"], leave.title);
+  assert.equal(leave.children.length, 1);
+  assert.equal(roster.action("target")?.title, "Remove from room");
+  assert.equal(roster.action("other"), undefined);
+  leave.onclick();
+  assert.deepEqual(called, ["mine"]);
 });

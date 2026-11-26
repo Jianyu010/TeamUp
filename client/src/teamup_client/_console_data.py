@@ -1,6 +1,7 @@
 """Read projections for the local console using existing member authorization."""
 
 import asyncio
+import re
 from collections import Counter
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -21,23 +22,58 @@ VERSION_OBSERVATION_SECONDS = 2
 MAX_BEFORE = 1 << 63  # The Server treats this as an unbounded latest-page read.
 
 
-def _member_labels(members: list[dict]) -> dict[str, str]:
-    roles = {member["member_id"]: member["role_description"] for member in members}
-    counts = Counter(roles.values())
+@dataclass(frozen=True)
+class _MessageMember:
+    label: str
+    route_name: str
+    legacy_title: str | None = None
+
+
+def _message_members(members: list[dict]) -> dict[str, _MessageMember]:
+    profiles = {}
+    for member in members:
+        label = member["role_description"]
+        name = label
+        title = None
+        structured_name = member.get("name")
+        if isinstance(structured_name, str) and is_string(structured_name):
+            name = structured_name
+        else:
+            parts = [part.strip() for part in re.split(r":(?=\s)|：", label, maxsplit=1)]
+            if len(parts) == 2 and all(parts):
+                name, title = parts
+        profiles[member["member_id"]] = _MessageMember(label, name, title)
+    labels = Counter(profile.label for profile in profiles.values())
+    route_names = Counter(profile.route_name for profile in profiles.values())
     return {
-        identifier: f"{role} ({identifier[:8]})" if counts[role] > 1 else role
-        for identifier, role in roles.items()
+        identifier: _MessageMember(
+            f"{profile.label} ({identifier[:8]})"
+            if labels[profile.label] > 1 else profile.label,
+            f"{profile.route_name} ({identifier[:8]})"
+            if route_names[profile.route_name] > 1 else profile.route_name,
+            profile.legacy_title,
+        )
+        for identifier, profile in profiles.items()
     }
 
 
-def _message(item: dict, labels: dict[str, str]) -> dict:
+def _message(item: dict, members: dict[str, _MessageMember]) -> dict:
+    def member_for(identifier: str) -> _MessageMember:
+        short_id = identifier[:8]
+        return members.get(identifier) or _MessageMember(short_id, short_id)
+
     sender = item["sender_member_id"]
+    sender_profile = member_for(sender)
+    if item.get("sender_retired") is True:
+        label = f"Retired member ({sender[:8]})"
+        sender_profile = _MessageMember(label, label)
     first_target = item["mention_member_id"]
     targets = item.get("mention_member_ids", [first_target] if first_target else [])
-    mentioned = [labels.get(target, target[:8]) for target in targets]
+    target_profiles = [member_for(target) for target in targets]
+    mentioned = [profile.label for profile in target_profiles]
     result = {
         "id": str(item["message_id"]),
-        "sender": labels.get(sender, sender[:8]),
+        "sender": sender_profile.label,
         "sender_member_id": sender,
         "text": item["text"],
         "created_at": item.get("created_at"),
@@ -46,7 +82,24 @@ def _message(item: dict, labels: dict[str, str]) -> dict:
     }
     if len(mentioned) > 1:
         result["mentioned_recipients"] = mentioned
+    visible_targets = target_profiles[:2]
+    displayed_profiles = [sender_profile, *visible_targets]
+    legacy_titles = [profile.legacy_title for profile in displayed_profiles if profile.legacy_title]
+    if legacy_titles or any(profile.route_name != profile.label for profile in displayed_profiles):
+        result["routing"] = {
+            "sender": sender_profile.route_name,
+            "recipients": [profile.route_name for profile in visible_targets],
+            "legacy_titles": legacy_titles,
+        }
     return result
+
+
+def _profile_fields(member: dict) -> dict:
+    return {
+        field: value
+        for field in ("name", "owner_username", "description")
+        if is_string(value := member.get(field))
+    }
 
 
 def _member_with_presence(member: dict, presence: dict[str, dict]) -> dict:
@@ -54,6 +107,7 @@ def _member_with_presence(member: dict, presence: dict[str, dict]) -> dict:
     return {
         "id": identifier,
         "role": member["role_description"],
+        **_profile_fields(member),
         "presence": presence.get(
             identifier, {"state": "unknown", "observed_at": None, "age_ms": None}
         ),
@@ -100,12 +154,34 @@ class Request(Protocol):
     ) -> Awaitable[dict]: ...
 
 
+class SessionLifecycle(Protocol):
+    def console_retired_sessions(self) -> list[dict]: ...
+
+    async def console_session_action(
+        self, session_id: str, room_id: str | None, membership_id: str | None
+    ) -> dict: ...
+
+    async def console_retired_history(
+        self,
+        session_id: str,
+        *,
+        after: int | None = None,
+        kind: str | None = None,
+        conversation: str | None = None,
+        before: int | None = None,
+    ) -> dict: ...
+
+
 class ConsoleReader:
     def __init__(
-        self, sessions: Callable[[], tuple[ConsoleSession, ...]], request: Request
+        self,
+        sessions: Callable[[], tuple[ConsoleSession, ...]],
+        request: Request,
+        lifecycle: SessionLifecycle | None = None,
     ):
         self._sessions = sessions
         self._request = request
+        self._lifecycle = lifecycle
         self._reads = asyncio.Semaphore(8)
         try:
             installed_version = version("teamup-client")
@@ -171,9 +247,10 @@ class ConsoleReader:
         }
         try:
             member = await self._read(session, "/members/me")
-            description["label"] = member["role_description"]
+            description.update(_profile_fields(member))
+            description["label"] = description.get("name", member["role_description"])
             description["member_id"] = member["member_id"]
-            listing = await self._read(session, "/rooms")
+            listing = await self._read(session, "/rooms", {"include_membership": "true"})
         except ClientError as exc:
             description["state"] = exc.code
             return session, description, []
@@ -257,12 +334,18 @@ class ConsoleReader:
                 )
                 if latest is not None and (shared["latest_message_id"] or 0) < latest:
                     shared["latest_message_id"] = latest
+                if room.get("can_remove_members") is True:
+                    permissions = {"can_remove_members": True}
+                else:
+                    permissions = {}
                 shared["memberships"].append(
                     {
                         "session": session["id"],
                         "acknowledged": room["acked_board_version"],
                         "current": room["current_board_version"],
                         "active_task": None,
+                        **permissions,
+                        **({"membership_id": room["membership_id"]} if room.get("membership_id") else {}),
                     }
                 )
         if (
@@ -338,11 +421,43 @@ class ConsoleReader:
         for room in ordered:
             message = room["latest_message_id"]
             room["latest_message_id"] = str(message) if message is not None else None
-        return {
+        result = {
             "sessions": sessions,
             "rooms": ordered,
             "directory_available": directory_available,
         }
+        if self._lifecycle is not None:
+            result["retired_sessions"] = self._lifecycle.console_retired_sessions()
+        return result
+
+    async def session_action(
+        self, session_id: str, room_id: str | None, membership_id: str | None
+    ) -> dict:
+        if self._lifecycle is None:
+            return {"state": "not_found"}
+        try:
+            return await self._lifecycle.console_session_action(session_id, room_id, membership_id)
+        except ClientError as exc:
+            return {"state": exc.code}
+
+    async def retired_history(
+        self,
+        session_id: str,
+        *,
+        after: int | None = None,
+        kind: str | None = None,
+        conversation: str | None = None,
+        before: int | None = None,
+    ) -> dict:
+        if self._lifecycle is None:
+            return {"state": "not_found"}
+        async with self._reads:
+            try:
+                return await self._lifecycle.console_retired_history(
+                    session_id, after=after, kind=kind, conversation=conversation, before=before
+                )
+            except ClientError as exc:
+                return {"state": exc.code}
 
     async def _participating(
         self, session: ConsoleSession, member_id: str, room_id: str
@@ -451,6 +566,18 @@ class ConsoleReader:
             return {"state": exc.code}
         return {"state": "ready", "board": board}
 
+    async def remove_room_member(
+        self, identity: str, room_id: str, member_id: str, membership_id: str
+    ) -> dict:
+        try:
+            result = await self._write(
+                identity, f"/rooms/{room_id}/members/{member_id}/remove",
+                {"membership_id": membership_id},
+            )
+        except ClientError as exc:
+            return {"state": exc.code}
+        return {"state": "ready", **result}
+
     async def room_members(self, identity: str, room_id: str) -> dict:
         session = self._current(identity)
         if session is None:
@@ -462,23 +589,28 @@ class ConsoleReader:
                 self._presence(session), self._roster_tasks(session, path)
             )
             # Read membership last so optional observations cannot outlive this read scope.
-            members = (await self._read(session, f"{path}/members"))["members"]
+            members = (await self._read(
+                session, f"{path}/members", {"include_membership": "true"}
+            ))["members"]
         except ClientError as exc:
             return {"state": exc.code, "members": []}
         by_member = _tasks_by_member(members, tasks) if tasks is not None else {}
+        roster = []
+        for member in members:
+            item = {
+                **_member_with_presence(member, presence),
+                "acknowledged": member["acked_board_version"],
+                "tasks": by_member.get(member["member_id"]),
+            }
+            if membership_id := member.get("membership_id"):
+                item["membership_id"] = membership_id
+            roster.append(item)
         return {
             "state": "ready",
             "current": detail["current_board_version"],
             "history_policy": detail["history_policy"],
             "presence_as_of": as_of,
-            "members": [
-                {
-                    **_member_with_presence(member, presence),
-                    "acknowledged": member["acked_board_version"],
-                    "tasks": by_member.get(member["member_id"]),
-                }
-                for member in members
-            ],
+            "members": roster,
         }
 
     async def room(
@@ -493,7 +625,8 @@ class ConsoleReader:
         if session is None:
             return {"state": "not_found"}
         try:
-            rooms = (await self._read(session, "/rooms"))["rooms"]
+            listing = await self._read(session, "/rooms", {"include_membership": "true"})
+            rooms = listing["rooms"]
         except ClientError as exc:
             return {"state": exc.code}
         selected = next((room for room in rooms if room["room_id"] == room_id), None)
@@ -515,6 +648,9 @@ class ConsoleReader:
             if after is not None
             else {"before": before, "limit": PAGE}
         )
+        if membership_id := selected.get("membership_id"):
+            board["membership_id"] = membership_id
+            query["membership_id"] = membership_id
         try:
             history = await self._read(session, f"/rooms/{room_id}/messages", query)
         except ClientError as exc:
@@ -523,7 +659,7 @@ class ConsoleReader:
             return {"state": exc.code, "board": board, "messages": [], "older": None}
 
         messages = history["messages"]
-        labels: dict[str, str] = {}
+        members: dict[str, _MessageMember] = {}
         if messages:
             try:
                 directory = await self._read(session, "/members")
@@ -533,7 +669,7 @@ class ConsoleReader:
                 if exc.code in {"not_found", "not_registered", "unauthorized"}:
                     return {"state": exc.code}
             else:
-                labels = _member_labels(directory["members"])
+                members = _message_members(directory["members"])
         result = {
             "state": "ready",
             "board": board,
@@ -541,7 +677,7 @@ class ConsoleReader:
             if after is None and len(messages) == PAGE
             else None,
             "more_recent": after is not None and len(messages) == PAGE,
-            "messages": [_message(item, labels) for item in messages],
+            "messages": [_message(item, members) for item in messages],
         }
         if "expired_through_message_id" in history:
             result["expired_through_message_id"] = str(

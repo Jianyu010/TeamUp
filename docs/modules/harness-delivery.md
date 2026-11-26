@@ -59,7 +59,7 @@ Client 维护 **成员 → 在线会话** 的映射。一个会话对应一个 T
 4. **结果。** Driver 返回 `accepted`、`rejected` 或 `unknown`，分别记为 `delivered`、`failed`、`unknown`。重启时遗留的 `submitting` 记为 `unknown`。`unknown` 只在 Driver 能按标记核对 harness 记录时改写，不盲目重发。
 5. **回复。** turn 内的 Agent 在原 `room_id` 回复，`client_message_id` 取 `wake-<event_id>`。重复投递只会让 Server 返回同一条消息。
 
-提交给会话的正文固定格式：发送者角色和 `member_id`、房间名和 `room_id`、`event_id`、消息正文和当前公告，并说明这是来自 TeamUp 的数据，按房间公告和本机权限处理。远端字段不能指定命令、路径、权限模式或工具。
+提交给会话的正文固定格式：发送者角色和 `member_id`、房间名和 `room_id`、`event_id`、`msg-N` 消息引用、消息正文和当前公告，并说明这是来自 TeamUp 的数据，按房间公告和本机权限处理。远端字段不能指定命令、路径、权限模式或工具。
 
 ## Driver
 

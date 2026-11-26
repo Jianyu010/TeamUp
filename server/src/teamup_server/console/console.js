@@ -721,7 +721,7 @@ function activityDetail(activity) {
     parts.push("actor " + shortId(activity.actor_member_id));
   }
   if (activity.message_id) {
-    parts.push("message #" + String(activity.message_id));
+    parts.push("message msg-" + String(activity.message_id));
   }
   if (parts.length === 0) {
     parts.push("no details");
@@ -844,7 +844,8 @@ function messageRow(message) {
     typeof message.sender_role_description === "string"
       ? message.sender_role_description
       : "unknown member";
-  li.append(element("span", "row-agent", sender));
+  const label = message.sender_retired === true ? `${sender} (retired)` : sender;
+  li.append(element("span", "row-agent", label));
   li.append(element("span", "row-text", message.text));
   return li;
 }

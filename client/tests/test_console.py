@@ -312,6 +312,90 @@ def test_room_projects_all_structured_recipients_in_server_order():
     asyncio.run(scenario())
 
 
+def test_room_projects_compact_routing_and_retains_full_legacy_labels():
+    async def scenario():
+        upstream = Upstream()
+        sender = "Coordinator: PR review support"
+        first_recipient = "Release Lead：AS decisions and co-signs"
+        structured = "API: Owner"
+        extra_recipient = "Coordinator: Release rollbacks"
+
+        async def request(method, path, token, *, query=None):
+            if path == "/members":
+                return {
+                    "members": [
+                        {"member_id": BACKEND, "role_description": sender},
+                        {"member_id": REVIEWER, "role_description": first_recipient},
+                        {"member_id": REMOTE, "role_description": structured, "name": structured},
+                        {"member_id": OUTSIDER, "role_description": extra_recipient},
+                    ]
+                }
+            response = await upstream(method, path, token, query=query)
+            if path.endswith("/messages"):
+                response["messages"][0].update(
+                    text="Check #858",
+                    mention_member_id=REVIEWER,
+                    mention_member_ids=[REVIEWER, REMOTE, OUTSIDER],
+                )
+            return response
+
+        result = await ConsoleReader(sessions, request).room("primary", ROOM)
+        message = result["messages"][0]
+        assert message["sender"] == sender
+        assert message["sender_member_id"] == BACKEND
+        assert message["mentioned"] == first_recipient
+        assert message["mentioned_recipients"] == [first_recipient, structured, extra_recipient]
+        assert message["recipient_member_ids"] == [REVIEWER, REMOTE, OUTSIDER]
+        assert message["text"] == "Check #858"
+        assert message["routing"] == {
+            "sender": "Coordinator (93e57f02)",
+            "recipients": ["Release Lead", structured],
+            "legacy_titles": ["PR review support", "AS decisions and co-signs"],
+        }
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("label", ["https://example.test", "Shift 09:30", ": Empty name", "Lead: "])
+def test_room_leaves_ambiguous_legacy_sender_labels_intact(label):
+    async def scenario():
+        upstream = Upstream()
+
+        async def request(method, path, token, *, query=None):
+            if path == "/members":
+                return {"members": [{"member_id": BACKEND, "role_description": label}]}
+            return await upstream(method, path, token, query=query)
+
+        result = await ConsoleReader(sessions, request).room("primary", ROOM)
+        message = result["messages"][0]
+        assert message["sender"] == label
+        assert "routing" not in message
+
+    asyncio.run(scenario())
+
+
+def test_room_labels_messages_from_retired_senders():
+    async def scenario():
+        upstream = Upstream()
+
+        async def request(method, path, token, *, query=None):
+            if path == "/members":
+                return {"members": []}
+            response = await upstream(method, path, token, query=query)
+            if path.endswith("/messages"):
+                response["messages"][0].update(
+                    sender_member_id=REMOTE, sender_retired=True
+                )
+            return response
+
+        result = await ConsoleReader(sessions, request).room("primary", ROOM)
+        message = result["messages"][0]
+        assert message["sender"] == f"Retired member ({REMOTE[:8]})"
+        assert message["sender_member_id"] == REMOTE
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("truncated", [True, False])
 def test_empty_room_page_keeps_server_retention_boundary(truncated):
     async def scenario():
@@ -486,6 +570,52 @@ def test_room_members_route_keeps_scope_and_projects_complete_active_task_pages(
         }
         assert upstream.calls[-1][1] == f"/rooms/{ROOM}/members"
         assert all(not path.endswith("/board") for _, path, _, _ in upstream.calls)
+
+    asyncio.run(scenario())
+
+
+def test_member_profiles_project_owner_and_contextual_description():
+    async def scenario():
+        upstream = RosterUpstream()
+        profile = {
+            "name": "Backend",
+            "description": "Maintains the release pipeline.",
+            "owner_username": "alex",
+        }
+        override = "Coordinates this release's dependency upgrades."
+
+        async def request(method, path, token, *, query=None):
+            if path.endswith("/tasks"):
+                return {"tasks": [], "next_after": None}
+            result = await upstream(method, path, token, query=query)
+            if path == "/members/me" and result["member_id"] == BACKEND:
+                return result | profile
+            if path == "/members" or path.endswith("/members"):
+                for member in result["members"]:
+                    if member["member_id"] == BACKEND:
+                        member.update(profile)
+                        if path != "/members":
+                            member["description"] = override
+            return result
+
+        reader = ConsoleReader(sessions, request)
+        workspace = await reader.workspace()
+        local = next(item for item in workspace["sessions"] if item["id"] == "primary")
+        assert local["label"] == profile["name"]
+        assert {field: local[field] for field in profile} == profile
+
+        team = await reader.team("primary")
+        teammate = next(member for member in team["members"] if member["id"] == BACKEND)
+        assert {field: teammate[field] for field in profile} == profile
+        legacy = next(member for member in team["members"] if member["id"] == OUTSIDER)
+        assert legacy["role"] == "Outside the room"
+        assert not legacy.keys() & profile.keys()
+
+        roster = await reader.room_members("primary", ROOM)
+        room_member = next(member for member in roster["members"] if member["id"] == BACKEND)
+        assert {field: room_member[field] for field in profile} == profile | {
+            "description": override,
+        }
 
     asyncio.run(scenario())
 

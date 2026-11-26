@@ -766,6 +766,325 @@
         "summary": "Get Member"
       }
     },
+    "/v1/members/me/retire": {
+      "post": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Retire Self V1 Members Me Retire Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Retire Self"
+      }
+    },
+    "/v1/members/me/retirement": {
+      "get": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Member Retirement V1 Members Me Retirement Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Member Retirement"
+      }
+    },
+    "/v1/members/{member_id}": {
+      "patch": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "member_id",
+            "required": true,
+            "schema": {
+              "title": "Member Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/_MemberRole"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Rename Member V1 Members  Member Id  Patch",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Rename Member"
+      }
+    },
+    "/v1/members/{member_id}/archive": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "member_id",
+            "required": true,
+            "schema": {
+              "title": "Member Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Retired Conversations V1 Members  Member Id  Archive Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Retired Conversations"
+      }
+    },
+    "/v1/members/{member_id}/archive/{kind}/{conversation_id}/messages": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "member_id",
+            "required": true,
+            "schema": {
+              "title": "Member Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "kind",
+            "required": true,
+            "schema": {
+              "enum": [
+                "room",
+                "dm"
+              ],
+              "title": "Kind",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "before",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Before"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Retired History V1 Members  Member Id  Archive  Kind   Conversation Id  Messages Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Retired History"
+      }
+    },
+    "/v1/members/{member_id}/retire": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "member_id",
+            "required": true,
+            "schema": {
+              "title": "Member Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Retire Member V1 Members  Member Id  Retire Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Retire Member"
+      }
+    },
     "/v1/presence": {
       "get": {
         "parameters": [
@@ -908,6 +1227,16 @@
     "/v1/rooms": {
       "get": {
         "parameters": [
+          {
+            "in": "query",
+            "name": "include_membership",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Membership",
+              "type": "boolean"
+            }
+          },
           {
             "in": "header",
             "name": "authorization",
@@ -1281,6 +1610,79 @@
         "summary": "Join Room"
       }
     },
+    "/v1/rooms/{room_id}/leave": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "room_id",
+            "required": true,
+            "schema": {
+              "title": "Room Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "notify",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Notify",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "membership_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9a-f]{32}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Membership Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Leave Room V1 Rooms  Room Id  Leave Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Leave Room"
+      }
+    },
     "/v1/rooms/{room_id}/members": {
       "get": {
         "parameters": [
@@ -1291,6 +1693,16 @@
             "schema": {
               "title": "Room Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_membership",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Membership",
+              "type": "boolean"
             }
           },
           {
@@ -1325,6 +1737,136 @@
           }
         },
         "summary": "Room Members"
+      }
+    },
+    "/v1/rooms/{room_id}/members/{member_id}/remove": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "room_id",
+            "required": true,
+            "schema": {
+              "title": "Room Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "member_id",
+            "required": true,
+            "schema": {
+              "title": "Member Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/_RemoveRoomMember"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Remove Room Member V1 Rooms  Room Id  Members  Member Id  Remove Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Remove Room Member"
+      }
+    },
+    "/v1/rooms/{room_id}/members/{member_id}/responsibility": {
+      "patch": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "room_id",
+            "required": true,
+            "schema": {
+              "title": "Room Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "member_id",
+            "required": true,
+            "schema": {
+              "title": "Member Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/_RoomResponsibility"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Set Room Responsibility V1 Rooms  Room Id  Members  Member Id  Responsibility Patch",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Set Room Responsibility"
       }
     },
     "/v1/rooms/{room_id}/messages": {
@@ -1377,6 +1919,33 @@
                 }
               ],
               "title": "Before"
+            }
+          },
+          {
+            "in": "query",
+            "name": "membership_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9a-f]{32}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Membership Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "delivery",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Delivery",
+              "type": "boolean"
             }
           },
           {
@@ -2183,6 +2752,19 @@
     "_Enrollment": {
       "additionalProperties": false,
       "properties": {
+        "description": {
+          "anyOf": [
+            {
+              "maxLength": 160,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Description"
+        },
         "harness_instance_id": {
           "maxLength": 128,
           "title": "Harness Instance Id",
@@ -2194,10 +2776,29 @@
           "title": "Member Token",
           "type": "string"
         },
+        "name": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Name"
+        },
         "role_description": {
-          "maxLength": 200,
-          "title": "Role Description",
-          "type": "string"
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Role Description"
         },
         "session_key": {
           "maxLength": 128,
@@ -2208,7 +2809,6 @@
       "required": [
         "harness_instance_id",
         "session_key",
-        "role_description",
         "member_token"
       ],
       "title": "_Enrollment",
@@ -2243,6 +2843,21 @@
         "password"
       ],
       "title": "_Login",
+      "type": "object"
+    },
+    "_MemberRole": {
+      "additionalProperties": false,
+      "properties": {
+        "role_description": {
+          "maxLength": 200,
+          "title": "Role Description",
+          "type": "string"
+        }
+      },
+      "required": [
+        "role_description"
+      ],
+      "title": "_MemberRole",
       "type": "object"
     },
     "_Message": {
@@ -2328,6 +2943,21 @@
       "title": "_PublishBoard",
       "type": "object"
     },
+    "_RemoveRoomMember": {
+      "additionalProperties": false,
+      "properties": {
+        "membership_id": {
+          "pattern": "^[0-9a-f]{32}$",
+          "title": "Membership Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "membership_id"
+      ],
+      "title": "_RemoveRoomMember",
+      "type": "object"
+    },
     "_Room": {
       "additionalProperties": false,
       "properties": {
@@ -2374,6 +3004,35 @@
         "name"
       ],
       "title": "_Room",
+      "type": "object"
+    },
+    "_RoomResponsibility": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "anyOf": [
+            {
+              "maxLength": 160,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Description"
+        },
+        "membership_id": {
+          "pattern": "^[0-9a-f]{32}$",
+          "title": "Membership Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "membership_id",
+        "description"
+      ],
+      "title": "_RoomResponsibility",
       "type": "object"
     },
     "_TaskCreate": {

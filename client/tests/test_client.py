@@ -78,6 +78,7 @@ class TeamupGateway:
         self.streams = {}
         self.account_valid = True
         self.dm_enabled = True
+        self.departure_filter_supported = True
         self.dm_history = []
         self.dm_expiry = None
         self.dm_open_error = None
@@ -134,7 +135,14 @@ class TeamupGateway:
                     body["member_token"],
                     {
                         "member_id": MEMBERS[binding_index],
-                        "role_description": body["role_description"],
+                        "role_description": body["name"],
+                        "name": body["name"],
+                        "description": body["description"],
+                        **(
+                            {"owner_username": "alice"}
+                            if token == ACCOUNT_TOKEN
+                            else {}
+                        ),
                     },
                 )
                 await self.json_response(writer, member)
@@ -165,6 +173,12 @@ class TeamupGateway:
                 self.streams[token] = writer
                 await reader.read()
             elif path == "/v1/inbox":
+                if (not self.departure_filter_supported
+                        and "room_left" in query.get("kinds", [""])[0].split(",")):
+                    await self.json_response(
+                        writer, {"error": {"code": "invalid_request", "message": "Invalid kinds"}}, 422
+                    )
+                    return
                 after = int(query.get("after", [0])[0])
                 limit = int(query.get("limit", [50])[0])
                 events = [
@@ -550,13 +564,18 @@ def test_account_registration_reuses_the_member_after_login_expires():
                 settings["account_token"] = ACCOUNT_TOKEN
                 config.write_text(json.dumps(settings), encoding="utf-8")
                 key_a, key_b = (binding["binding_key"] for binding in BINDINGS)
-                params = {"role_description": "developer"}
+                params = {
+                    "name": "developer",
+                    "description": "Implements the API integration.",
+                }
 
                 async with daemon(config, socket):
                     member = await call(socket, key_a, "register", params)
                     assert member == {
                         "member_id": MEMBERS[0],
                         "role_description": "developer",
+                        "owner_username": "alice",
+                        **params,
                     }
                 assert [
                     entry[3]
@@ -567,7 +586,12 @@ def test_account_registration_reuses_the_member_after_login_expires():
                 upstream.account_valid = False
                 upstream.calls.clear()
                 async with daemon(config, socket):
-                    assert await call(socket, key_a, "register", params) == member
+                    assert (
+                        await call(
+                            socket, key_a, "register", {"role_description": "developer"}
+                        )
+                        == member
+                    )
                     assert await call(socket, key_a, "find_members", {}) == {
                         "members": [member]
                     }
@@ -637,6 +661,21 @@ def test_ipc_enforces_binding_and_maps_contract_operations():
                             key_a,
                             "invalid_request",
                         ),
+                        (
+                            "register",
+                            {
+                                "name": "Four Word Member Name",
+                                "description": "Implements the API integration.",
+                            },
+                            key_a,
+                            "invalid_request",
+                        ),
+                        (
+                            "register",
+                            {"name": "Missing Description"},
+                            key_a,
+                            "invalid_request",
+                        ),
                         ("nonsense", {}, key_a, "invalid_request"),
                     ]:
                         with pytest.raises(ClientError) as error:
@@ -671,12 +710,15 @@ def test_ipc_enforces_binding_and_maps_contract_operations():
                     response = await raw_request(socket, b"x" * (128 * 1024) + b"\n")
                     assert response["error"]["code"] == "invalid_request"
 
+                    profile = {
+                        "name": "API Dev Lead",
+                        "description": "Implements the API integration.",
+                    }
                     for key, member_id in zip((key_a, key_b), MEMBERS, strict=True):
-                        assert await call(
-                            socket, key, "register", {"role_description": "dev"}
-                        ) == {
+                        assert await call(socket, key, "register", profile) == {
                             "member_id": member_id,
-                            "role_description": "dev",
+                            "role_description": "API Dev Lead",
+                            **profile,
                         }
                     assert await call(socket, key_a, "find_members", {"q": "dev"}) == {
                         "members": list(upstream.registered.values())
@@ -1281,7 +1323,10 @@ def test_presence_heartbeats_are_isolated_and_require_approved_registered_bindin
                         return await coordinator.execute(
                             install["binding_key"],
                             "register",
-                            {"role_description": "New member"},
+                            {
+                                "name": "New member",
+                                "description": "Checks connection status.",
+                            },
                             session_ref,
                         )
 
@@ -1794,7 +1839,8 @@ def test_dm_ipc_routing_credentials_and_error_passthrough():
     asyncio.run(scenario())
 
 
-def test_old_server_ignores_kinds_and_lacks_dm_routes():
+@pytest.mark.parametrize("ignores_unknown_kinds", [True, False])
+def test_old_server_leaves_normal_inbox_available(ignores_unknown_kinds):
     from teamup_client.ipc import ClientError, call
 
     async def scenario():
@@ -1807,6 +1853,7 @@ def test_old_server_ignores_kinds_and_lacks_dm_routes():
                     token_a: {"member_id": MEMBERS[0], "role_description": "dev"}
                 }
                 upstream.dm_enabled = False
+                upstream.departure_filter_supported = ignores_unknown_kinds
                 mention = {
                     "event_id": 5,
                     "kind": "mention",
@@ -1831,13 +1878,16 @@ def test_old_server_ignores_kinds_and_lacks_dm_routes():
                     stream.write(b"event: inbox_changed\ndata: {}\n\n")
                     await stream.drain()
                     await until(lambda: not upstream.events[token_a])
+                    expected_kinds = "message,mention,dm"
+                    if ignores_unknown_kinds:
+                        expected_kinds += ",room_left"
                     assert (
                         "GET",
                         "/v1/inbox",
                         {
                             "after": ["0"],
                             "limit": ["100"],
-                            "kinds": ["message,mention,dm"],
+                            "kinds": [expected_kinds],
                         },
                         token_a,
                         None,
@@ -2073,3 +2123,50 @@ def test_notice_store_migrates_v1_rows_and_keeps_typed_dm_notices():
             ]
             assert store.page(scope, 5, 50) == [dm_notice]
             assert store.page(scope, 8, 50) == []
+
+
+def test_server_retirement_surfaces_while_local_archive_write_is_retried(tmp_path):
+    import sqlite3
+
+    from teamup_client._config import read_config
+    from teamup_client._coordinator import Coordinator
+    from teamup_client._notices import NoticeStore
+    from teamup_client.ipc import ClientError
+
+    profile = {"member_id": MEMBERS[0], "role_description": "Retired", "retired": True}
+
+    class RetiredServer:
+        async def request(self, verb, path, token, **kwargs):
+            assert token == BINDINGS[0]["member_token"]
+            if (verb, path) == ("GET", "/members/me/retirement"):
+                return profile
+            assert (verb, path) == ("GET", "/rooms")
+            raise ClientError("not_registered", "The bearer is revoked")
+
+    async def run():
+        config_path, _ = write_config(tmp_path, "http://127.0.0.1:1", bindings=[BINDINGS[0]])
+        config = read_config(config_path)
+        with sqlite3.connect(":memory:") as db:
+            notices = NoticeStore(db)
+            coordinator = Coordinator(config, RetiredServer(), notices, None, None, {})
+            db.execute("""
+                CREATE TRIGGER fail_archive BEFORE INSERT ON retired_sessions
+                BEGIN SELECT RAISE(ABORT, 'local write failed'); END
+            """)
+            for attempt in range(2):
+                with pytest.raises(ClientError) as retired:
+                    await coordinator.execute(BINDINGS[0]["binding_key"], "list_rooms", {})
+                assert retired.value.code == "member_retired"
+                if attempt == 0:
+                    assert coordinator.console_retired_sessions() == []
+                    assert coordinator.console_sessions() == ()
+                    # An owner rejection can remove the active binding while archiving is pending.
+                    coordinator._sessions.clear()
+                    for method in ("notifications", "mention_status"):
+                        with pytest.raises(ClientError) as revoked:
+                            await coordinator.execute(BINDINGS[0]["binding_key"], method, {})
+                        assert revoked.value.code == "member_retired"
+                    db.execute("DROP TRIGGER fail_archive")
+            assert coordinator.console_retired_sessions()[0]["member_id"] == profile["member_id"]
+
+    asyncio.run(run())

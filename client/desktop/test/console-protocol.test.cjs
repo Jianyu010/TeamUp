@@ -23,7 +23,8 @@ test("serves the bundled console without a running Client", async () => {
   assert.match(response.headers.get("Content-Security-Policy"), /connect-src 'self'/);
   assert.match(html, /id="board-toggle"[^>]*aria-controls="board-panel"[^>]*aria-expanded="false"/);
   assert.match(html, /id="room-id"[\s\S]*id="board-panel"[^>]*hidden/);
-  for (const asset of ["/console-members.js", "/console-history.mjs", "/console-board.js"]) {
+  assert.doesNotMatch(html, /id="room-session-actions"/);
+  for (const asset of ["/console-members.js", "/console-history.mjs", "/console-board.js", "/console-sessions.js"]) {
     const script = await handle(new Request(origin + asset));
     assert.equal(script.status, 200);
     assert.equal(script.headers.get("Content-Type"), "text/javascript; charset=utf-8");
@@ -48,7 +49,7 @@ test("accepts only the Client's loopback launch URL", () => {
   }
 });
 
-test("relays named reads and task actions with the main process credential", async (t) => {
+test("relays named reads and writes with the main process credential", async (t) => {
   const received = [];
   const server = http.createServer(async (request, response) => {
     const chunks = [];
@@ -97,6 +98,16 @@ test("relays named reads and task actions with the main process credential", asy
   assert.deepEqual(await versions.json(), { state: "ready" });
   assert.equal((await handle(consoleRequest("/api/versions", {}, "https://example.com"))).status, 403);
 
+  const archive = "/api/retired?session=retired";
+  const leave = "/api/sessions/leave?session=local&room=room";
+  const retire = "/api/sessions/retire?session=local";
+  assert.equal((await handle(consoleRequest(archive))).status, 200);
+  for (const action of [leave, retire]) {
+    assert.equal((await handle(consoleRequest(action, { method: "POST" }))).status, 409);
+    assert.equal((await handle(consoleRequest(action))).status, 404);
+    assert.equal((await handle(consoleRequest(action, { method: "POST" }, "https://example.org"))).status, 403);
+  }
+
   const board = "/api/room-board?room=01234567-89ab-4cde-8123-456789abcdef&session=local";
   const boardBody = JSON.stringify({ version: 1, rules: "Rules", protocol: "Protocol" });
   assert.equal((await handle(consoleRequest(board))).status, 200);
@@ -106,6 +117,13 @@ test("relays named reads and task actions with the main process credential", asy
   assert.deepEqual(await conflict.json(), { state: "conflict" });
   assert.equal((await handle(consoleRequest(board, publish, "https://example.com"))).status, 403);
   assert.equal((await handle(consoleRequest(board, { method: "DELETE" }))).status, 404);
+
+  const remove = "/api/room-members/remove?room=room&session=local&member=target";
+  const membership = JSON.stringify({ membership_id: "a".repeat(32) });
+  const removeAction = { ...publish, body: membership };
+  assert.equal((await handle(consoleRequest(remove, removeAction))).status, 409);
+  assert.equal((await handle(consoleRequest(remove, removeAction, "https://example.com"))).status, 403);
+  assert.equal((await handle(consoleRequest(remove))).status, 404);
 
   const task = "/api/tasks/01234567-89ab-4cde-8123-456789abcdef/progress?room=room&session=local";
   const body = JSON.stringify({ client_progress_id: "progress-1", note: "In review" });
@@ -128,8 +146,12 @@ test("relays named reads and task actions with the main process credential", asy
     ["/api/team?session=local", "GET", ""],
     [roomMembers, "GET", ""],
     ["/api/versions", "GET", ""],
+    [archive, "GET", ""],
+    [leave, "POST", ""],
+    [retire, "POST", ""],
     [board, "GET", ""],
     [board, "POST", boardBody],
+    [remove, "POST", membership],
     [task, "POST", body],
     ["/api/team?session=redirect", "GET", ""],
   ].map(([url, method, body]) => ({

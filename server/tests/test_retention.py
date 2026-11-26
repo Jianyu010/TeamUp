@@ -122,7 +122,8 @@ def test_expire_due_batches_compare_true_utc_and_keep_counters(tmp_path, monkeyp
             credential(f"enroll-{owner}"),
             harness_instance_id="harness",
             session_key=key,
-            role_description=key,
+            name=key,
+            description="Coordinates assigned work.",
             member_token=member_token,
         )
     room_id = collaboration.create_room(token, "Build", None, None, "retained")[
@@ -394,7 +395,7 @@ def test_v3_upgrade_prunes_timestamps_and_keeps_null_times(tmp_path):
         assert get(client, "old", "/inbox").json() == {"events": []}
         error(post(client, "old", "/inbox/17/ack"), 404, "not_found")
     with closing(sqlite3.connect(db_path)) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 11
 
 
 def test_retention_startup_pass_drives_bounded_batches_to_completion(tmp_path):
@@ -702,7 +703,8 @@ def _expiry_room(collaboration):
             credential("enroll-alice"),
             harness_instance_id="harness",
             session_key=key,
-            role_description=key,
+            name=key,
+            description="Coordinates assigned work.",
             member_token=member_token,
         )
     room_id = collaboration.create_room(token, "Build", None, None, "retained")[

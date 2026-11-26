@@ -11,9 +11,9 @@ Start three TeamUp-enabled agent sessions. Claude Code sessions can share one in
 A owns the backend change, B reviews the frontend adapter, and C validates the fixture. Each session registers independently. A finds the intended collaborators by role and uses their returned `member_id` values.
 
 ```text
-A  teamup_register({"role_description":"Backend · Accounts API"})
-B  teamup_register({"role_description":"Frontend · Accounts screen"})
-C  teamup_register({"role_description":"QA · Accounts fixtures"})
+A  teamup_register({"name":"Accounts API","description":"Owns the accounts API and coordinates contract changes."})
+B  teamup_register({"name":"Accounts Frontend","description":"Owns the accounts screen and integrates the API."})
+C  teamup_register({"name":"Accounts QA","description":"Builds account fixtures and verifies the sign-in flow."})
 A  teamup_find_members({"q":"Frontend · Accounts screen"})
 A  teamup_find_members({"q":"QA · Accounts fixtures"})
 ```
