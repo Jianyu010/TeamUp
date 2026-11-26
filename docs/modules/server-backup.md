@@ -1,5 +1,7 @@
 # TeamUp Server backup and recovery
 
+[简体中文](server-backup.zh-CN.md)
+
 Backups are opt-in operational tooling. TeamUp Server, Client, and MCP can be installed and upgraded independently of the backup job. Collaboration owns application access to the live database, which stays on the source host. A backup is a read-only snapshot taken through SQLite’s online backup API under the OS identity that owns the database.
 
 ## Take a snapshot
