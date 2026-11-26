@@ -16,14 +16,12 @@ from test_contract import (
     error,
     get,
     join,
-    live_server,
     member,
     post,
     room,
     send,
     server_command,
     server_env,
-    wait_for,
 )
 from test_direct_messages import dm_events, dm_read, dm_send, enroll_team, open_dm
 
@@ -525,7 +523,7 @@ def test_v4_upgrade_adds_dm_watermark_and_prunes_legacy_whole_second_rows(tmp_pa
 
     with api(db_path) as client:
         with closing(sqlite3.connect(db_path)) as connection:
-            assert connection.execute("PRAGMA user_version").fetchone()[0] == 11
+            assert connection.execute("PRAGMA user_version").fetchone()[0] == 12
             assert [
                 row[0]
                 for row in connection.execute(
@@ -625,7 +623,7 @@ def test_cli_guards_dm_retention_hours(tmp_path):
     assert "TLS" in accepted.stderr
 
 
-def test_dm_retention_startup_pass_prunes_only_dm_content(tmp_path):
+def test_explicit_legacy_dm_expiry_keeps_room_content(tmp_path):
     db_path = tmp_path / "team.sqlite3"
     with api(db_path) as client:
         enroll_team(client, labels=("sender", "target"))
@@ -643,17 +641,13 @@ def test_dm_retention_startup_pass_prunes_only_dm_content(tmp_path):
     # Age every message out together: only the DM family may leave.
     with closing(sqlite3.connect(db_path)) as connection, connection:
         connection.execute("UPDATE messages SET created_at = '2020-01-01T00:00:00Z'")
-    with live_server(db_path, extra=("--dm-retention-hours", "1")) as (client, _):
-        # The startup pass runs on its own thread: poll to its committed state.
-        wait_for(
-            lambda: dm_read(client, "sender", dm_id).json()
-            == {
-                "messages": [],
-                "expired_through_message_id": second["message_id"],
-                "history_truncated": True,
-            },
-            timeout=10,
-        )
+    assert prune(db_path, datetime.now(UTC) - timedelta(hours=1)) == (2, False)
+    with api(db_path) as client:
+        assert dm_read(client, "sender", dm_id).json() == {
+            "messages": [],
+            "expired_through_message_id": second["message_id"],
+            "history_truncated": True,
+        }
         assert get(client, "sender", f"{room_path}/messages").json() == {
             "messages": [{**room_message, "created_at": "2020-01-01T00:00:00Z"}]
         }

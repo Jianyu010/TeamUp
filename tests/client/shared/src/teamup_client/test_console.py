@@ -1095,6 +1095,34 @@ def test_incomplete_task_observation_bounds_upstream_pages():
     asyncio.run(scenario())
 
 
+def test_archive_reads_use_the_selected_binding_and_keep_the_roster_when_chat_is_gated():
+    async def scenario():
+        upstream = Upstream()
+
+        async def request(method, path, token, *, query=None):
+            if path == "/rooms/archive":
+                assert token == "reviewer-secret"
+                return {"rooms": [{"room_id": ROOM}], "next_after": None}
+            if path == f"/rooms/{ROOM}":
+                assert token == "reviewer-secret"
+                return {"archived_at": "2026-11-26T00:00:00Z", "archive_reason": "inactive"}
+            if path == f"/rooms/{ROOM}/members":
+                assert token == "reviewer-secret"
+                return {"members": [{"member_id": BACKEND, "role_description": "Backend"}]}
+            return await upstream(method, path, token, query=query)
+
+        reader = ConsoleReader(sessions, request)
+        assert (await reader.archived_rooms("review"))["rooms"] == [{"room_id": ROOM}]
+        result = await reader.archived_room("review", ROOM)
+        assert result["state"] == "ready"
+        assert result["members"][0]["member_id"] == BACKEND
+        assert result["history_state"] == "board_ack_required"
+        assert result["messages"] == []
+        assert await reader.archived_room("unknown", ROOM) == {"state": "not_found"}
+
+    asyncio.run(scenario())
+
+
 def test_desktop_admin_session_requires_private_socket_and_launcher_authorization():
     class Reader:
         async def admin_session(self):

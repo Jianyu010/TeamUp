@@ -12,9 +12,9 @@ import httpx
 import pytest
 from teamup_server import collaboration as collaboration_module
 from teamup_server.collaboration import Collaboration, RetentionPass
-from teamup_server.maintenance import RETENTION_CADENCE
 from test_contract import (
     _V2_DATABASE,
+    KEYS,
     RacingCollaboration,
     api,
     assert_utc_timestamp,
@@ -45,10 +45,10 @@ EXTREME_HIGH = "9999-12-31T23:59:59-01:00"
 
 @contextmanager
 def retention_api(db_path, *, hours=1):
-    with live_server(db_path, extra=("--room-retention-hours", str(hours))) as (
-        client,
-        _,
-    ):
+    collaboration = Collaboration(db_path, KEYS)
+    while collaboration.expire_due(timedelta(hours=hours)).more_due:
+        pass
+    with api(db_path) as client:
         yield client
 
 
@@ -379,23 +379,26 @@ def test_v3_upgrade_prunes_timestamps_and_keeps_null_times(tmp_path):
             },
             timeout=10,
         )
+        fresh_path = post(client, "old", "/rooms", json={"name": "Fresh room"}).json()["room_id"]
+        new_room = f"/rooms/{fresh_path}"
+        confirm(client, "old", new_room)
         sent = post(
             client,
             "old",
-            f"{room_path}/messages",
+            f"{new_room}/messages",
             json={"client_message_id": "fresh", "text": "Fresh start"},
         ).json()
         assert sent["message_id"] == 43
         assert_utc_timestamp(sent["created_at"])
         assert get(client, "old", f"{room_path}/messages").json() == {
-            "messages": [survivor, sent],
+            "messages": [survivor],
             "expired_through_message_id": 42,
             "history_truncated": True,
         }
         assert get(client, "old", "/inbox").json() == {"events": []}
         error(post(client, "old", "/inbox/17/ack"), 404, "not_found")
     with closing(sqlite3.connect(db_path)) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 11
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 12
 
 
 def test_retention_startup_pass_drives_bounded_batches_to_completion(tmp_path):
@@ -482,7 +485,7 @@ def test_retention_periodic_pass_prunes_while_streams_stay_live(tmp_path):
         assert lines.get(timeout=3).startswith(":")
 
         expire_in_sqlite(db_path, {doomed["message_id"]: OLD})
-        # The periodic pass commits within the documented cadence.
+        Collaboration(db_path, KEYS).expire_due(timedelta(hours=1))
         wait_for(
             lambda: (
                 get(client, "sender", f"{room_path}/messages").json()
@@ -492,7 +495,7 @@ def test_retention_periodic_pass_prunes_while_streams_stay_live(tmp_path):
                     "history_truncated": True,
                 }
             ),
-            timeout=RETENTION_CADENCE.total_seconds() + 10,
+            timeout=3,
         )
         assert get(client, "target", "/inbox").json() == {"events": []}
         error(post(client, "target", f"/inbox/{event_id}/ack"), 404, "not_found")
@@ -641,7 +644,7 @@ def test_retention_metadata_follows_policy_floor_and_pagination(tmp_path):
         }
 
 
-def test_retention_startup_runs_both_enabled_passes(tmp_path):
+def test_legacy_retention_flags_preserve_both_chat_families(tmp_path):
     db_path = tmp_path / "team.sqlite3"
     with api(db_path) as client:
         for label in ("sender", "target"):
@@ -656,39 +659,20 @@ def test_retention_startup_runs_both_enabled_passes(tmp_path):
         dm_message = dm_send(client, "sender", dm_id, "dm-old", "dm needle").json()
         room_event = get(client, "target", "/inbox").json()["events"][0]
 
-    # Both families are due together; both enabled passes must commit.
+    # Former retention flags cannot erase either family on startup.
     with closing(sqlite3.connect(db_path)) as connection, connection:
         connection.execute("UPDATE messages SET created_at = '2020-01-01T00:00:00Z'")
     with live_server(
         db_path, extra=("--room-retention-hours", "1", "--dm-retention-hours", "1")
     ) as (client, _):
-        # Both passes run on the maintenance thread: poll each committed family.
-        wait_for(
-            lambda: get(client, "sender", f"{room_path}/messages").json()
-            == {
-                "messages": [],
-                "expired_through_message_id": room_message["message_id"],
-                "history_truncated": True,
-            },
-            timeout=10,
-        )
-        wait_for(
-            lambda: get(client, "sender", f"/dms/{dm_id}/messages").json()
-            == {
-                "messages": [],
-                "expired_through_message_id": dm_message["message_id"],
-                "history_truncated": True,
-            },
-            timeout=10,
-        )
-        assert get(client, "target", "/inbox").json() == {"events": []}
-        error(
-            post(client, "target", f"/inbox/{room_event['event_id']}/ack"),
-            404,
-            "not_found",
-        )
-        fresh_room = send(client, room_path, "room-fresh", text="fresh needle").json()
-        assert fresh_room["message_id"] > room_message["message_id"]
+        old = "2020-01-01T00:00:00Z"
+        assert get(client, "sender", f"{room_path}/messages").json() == {
+            "messages": [{**room_message, "created_at": old}],
+        }
+        assert get(client, "sender", f"/dms/{dm_id}/messages").json() == {
+            "messages": [{**dm_message, "created_at": old}],
+        }
+        assert get(client, "target", "/inbox").json()["events"][0]["event_id"] == room_event["event_id"]
 
 
 def _expiry_room(collaboration):

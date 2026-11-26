@@ -54,6 +54,7 @@
         <div class="scroll-frame" id="room-scroll">
           <div class="nodes" id="rooms"></div>
         </div>
+        <button type="button" id="open-room-archive">Archived rooms</button>
       </section>
 
       <section class="detail scroll-frame" id="detail" aria-label="Room details" inert>
@@ -75,6 +76,7 @@
               </div>
               <span id="copy-status" class="sr-only" role="status"></span>
             </div>
+            <button type="button" id="archive-room" hidden>Mark goal reached</button>
             <p class="muted" id="room-preview" hidden></p>
             <section id="board-panel" aria-labelledby="board-title" tabindex="0" hidden>
               <div class="session-picker" id="board-session-label" hidden>
@@ -179,6 +181,24 @@
       <summary>Notifications</summary>
       <div id="archived-notices"></div>
     </details>
+  </dialog>
+  <dialog id="room-archive-dialog" aria-labelledby="room-archive-title" class="session-dialog">
+    <header class="archive-heading">
+      <h2 id="room-archive-title">Archived rooms</h2>
+      <form method="dialog"><button type="submit" autofocus>Close</button></form>
+    </header>
+    <label>Session <select id="room-archive-session"></select></label>
+    <label>Room <select id="room-archive-room"></select></label>
+    <button type="button" id="room-archive-more" hidden>More rooms</button>
+    <p id="room-archive-status" class="muted" role="status"></p>
+    <section id="room-archive-details" hidden>
+      <h3>Members at closing</h3>
+      <ul id="room-archive-members"></ul>
+      <h3>Chats</h3>
+      <p id="room-archive-history-status" class="muted"></p>
+      <button type="button" id="room-archive-older" hidden>Older messages</button>
+      <div id="room-archive-messages"></div>
+    </section>
   </dialog>
   <section id="member-detail" popover="manual" aria-label="Room member details"></section>
 </body>

@@ -43,6 +43,7 @@ _ERRORS = {
     "board_ack_required": (409, "Confirm the current board version first."),
     "conflict": (409, "The request conflicts with the existing state."),
     "member_retired": (409, "This member's binding has been retired."),
+    "room_archived": (409, "This room is archived."),
     "membership_changed": (409, "The current room membership has changed."),
     "invalid_mention": (422, "Mention another member of this room."),
     "invalid_peer": (422, "The DM peer must be another available member of this team."),
@@ -665,6 +666,21 @@ class Gateway:
         ) -> dict:
             _no_store(response)
             return collaboration.room_directory(token, after, limit)
+
+        @app.get("/v1/rooms/archive", dependencies=[Depends(_reject_body)])
+        def list_archived_rooms(
+            token: _Bearer,
+            response: Response,
+            after: _Identifier | None = None,
+            limit: _Limit = 50,
+        ) -> dict:
+            _no_store(response)
+            return collaboration.list_archived_rooms(token, after, limit)
+
+        @app.post("/v1/rooms/{room_id}/archive", dependencies=[Depends(_reject_body)])
+        def archive_room(token: _Bearer, room_id: _Identifier, response: Response) -> dict:
+            _no_store(response)
+            return collaboration.archive_room(token, room_id)
 
         @app.get("/v1/rooms/{room_id}", dependencies=[Depends(_reject_body)])
         def room_detail(

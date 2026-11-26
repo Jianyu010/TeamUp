@@ -189,6 +189,121 @@ async function removeRoomMember(room, session, member) {
   await refresh();
 }
 
+const archiveDialog = get("room-archive-dialog");
+const archiveSession = get("room-archive-session");
+const archiveRoom = get("room-archive-room");
+let archiveListRequest = 0;
+let archiveDetailRequest = 0;
+let archiveAfter = null;
+let archiveBefore = null;
+
+async function markGoalReached() {
+  const room = activeRoom();
+  const creator = room && readyMemberships(room).find((item) => item.can_remove_members);
+  if (!creator || !window.confirm("Mark the goal reached and archive this room?")) return;
+  const button = get("archive-room");
+  const status = get("session-action-status");
+  button.disabled = true;
+  try {
+    const receipt = await read("/api/room-archive", {session: creator.session, room: room.id}, {});
+    if (receipt.state === "ready") {
+      status.textContent = room.name + " was archived.";
+      show("workspace");
+      await refresh();
+    } else {
+      status.textContent = "TeamUp could not archive this room.";
+    }
+  } catch {
+    status.textContent = "TeamUp could not confirm that the room was archived.";
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function openRoomArchive() {
+  const sessions = state.workspace.sessions.filter((session) => session.state === "ready");
+  const session = sessions.find((candidate) => candidate.id === state.focused) ?? sessions[0];
+  renderSessionChoices(archiveSession, sessions, session?.id, "No available sessions");
+  archiveDialog.showModal();
+  loadArchiveRooms();
+}
+
+async function loadArchiveRooms(after = null) {
+  const request = ++archiveListRequest;
+  const status = get("room-archive-status");
+  const more = get("room-archive-more");
+  if (!after) {
+    archiveDetailRequest += 1;
+    archiveRoom.replaceChildren();
+    get("room-archive-details").hidden = true;
+  }
+  more.hidden = true;
+  if (!archiveSession.value) {
+    status.textContent = "Select an available session to read its archived rooms.";
+    return;
+  }
+  status.textContent = "Reading archived rooms…";
+  try {
+    const result = await read("/api/room-archive", {session: archiveSession.value, after});
+    if (request !== archiveListRequest || !archiveDialog.open) return;
+    if (result.state !== "ready") throw new Error();
+    for (const room of result.rooms) {
+      const reason = room.archive_reason === "goal_reached" ? "Goal reached" : "Inactive";
+      const date = new Date(room.archived_at).toLocaleString();
+      const option = node("option", room.name + " · " + reason + " · " + date);
+      option.value = room.room_id;
+      archiveRoom.append(option);
+    }
+    archiveAfter = result.next_after;
+    more.hidden = !archiveAfter;
+    status.textContent = archiveRoom.options.length ? "" : "No archived rooms for this session.";
+    if (!after && archiveRoom.value) await loadArchivedRoom();
+  } catch {
+    if (request !== archiveListRequest || !archiveDialog.open) return;
+    status.textContent = "TeamUp could not load archived rooms.";
+    more.hidden = !after;
+  }
+}
+
+async function loadArchivedRoom(before = null) {
+  const request = ++archiveDetailRequest;
+  const status = get("room-archive-status");
+  const details = get("room-archive-details");
+  const older = get("room-archive-older");
+  if (!before) details.hidden = true;
+  older.hidden = true;
+  if (!archiveRoom.value) return;
+  status.textContent = "Reading archived room…";
+  try {
+    const result = await read("/api/room-archive", {
+      session: archiveSession.value, room: archiveRoom.value, before,
+    });
+    if (request !== archiveDetailRequest || !archiveDialog.open) return;
+    if (result.state !== "ready") throw new Error();
+    get("room-archive-members").replaceChildren(...result.members.map((member) => {
+      const name = member.name ?? member.role_description ?? member.member_id;
+      const description = member.description ? " — " + member.description : "";
+      return node("li", name + description + " (" + member.member_id + ")");
+    }));
+    const history = get("room-archive-messages");
+    const rows = result.messages.map((message) => messageRow(node, message));
+    if (before) history.prepend(...rows);
+    else history.replaceChildren(...rows);
+    get("room-archive-history-status").textContent = result.history_state === "board_ack_required"
+      ? "This session did not acknowledge the final Board version."
+      : result.history_truncated ? "Some earlier messages expired before archiving."
+        : !before && !rows.length ? "No messages in this session’s history." : "";
+    archiveBefore = result.older;
+    older.hidden = !archiveBefore;
+    details.hidden = false;
+    status.textContent = "";
+  } catch {
+    if (request !== archiveDetailRequest || !archiveDialog.open) return;
+    status.textContent = "TeamUp could not load this archived room.";
+    older.hidden = !before;
+  }
+}
+
 function renderRoomView() {
   const joined = Boolean(state.reader);
   const isTasks = state.roomView === "tasks";
@@ -382,6 +497,7 @@ function renderRoomHeader() {
   const membership = room.memberships.find((item) => item.session === state.reader);
   get("room-heading").textContent = room.name;
   get("room-heading").hidden = Boolean(membership);
+  get("archive-room").hidden = !readyMemberships(room).some((item) => item.can_remove_members);
   const boardSessions = readyMemberships(room).map((entry) => ({
     ...sessionFor(entry.session),
     current: entry.current,
@@ -814,6 +930,16 @@ async function copyId() {
 
 get("workspace-nav").addEventListener("click", () => show("workspace"));
 get("team-nav").addEventListener("click", () => show("team"));
+get("archive-room").addEventListener("click", markGoalReached);
+get("open-room-archive").addEventListener("click", openRoomArchive);
+archiveSession.addEventListener("change", () => loadArchiveRooms());
+archiveRoom.addEventListener("change", () => loadArchivedRoom());
+get("room-archive-more").addEventListener("click", () => loadArchiveRooms(archiveAfter));
+get("room-archive-older").addEventListener("click", () => loadArchivedRoom(archiveBefore));
+archiveDialog.addEventListener("close", () => {
+  archiveListRequest += 1;
+  archiveDetailRequest += 1;
+});
 get("back").addEventListener("click", () => show("workspace"));
 get("sessions").addEventListener("click", (event) => {
   const clicked = event.target.closest("[data-session]");

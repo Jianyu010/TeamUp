@@ -95,6 +95,10 @@ OPERATIONS = {
     "retire_identity": Operation("POST", "/members/me/retire"),
     "find_members": Operation("GET", "/members", optional={"q": SEARCH}),
     "list_rooms": Operation("GET", "/rooms"),
+    "list_archived_rooms": Operation(
+        "GET", "/rooms/archive", optional={"after": is_uuid, "limit": LIMIT}
+    ),
+    "archive_room": Operation("POST", "/rooms/{room_id}/archive", ROOM),
     "create_room": Operation(
         "POST",
         "/rooms",

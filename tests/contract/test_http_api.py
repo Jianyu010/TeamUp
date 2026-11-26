@@ -15,6 +15,7 @@ DOCS = (
     "docs/modules/account-login-v1.md",
     "docs/modules/member-lifecycle.md",
     "docs/modules/room-tasks.md",
+    "docs/modules/room-archive.md",
     "docs/modules/direct-messages.md",
     "docs/modules/control-console.md",
     "docs/modules/maintenance-console.md",

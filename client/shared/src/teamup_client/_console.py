@@ -251,6 +251,13 @@ class Handler(BaseHTTPRequestHandler):
             self._action_body(required=False)
             return self._reader.session_action(params["session"], room_id, membership_id)
 
+        if path == "/api/room-archive":
+            params = self._params(query)
+            if set(params) != {"session", "room"} or not is_uuid(params["room"]):
+                raise ValueError
+            self._action_body(required=False)
+            return self._reader.archive_room(params["session"], params["room"])
+
         if path == "/api/room-members/remove":
             params = self._params(query)
             if (
@@ -348,6 +355,7 @@ class Handler(BaseHTTPRequestHandler):
                     "conflict": 409,
                     "member_retired": 409,
                     "membership_changed": 409,
+                    "room_archived": 409,
                     "invalid_request": 422,
                     "unavailable": 503,
                 }.get(data.get("state"), 503)
@@ -384,6 +392,18 @@ class Handler(BaseHTTPRequestHandler):
             return self._retired_operation(params)
         if path == "/api/team" and set(params) == {"session"}:
             return self._reader.team(params["session"])
+        if path == "/api/room-archive":
+            if set(params) in ({"session"}, {"session", "after"}):
+                after = params.get("after")
+                if after is not None and not is_uuid(after):
+                    raise ValueError
+                return self._reader.archived_rooms(params["session"], after)
+            if set(params) not in ({"session", "room"}, {"session", "room", "before"}):
+                raise ValueError
+            before = int(params.get("before", MAX_BEFORE))
+            if not is_uuid(params["room"]) or not 1 <= before <= MAX_BEFORE:
+                raise ValueError
+            return self._reader.archived_room(params["session"], params["room"], before)
         if path == "/api/room-board":
             if set(params) != {"session", "room"} or not is_uuid(params["room"]):
                 raise ValueError

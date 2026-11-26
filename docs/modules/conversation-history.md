@@ -30,7 +30,9 @@ Room history preserves the original `sender_member_id` after a message's author 
 
 MCP/IPC adds optional `history_policy` to `teamup_create_room` / `create_room`, optional `before` to `teamup_read_messages` / `read_messages`, and `teamup_search_room` / `search_room` with `room_id`, `q`, and optional `after` and `limit`. Validation, authorization, and Board errors follow v1. Both the API and IPC use the published member credential boundary.
 
-## Expiration and recovery
+## Historical expiration through schema v11
+
+[Room archiving](room-archive.md) replaces scheduled expiration. The following sections record earlier behavior and explain the truncation metadata retained on upgrade.
 
 - Room and DM retention are configured independently in hours through `--room-retention-hours` and `--dm-retention-hours`. Each accepts an integer from 1 to 876000 inclusive. Startup rejects values above the maximum or at or below zero. When omitted, the corresponding cleanup is neither scheduled nor run automatically. Upgraded records without timestamps are retained. Messages expire when the Collaboration cleanup transaction commits. When enabled, cleanup runs at startup and as part of periodic maintenance.
 - Collaboration exposes a single room cleanup entry point, `expire_due(max_age, now=None)`. In a read-only transaction owned by Collaboration, SQL selects a bounded batch of at most 500 expired room messages in ascending `message_id` order, using a timezone-aware UTC cutoff without taking a write lock. In one atomic write transaction, it rechecks the same IDs against the same cutoff to confirm that the rows still exist, still belong to rooms, and are still due. It then deletes those messages and all deliveries that reference them and advances the affected room watermarks in that transaction. The method returns the actual deletion count for the batch and whether more rows may be due. A full batch in the read transaction indicates that more may remain. Deletion leaves the message and inbox event ID counters intact. Cleanup does not copy history or message bodies.

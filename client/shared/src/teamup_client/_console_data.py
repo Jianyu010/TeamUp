@@ -595,6 +595,54 @@ class ConsoleReader:
             return {"state": exc.code}
         return {"state": "ready", "board": board}
 
+    async def archive_room(self, identity: str, room_id: str) -> dict:
+        try:
+            result = await self._write(identity, f"/rooms/{room_id}/archive", None)
+        except ClientError as exc:
+            return {"state": exc.code}
+        return {"state": "ready", **result}
+
+    async def archived_rooms(self, identity: str, after: str | None = None) -> dict:
+        session = self._current(identity)
+        if session is None:
+            return {"state": "not_found"}
+        try:
+            result = await self._read(session, "/rooms/archive", {"after": after} if after else None)
+        except ClientError as exc:
+            return {"state": exc.code}
+        return {"state": "ready", **result}
+
+    async def archived_room(
+        self, identity: str, room_id: str, before: int = MAX_BEFORE
+    ) -> dict:
+        session = self._current(identity)
+        if session is None:
+            return {"state": "not_found"}
+        path = f"/rooms/{room_id}"
+        try:
+            detail = await self._read(session, path)
+            if not detail.get("archived_at"):
+                return {"state": "not_found"}
+            roster = (await self._read(session, f"{path}/members"))["members"]
+            try:
+                history = await self._read(session, f"{path}/messages", {"before": before, "limit": PAGE})
+            except ClientError as exc:
+                if exc.code != "board_ack_required":
+                    raise
+                history = None
+        except ClientError as exc:
+            return {"state": exc.code}
+        messages = history["messages"] if history else []
+        members = _message_members(roster)
+        return {
+            "state": "ready",
+            "members": roster,
+            "history_state": "ready" if history else "board_ack_required",
+            "history_truncated": bool(history and history.get("history_truncated")),
+            "messages": [_message(item, members) for item in messages],
+            "older": str(messages[0]["message_id"]) if len(messages) == PAGE else None,
+        }
+
     async def remove_room_member(
         self, identity: str, room_id: str, member_id: str, membership_id: str
     ) -> dict:

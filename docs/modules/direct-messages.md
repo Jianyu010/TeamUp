@@ -4,6 +4,8 @@
 
 The Server Gateway provides the contract and Collaboration owns the domain state. The Client, local MCP plugin, and CLI consume it. This contract adds DM capabilities to the published room interfaces only as specified below. [Direct messages #3](https://github.com/Jianyu010/TeamUp/issues/3) · [Conversation history #6](../specs/conversation-history.md) · [Product behavior](../specs/collaboration-surfaces.md) · [Client–Server v1](client-server-v1.md) · [MCP–Client v1](mcp-client-v1.md)
 
+DM history is now retained indefinitely. See the [room archive contract](room-archive.md) for the replacement of scheduled expiration.
+
 ## Scope and boundaries
 
 - A DM is a conversation between exactly two members of one team. Each unordered member pair has one conversation. The recommended storage order is `min`/`max`. Reopening the conversation, from either member's side, returns the same DM.

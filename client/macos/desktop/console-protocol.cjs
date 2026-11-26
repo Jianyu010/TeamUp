@@ -18,11 +18,11 @@ const assets = new Map([
 ]);
 const reads = new Set([
   "/api/workspace", "/api/access", "/api/login", "/api/wake-settings", "/api/versions", "/api/retired", "/api/team", "/api/room", "/api/room-members",
-  "/api/room-board", "/api/tasks", "/api/task-events",
+  "/api/room-board", "/api/room-archive", "/api/tasks", "/api/task-events",
 ]);
 const taskAction = /^\/api\/tasks\/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\/(?:join|progress|finish)$/i;
 const actions = new Set([
-  "/api/login", "/api/wake-settings", "/api/sessions/leave", "/api/sessions/retire", "/api/room-board", "/api/room-members/remove",
+  "/api/login", "/api/wake-settings", "/api/sessions/leave", "/api/sessions/retire", "/api/room-board", "/api/room-archive", "/api/room-members/remove",
 ]);
 const requestLimit = 128 * 1024;
 const headers = {
