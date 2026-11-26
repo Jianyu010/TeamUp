@@ -27,6 +27,9 @@ async def hook(
 ):
     directory = developer.config_path.parent
     workspace_args = ["--workspace", str(directory)] if scoped else []
+    if cwd is None:
+        cwd = directory / "private-workspace-sentinel"
+        cwd.mkdir(exist_ok=True)
     child = await asyncio.create_subprocess_exec(
         sys.executable,
         "-m",
@@ -49,7 +52,7 @@ async def hook(
                     "hook_event_name": event,
                     "session_id": thread,
                     "prompt": "private prompt sentinel",
-                    "cwd": str(directory if cwd is None else cwd),
+                    "cwd": str(cwd),
                     "transcript_path": "/private/transcript/sentinel",
                 }
             ).encode()
@@ -89,6 +92,9 @@ def test_hook_requires_workspace_opt_in(command):
         escape.symlink_to(outside, target_is_directory=True)
         child = workspace / "child"
         child.mkdir()
+        case_alias = workspace.with_name(workspace.name.upper())
+        if case_alias.is_dir():
+            child = case_alias / child.name
         allowed = str(uuid4())
         with developer.daemon():
             await hook(developer, str(uuid4()), command=command, scoped=False)

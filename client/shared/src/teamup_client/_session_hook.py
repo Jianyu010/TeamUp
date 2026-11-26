@@ -21,7 +21,9 @@ def _workspace_contains(workspace: Path | None, cwd: object) -> bool:
     try:
         root = workspace.resolve(strict=True)
         directory = directory.resolve(strict=True)
-        return root.is_dir() and directory.is_dir() and directory.is_relative_to(root)
+        return root.is_dir() and directory.is_dir() and any(
+            root.samefile(parent) for parent in (directory, *directory.parents)
+        )
     except (OSError, RuntimeError, ValueError):
         return False
 
