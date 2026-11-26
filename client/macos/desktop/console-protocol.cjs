@@ -17,12 +17,12 @@ const assets = new Map([
   ["/jet-pair.png", ["jet-pair.png", "image/png"]],
 ]);
 const reads = new Set([
-  "/api/workspace", "/api/login", "/api/versions", "/api/retired", "/api/team", "/api/room", "/api/room-members",
+  "/api/workspace", "/api/login", "/api/wake-settings", "/api/versions", "/api/retired", "/api/team", "/api/room", "/api/room-members",
   "/api/room-board", "/api/tasks", "/api/task-events",
 ]);
 const taskAction = /^\/api\/tasks\/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\/(?:join|progress|finish)$/i;
 const actions = new Set([
-  "/api/login", "/api/sessions/leave", "/api/sessions/retire", "/api/room-board", "/api/room-members/remove",
+  "/api/login", "/api/wake-settings", "/api/sessions/leave", "/api/sessions/retire", "/api/room-board", "/api/room-members/remove",
 ]);
 const requestLimit = 128 * 1024;
 const headers = {
@@ -48,9 +48,9 @@ function parseConsoleEndpoint(value) {
   return { port, token: match[2], ...(loginSocket ? { loginSocket } : {}) };
 }
 
-async function forward(request, target, { port, token, loginSocket }) {
-  const signsIn = request.method === "POST" && target.pathname === "/api/login";
-  if (signsIn && !loginSocket) return failure(503, "unavailable");
+async function forward(request, target, { port, token, loginSocket }, privateLogin = false) {
+  const usesLoginSocket = privateLogin || (request.method === "POST" && target.pathname === "/api/login");
+  if (usesLoginSocket && !loginSocket) return failure(503, "unavailable");
   const clientHeaders = {
     Host: `127.0.0.1:${port}`,
     Authorization: `Bearer ${token}`,
@@ -70,7 +70,7 @@ async function forward(request, target, { port, token, loginSocket }) {
   }
   const response = await new Promise((resolve, reject) => {
     const upstream = http.request({
-      ...(signsIn ? { socketPath: loginSocket } : { hostname: "127.0.0.1", port }),
+      ...(usesLoginSocket ? { socketPath: loginSocket } : { hostname: "127.0.0.1", port }),
       path: target.pathname + target.search,
       method: request.method,
       headers: clientHeaders,
@@ -92,7 +92,40 @@ async function forward(request, target, { port, token, loginSocket }) {
   });
 }
 
-function createConsoleHandler(directory, getEndpoint, resetEndpoint = () => {}) {
+async function requestPrivateLogin(endpoint, credentials, signal) {
+  const target = new URL("/api/login", CONSOLE_URL);
+  const request = new Request(target, {
+    method: credentials === undefined ? "GET" : "POST",
+    headers: credentials === undefined ? undefined : {"Content-Type": "application/json"},
+    body: credentials === undefined ? undefined : JSON.stringify(credentials),
+    signal,
+  });
+  const response = await forward(request, target, endpoint, true);
+  return {status: response.status, result: await response.json()};
+}
+
+async function signIn(request, endpoint, desktopLogin) {
+  if (request.headers.get("Content-Type") !== "application/json") {
+    return failure(400, "invalid_request");
+  }
+  const bytes = await request.arrayBuffer();
+  if (bytes.byteLength > requestLimit) return failure(413, "invalid_request");
+  let credentials;
+  try {
+    credentials = JSON.parse(Buffer.from(bytes));
+  } catch {
+    return failure(400, "invalid_request");
+  }
+  if (!credentials || Object.keys(credentials).some(key => !["username", "password", "remember"].includes(key))
+      || typeof credentials.username !== "string" || typeof credentials.password !== "string"
+      || ("remember" in credentials && typeof credentials.remember !== "boolean")) {
+    return failure(400, "invalid_request");
+  }
+  const {status, result} = await desktopLogin.signIn(endpoint, credentials, request.signal);
+  return Response.json(result, {status, headers});
+}
+
+function createConsoleHandler(directory, getEndpoint, resetEndpoint = () => {}, desktopLogin) {
   return async (request) => {
     const target = new URL(request.url);
     if (target.protocol !== "teamup:" || target.host !== "console" || target.username || target.password) {
@@ -116,6 +149,13 @@ function createConsoleHandler(directory, getEndpoint, resetEndpoint = () => {}) 
     try {
       const endpoint = await pending;
       if (!endpoint) return failure(503, "unavailable");
+      if (desktopLogin && target.pathname === "/api/login" && !target.search) {
+        if (isAction) return await signIn(request, endpoint, desktopLogin);
+        if (endpoint.loginSocket) {
+          const {status, result} = await desktopLogin.status(endpoint, request.signal);
+          return Response.json(result, {status, headers});
+        }
+      }
       const response = await forward(request, target, endpoint);
       if (refreshesEndpoint && (response.status === 401 || response.status === 502)) {
         resetEndpoint(pending);
@@ -130,4 +170,4 @@ function createConsoleHandler(directory, getEndpoint, resetEndpoint = () => {}) 
   };
 }
 
-module.exports = { CONSOLE_URL, createConsoleHandler, parseConsoleEndpoint };
+module.exports = { CONSOLE_URL, createConsoleHandler, parseConsoleEndpoint, requestPrivateLogin };

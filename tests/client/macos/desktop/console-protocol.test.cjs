@@ -231,3 +231,105 @@ for (const route of ["/api/workspace", "/api/versions"]) {
     assert.equal((await handle(consoleRequest(route))).status, 200);
   });
 }
+
+test("remembered sign-in stays on the desktop side of the bridge", async (t) => {
+  const nativeLogin = require("../../../../client/macos/desktop/console-login.cjs");
+  const profile = "/private/test/teamup.json";
+  let remember_scope = "b".repeat(64);
+  const credentials = {username: "alice", password: "desktop test password"};
+  const writes = [];
+  let saved = null;
+  const store = {
+    get: async (path) => {
+      assert.equal(path, profile);
+      return saved;
+    },
+    put: async (path, value) => {
+      assert.equal(path, profile);
+      writes.push("put");
+      saved = value;
+    },
+    forget: async (path) => {
+      assert.equal(path, profile);
+      writes.push("forget");
+      saved = null;
+    },
+  };
+  let state = "sign_in_required";
+  let loginStatus = 401;
+  const calls = [];
+  const directory = await mkdtemp("/tmp/teamup-console-");
+  const loginSocket = join(directory, "login.sock");
+  const login = http.createServer(async (request, response) => {
+    response.setHeader("Content-Type", "application/json");
+    assert.equal(request.headers.authorization, `Bearer ${token}`);
+    if (request.method === "GET") {
+      response.end(JSON.stringify({state, remember_scope}));
+      return;
+    }
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    calls.push(JSON.parse(Buffer.concat(chunks)));
+    response.writeHead(loginStatus);
+    if (loginStatus === 200 && state === "sign_in_required") {
+      state = "ready";
+      response.end(JSON.stringify({state, authenticated_scope: remember_scope}));
+    } else {
+      response.end(JSON.stringify({state: loginStatus === 401 ? "wrong_credentials" : state}));
+    }
+  });
+  login.listen(loginSocket);
+  await once(login, "listening");
+  t.after(async () => {
+    login.close();
+    await rm(directory, {recursive: true});
+  });
+  const endpoint = {port: 1234, token, loginSocket};
+  const manager = nativeLogin.createDesktopLogin(store, profile);
+  const handle = createConsoleHandler(assets, () => endpoint, undefined, manager);
+  const submit = (remember, initiator) => handle(consoleRequest("/api/login", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({...credentials, remember}),
+  }, initiator));
+
+  assert.equal((await submit(true, "https://untrusted.example")).status, 403);
+  assert.equal((await submit(true)).status, 401);
+  assert.deepEqual(writes, []);
+  loginStatus = 200;
+  const accepted = await submit(true);
+  assert.equal(accepted.status, 200);
+  assert.deepEqual(await accepted.json(), {state: "ready"});
+  assert.deepEqual(saved, {...credentials, scope: remember_scope});
+  assert.deepEqual(calls, [credentials, credentials]);
+  await submit(false); // An active Client did not authenticate this submission.
+  assert.deepEqual(writes, ["put"]);
+
+  state = "sign_in_required";
+  saved = {...credentials, scope: "c".repeat(64)};
+  const attemptCount = calls.length;
+  await manager.restore(endpoint);
+  assert.equal(calls.length, attemptCount);
+  saved = {...credentials, scope: remember_scope};
+  const scope = remember_scope;
+  remember_scope = null;
+  await manager.restore(endpoint);
+  assert.equal(calls.length, attemptCount);
+  const unavailable = await handle(consoleRequest("/api/login"));
+  assert.deepEqual(await unavailable.json(), {state, remember_available: false});
+  remember_scope = scope;
+  const pending = await handle(consoleRequest("/api/login"));
+  assert.deepEqual(await pending.json(), {state, remember_available: true});
+  await manager.restore(endpoint);
+  assert.deepEqual(calls.at(-1), {...credentials, remember_scope});
+  assert.equal(state, "ready");
+
+  state = "sign_in_required";
+  loginStatus = 401;
+  await manager.restore(endpoint);
+  assert.equal(saved, null);
+
+  loginStatus = 200;
+  await submit(true);
+  await manager.forget();
+  assert.equal(saved, null);
+});
