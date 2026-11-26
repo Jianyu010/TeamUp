@@ -1,11 +1,11 @@
 # Windows desktop validation
 
-Validated on 2026-11-26 against implementation `d58c804ddd85451da9c824d4489711af95e57155`.
-The branch includes upstream `main` at `b9320e4350394c68ddc0a8864ba23b8a008267c4`
+Validated on 2026-11-26 against implementation `f462cee030ab1ce428bb8108d6fb847a6c707ec0`.
+The branch includes upstream `main` at `b742d78c8247c8956225c9efe52f112e420954a4`
 and release `v0.2.1`, including member identities, membership controls, retirement,
 and the new room-message layout.
 
-The Windows desktop is version `0.2.1`. Its Client reports `0.2.1.dev24`, calculated
+The Windows desktop is version `0.2.1`. Its Client reports `0.2.1.dev26`, calculated
 by the repository's first-parent version function for this feature branch. The
 configured Server reported `0.2.1.dev38` and was not upgraded by this work.
 Environment: Windows x64, WSL2 Ubuntu, Python 3.12.15, Node.js 24.15.0,
@@ -19,9 +19,10 @@ Windows desktop code, its WSL launcher, installer and packager are under
 [PR #53](https://github.com/Jianyu010/TeamUp/pull/53#issuecomment-7180173760).
 `client/windows/` is reserved for a native Windows Client.
 
-At the tested upstream revision, the shared Python Client and console renderer
-still live in `client/src/`; the packager reads those shared assets. The planned
-upstream move to `client/shared/` and `client/macos/` had not landed on main.
+The upstream platform layout migration (#84) is included. The shared Python
+Client and console renderer live in `client/shared/`, with macOS desktop code in
+`client/macos/desktop/`. Windows development and packaging read the shared renderer
+from its new location, and checks use the centralized root test tree.
 The Windows adapter uses the existing Client console API. The local compact
 session-list changes were carried forward with upstream's member identities,
 retirement selection and archive controls retained.
@@ -32,15 +33,17 @@ retirement selection and archive controls retained.
   Covers literal WSL arguments, invalid path/distribution rejection, three real
   PowerShell installer checks, console authorization and forwarding, history,
   presence, messages, task views, and session filtering/search/pagination.
-- `npm --prefix client/desktop test`: **24 passed, 0 skipped** for the shared
+- `npm --prefix client/macos/desktop test`: **24 passed, 0 skipped** for the shared
   renderer and existing desktop protocol.
 - In the isolated candidate WSL environment, the following pytest selection:
   **72 passed, 0 skipped**:
 
   ```sh
   python -m pytest -q tests/client/windows-wsl/desktop \
-    client/tests/test_console.py client/tests/test_task_ipc.py \
-    tests/test_boundaries.py tests/test_mcp_contract.py tests/contract tests/system
+    tests/client/shared/src/teamup_client/test_console.py \
+    tests/client/shared/src/teamup_client/test_task_ipc.py \
+    tests/test_boundaries.py tests/plugin/mcp/src/teamup_mcp/test_mcp_contract.py \
+    tests/contract tests/system
   ```
 
 - Full-tree Ruff check, Ruff formatting for the Windows Python launcher and tests,
@@ -79,7 +82,8 @@ production authorization were unchanged. The final 72 checks all passed.
 ## Desktop interaction
 
 The installed window's accessibility state showed Live, **My sessions (3)**,
-**All sessions (277)** and Client `0.2.1.dev24`. The Windows input helper reported
+**All sessions (277)** before the platform-layout sync. The final installed
+Client reports `0.2.1.dev26` through its version endpoint. The Windows input helper reported
 `coordinate input geometry is unavailable` and a minimized window during click
 attempts, so interaction checks used an isolated installed Electron process and
 its temporary loopback DevTools endpoint.
@@ -92,8 +96,8 @@ contained 280 approved sessions and three registered sessions. The renderer stay
 at `teamup://console/` with Node integration disabled. The isolated process was
 closed after testing; the ordinary app remained available.
 
-Portable ZIP: `TeamUp-Windows-x64-0.2.1-20261126.zip`, **162696984 bytes**.
-SHA-256: `eb66ca0d83d4249539bfb30983baabbae19d4e170392ec7e96ba26c585da21d5`.
+Portable ZIP: `TeamUp-Windows-x64-0.2.1-20261126-f462cee.zip`, **162696972 bytes**.
+SHA-256: `d669d8c44064b6a5bcfd7dc9157f6a4e5117700ea3d07518203d754f3865b0d3`.
 It contains the complete app directory. This unsigned x64 build requires a
 configured WSL2 Client and localhost forwarding. macOS packaging and the full
 repository pytest suite were not run locally; hosted checks are reported on the PR.
