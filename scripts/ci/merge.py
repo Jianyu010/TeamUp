@@ -143,6 +143,10 @@ def plan(
     owner passed with ``ready`` merge, and green PRs that refer to an open freeze issue
     (``freeze_issues``) with ``Refs``, and would close none: the fix or revert can land, and
     nothing else piles on.
+
+    When not ``frozen`` but ``freeze_issues`` are open (``require_ready`` is off, so a freeze
+    does not stop merges), a PR that would close one of them still waits: the issue is the
+    signal that ``main`` is red and closes itself once ``main`` is green again.
     """
     ordered = sorted(pulls, key=lambda p: p.number)
     steps = [
@@ -160,7 +164,9 @@ def plan(
             if not repairs or pull.closes & freeze_issues:
                 continue
             reason += f"; repairs freeze #{repairs[0]}"
-        frozen_now = tuple(sorted(freeze_issues)) if repairs else ()
+        elif not frozen and pull.closes & freeze_issues:
+            continue
+        frozen_now = tuple(sorted(freeze_issues)) if repairs or not frozen else ()
         steps.append(Step("merge", pull.number, pull.sha, reason, repairs, frozen_now))
     return steps
 
@@ -221,6 +227,7 @@ def still_mergeable(
     check on the head that is running again or failed (the gate and the check runs are read with
     ``checks``, as ``facts`` does). A merge during a freeze that rests on the PR referring to the
     freeze issues ``repairs`` also stops once its title or body no longer does, or would close one.
+    Any merge also stops once it would close one of ``freezes``.
     """
     checks = checks or gh
     pull = gh.call("GET", f"/pulls/{number}") or {}
@@ -235,12 +242,12 @@ def still_mergeable(
         return f"`{HOLD}` added"
     if (pull.get("head") or {}).get("sha", sha) != sha:
         return "pushed since"
-    if repairs:
+    if repairs or freezes:
         named, closing = freeze_refs({**pull, "number": number}, gh.repo)
         closed = sorted(closing & (set(repairs) | set(freezes)))
         if closed:
             return f"it would close freeze #{closed[0]} on merge"
-        if not named & set(repairs):
+        if repairs and not named & set(repairs):
             return f"it no longer refers to freeze #{repairs[0]}"
     gate = gate_state(checks, sha)
     if gate != "success":
@@ -435,12 +442,26 @@ def main(argv: list[str] | None = None) -> int:
     reader = os.environ.get("CHECKS_TOKEN")
     checks = GitHub(gh.repo, reader) if reader else gh
     policy = load_policy()
-    open_freezes = freezes(checks, str(policy.get("freeze_label") or "ci/freeze"))
-    if open_freezes and not require_ready(policy):
-        titles = "; ".join(title for _n, title in open_freezes)
-        print(f"merge: frozen ({titles}), but `require_ready` is off: merging as usual")
-        open_freezes = []
-    if open_freezes:
+    label = str(policy.get("freeze_label") or "ci/freeze")
+    owner = require_ready(policy)
+    if owner:
+        open_freezes = freezes(checks, label)
+    else:
+        # A freeze does not stop merges, so failing to read one must not either; the issues
+        # are read only to keep PRs from closing them.
+        try:
+            open_freezes = freezes(checks, label)
+        except Exception as exc:  # noqa: BLE001 - only the closing guard depends on it
+            print(
+                f"::warning::could not read `{label}` issues ({exc}); merging as usual"
+            )
+            open_freezes = []
+        if open_freezes:
+            titles = "; ".join(title for _n, title in open_freezes)
+            print(
+                f"merge: frozen ({titles}), but `require_ready` is off: merging as usual"
+            )
+    if open_freezes and owner:
         titles = "; ".join(title for _n, title in open_freezes)
         numbers = ", ".join(f"#{n}" for n, _t in open_freezes)
         print(
@@ -449,7 +470,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     steps = plan(
         facts(gh, required, checks),
-        frozen=bool(open_freezes),
+        frozen=bool(open_freezes) and owner,
         freeze_issues=frozenset(n for n, _t in open_freezes),
     )
     for step in steps:

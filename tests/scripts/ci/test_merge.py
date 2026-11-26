@@ -559,3 +559,71 @@ def test_with_require_ready_off_a_freeze_does_not_stop_merges(
     out = capsys.readouterr().out
     assert "`require_ready` is off: merging as usual" in out
     assert "would merge #5" in out
+
+
+@pytest.mark.usefixtures("owner_review_off")
+def test_with_require_ready_off_a_pr_that_would_close_a_freeze_still_waits(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    gh = FakeGitHub([{**_api_pull(5), "body": "Fixes #40"}, _api_pull(6)])
+    gh.freeze = [{"title": "CI freeze: main is red", "number": 40}]
+    monkeypatch.setattr(ci_merge, "GitHub", lambda repo, token: gh)
+    monkeypatch.setattr(ci_merge, "hold_label_exists", lambda _gh: True)
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    monkeypatch.setenv("GITHUB_TOKEN", "t")
+    assert ci_merge.main(["--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert "would merge #5" not in out
+    assert "would merge #6" in out
+
+
+def test_unfrozen_plan_skips_closers_and_rechecks_the_open_freezes() -> None:
+    closer = Pull(5, "a" * 40, frozenset(), False, "success", closes=frozenset({40}))
+    other = Pull(6, "b" * 40, frozenset(), False, "success")
+    steps = plan([closer, other], frozen=False, freeze_issues=frozenset({40}))
+    assert [(s.number, s.freezes) for s in steps] == [(6, (40,))]
+
+
+def test_any_merge_is_rechecked_against_open_freezes() -> None:
+    for body, why in (
+        ("Fixes #40", "it would close freeze #40 on merge"),
+        ("Refs #40", None),
+    ):
+        gh = FakeGitHub([{**_api_pull(5), "body": body}])
+        assert ci_merge.still_mergeable(gh, 5, _sha(5), freezes=(40,)) == why, body
+
+
+@pytest.mark.usefixtures("owner_review_off")
+def test_with_require_ready_off_a_failed_freeze_read_does_not_stop_merges(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    gh = FakeGitHub([_api_pull(5)])
+    monkeypatch.setattr(ci_merge, "GitHub", lambda repo, token: gh)
+    monkeypatch.setattr(ci_merge, "hold_label_exists", lambda _gh: True)
+
+    def broken(_gh: object, _label: str) -> list[tuple[int, str]]:
+        raise RuntimeError("HTTP 403")
+
+    monkeypatch.setattr(ci_merge, "freezes", broken)
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    monkeypatch.setenv("GITHUB_TOKEN", "t")
+    assert ci_merge.main(["--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert "could not read" in out and "would merge #5" in out
+
+
+def test_with_require_ready_on_a_failed_freeze_read_stops_the_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gh = FakeGitHub([_api_pull(5)])
+    monkeypatch.setattr(ci_merge, "GitHub", lambda repo, token: gh)
+    monkeypatch.setattr(ci_merge, "hold_label_exists", lambda _gh: True)
+
+    def broken(_gh: object, _label: str) -> list[tuple[int, str]]:
+        raise RuntimeError("HTTP 403")
+
+    monkeypatch.setattr(ci_merge, "freezes", broken)
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    monkeypatch.setenv("GITHUB_TOKEN", "t")
+    with pytest.raises(RuntimeError):
+        ci_merge.main(["--dry-run"])
