@@ -1,5 +1,6 @@
+import pytest
 from fastapi.testclient import TestClient
-from teamup_server.collaboration import Collaboration
+from teamup_server.collaboration import Collaboration, CollaborationError
 from teamup_server.main import create_app
 from test_console_server import console_token
 from test_contract import auth, credential
@@ -21,6 +22,11 @@ def test_admin_capabilities_follow_current_grants_and_session_purpose(tmp_path):
         assert client.get(path, headers=enrollment).json() == {"admin": True}
         assert client.get("/v1/console/capabilities", headers=console).json() == {
             "maintenance": False,
+            "accounts": False,
+        }
+        owner.set_maintenance_grant("alice", "logs_read", True)
+        assert client.get("/v1/console/capabilities", headers=console).json() == {
+            "maintenance": True,
             "accounts": False,
         }
         owner.revoke_console_read("alice")
@@ -75,7 +81,7 @@ def test_account_admin_manages_standard_credentials_and_keeps_own_grant(tmp_path
                 {
                     "username": "alice",
                     "disabled": False,
-                    "can_reset_password": True,
+                    "can_reset_password": False,
                     "can_disable": False,
                 },
                 {
@@ -96,10 +102,33 @@ def test_account_admin_manages_standard_credentials_and_keeps_own_grant(tmp_path
             client.post(
                 f"{path}/alice/password", headers=alice, json=updated
             ).status_code
-            == 200
+            == 403
         )
+        Collaboration(db, {}).reset_account_password("alice", NEW_PASSWORD)
         assert client.get(path, headers=alice).status_code == 401
         refreshed = auth(console_token(client, "alice", NEW_PASSWORD))
         assert client.get(path, headers=refreshed).status_code == 200
         Collaboration(db, {}).set_account_admin("alice", granted=False)
         assert client.get(path, headers=refreshed).status_code == 403
+
+
+def test_password_reset_rechecks_target_grants_after_hashing(tmp_path, monkeypatch):
+    db = tmp_path / "teamup.db"
+    owner, local_cli = Collaboration(db, {}), Collaboration(db, {})
+    owner.create_account("alice", PASSWORD)
+    owner.create_account("bob", PASSWORD)
+    owner.grant_console_read("alice")
+    owner.set_account_admin("alice", granted=True)
+    token = owner.login("alice", PASSWORD, "console")["access_token"]
+    hash_password = owner._new_password_digest
+
+    def promote_after_hashing(password, operator_token):
+        digest = hash_password(password, operator_token)
+        local_cli.grant_console_read("bob")
+        return digest
+
+    monkeypatch.setattr(owner, "_new_password_digest", promote_after_hashing)
+    with pytest.raises(CollaborationError) as result:
+        owner.reset_account_password("bob", NEW_PASSWORD, operator_token=token)
+    assert result.value.code == "forbidden"
+    assert owner.login("bob", PASSWORD, "console")["access_token"]

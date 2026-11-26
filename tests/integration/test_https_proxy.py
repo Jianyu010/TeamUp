@@ -266,6 +266,16 @@ async def https_exchange(root):
                 ) as api:
                     assert (await api.get("/")).status_code == 404
                     assert (await api.get("/v1foo")).status_code == 404
+                    for path in (
+                        "/console/",
+                        "/dashboard/",
+                        "/console/console.css",
+                        "/console/console.js",
+                        "/console/maintenance.js",
+                        "/console/accounts.js",
+                    ):
+                        assert (await api.get(path)).status_code == 200, path
+                    assert (await api.get("/console/unknown")).status_code == 404
                     rejected = await api.get(
                         "/v1/inbox",
                         headers={"Authorization": "Bearer not-a-member-token"},
@@ -362,9 +372,9 @@ async def https_exchange(root):
                                 ):
                                     assert stream.status_code == 200
                                     assert (
-                                        stream.headers.get(
-                                            "content-type", ""
-                                        ).split(";", 1)[0]
+                                        stream.headers.get("content-type", "").split(
+                                            ";", 1
+                                        )[0]
                                         == "text/event-stream"
                                     )
                                     lines = stream.aiter_lines()
@@ -382,9 +392,7 @@ async def https_exchange(root):
                                     async with asyncio.timeout(15):
                                         async for line in lines:
                                             if line == "event: inbox_changed":
-                                                assert (
-                                                    await anext(lines) == "data: {}"
-                                                )
+                                                assert await anext(lines) == "data: {}"
                                                 assert await anext(lines) == ""
                                                 break
                             notice = await asyncio.to_thread(

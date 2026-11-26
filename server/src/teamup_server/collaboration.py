@@ -1604,18 +1604,7 @@ class Collaboration:
         _validate_username(username)
         digest = self._new_password_digest(password, operator_token)
         with self._transaction(write=True) as connection:
-            actor = (
-                self._account_admin(connection, operator_token)
-                if operator_token is not None
-                else None
-            )
-            account = self._account(connection, username)
-            if (
-                actor is not None
-                and actor != account["owner_id"]
-                and self._is_operator(connection, account["owner_id"])
-            ):
-                raise CollaborationError("forbidden")
+            account = self._managed_account(connection, username, operator_token)
             if account["disabled"]:
                 raise CollaborationError("conflict")
             connection.execute(
@@ -1629,18 +1618,25 @@ class Collaboration:
     ) -> None:
         _validate_username(username)
         with self._transaction(write=True) as connection:
-            actor = (
-                self._account_admin(connection, operator_token)
-                if operator_token is not None
-                else None
-            )
-            owner_id = self._account(connection, username)["owner_id"]
-            if actor is not None and self._is_operator(connection, owner_id):
-                raise CollaborationError("forbidden")
+            owner_id = self._managed_account(connection, username, operator_token)[
+                "owner_id"
+            ]
             connection.execute(
                 "UPDATE accounts SET disabled = 1 WHERE owner_id = ?", (owner_id,)
             )
             self._revoke_account_sessions(connection, owner_id)
+
+    def _managed_account(
+        self, connection: sqlite3.Connection, username: str, operator_token: str | None
+    ) -> sqlite3.Row:
+        if operator_token is not None:
+            self._account_admin(connection, operator_token)
+        account = self._account(connection, username)
+        if operator_token is not None and self._is_operator(
+            connection, account["owner_id"]
+        ):
+            raise CollaborationError("forbidden")
+        return account
 
     def set_account_admin(self, username: str, *, granted: bool) -> None:
         _validate_username(username)
@@ -1680,16 +1676,15 @@ class Collaboration:
             is not None
         )
 
-    def _account_admin(self, connection: sqlite3.Connection, token: str) -> str:
+    def _account_admin(self, connection: sqlite3.Connection, token: str) -> None:
         actor = self._console_operator(connection, token)
         self._require_grant(connection, actor, "console_read")
         if not self._is_account_admin(connection, actor):
             self._deny_console("forbidden", "missing_grant")
-        return actor
 
     def console_accounts(self, token: str) -> dict:
         with self._transaction() as connection:
-            actor = self._account_admin(connection, token)
+            self._account_admin(connection, token)
             accounts = []
             for account in self._accounts(connection):
                 owner_id = account["owner_id"]
@@ -1699,8 +1694,7 @@ class Collaboration:
                     {
                         "username": account["username"],
                         "disabled": not active,
-                        "can_reset_password": active
-                        and (standard or owner_id == actor),
+                        "can_reset_password": active and standard,
                         "can_disable": active and standard,
                     }
                 )
@@ -1720,7 +1714,7 @@ class Collaboration:
             owner_id = self._console_operator(connection, token)
             self._require_grant(connection, owner_id, "console_read")
             maintenance = connection.execute(
-                "SELECT 1 FROM operator_maintenance_grants WHERE owner_id = ? AND scope = 'maintenance_read'",
+                "SELECT 1 FROM operator_maintenance_grants WHERE owner_id = ? AND scope IN ('maintenance_read', 'logs_read')",
                 (owner_id,),
             ).fetchone()
             return {

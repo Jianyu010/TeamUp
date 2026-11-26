@@ -35,7 +35,7 @@
 - `admin off` 关闭 Caddy 管理端点；`auto_https off` 是 manual-only 开关：自动证书管理与 HTTP 跳转全部关闭，TLS 只来自显式提供的证书与私钥。
 - 必需环境变量 fail closed：`TEAMUP_HTTPS_HOST`、`TEAMUP_HTTPS_PORT`、`TEAMUP_TLS_CERT`、`TEAMUP_TLS_KEY`、`TEAMUP_UPSTREAM_PORT` 各自镜像进站点内的 `vars` 守卫，未设置或显式空串都会让参数数量不足，`caddy adapt` 报错退出、配置整体被拒绝，不会静默降级（实测 Caddy v2.11.9，见下方已验证）。
 - `TEAMUP_HTTPS_BIND` fail closed：Caddyfile 的 `{$TEAMUP_HTTPS_BIND:127.0.0.1}` 默认值只在环境变量未设置时生效；显式空串会展开为空参数，站点内的 `vars teamup_https_bind` 守卫因此参数数量不足，配置同样被拒绝，不会退化为全网卡监听。
-- 仅 `/v1/*` 反向代理到字面量回环上游 `127.0.0.1:$TEAMUP_UPSTREAM_PORT`，其余路径一律返回 404。
+- Caddy forwards `/v1/*`, `/console/`, `/dashboard/`, and the exact Console asset paths to the loopback Server at `127.0.0.1:$TEAMUP_UPSTREAM_PORT`. Other paths return 404.
 - `Authorization` 头原样透传，认证与授权完全由后端按契约执行。
 - SSE（`/v1/events`）由 Caddy 默认即时下发，不配置缓冲或跳转；SSE 只作提示，丢帧后仍由持久收件箱恢复，重连语义不变。
 
@@ -47,7 +47,7 @@ caddy run --config /opt/teamup-pilot/Caddyfile --adapter caddyfile
 
 ## 源码分发
 
-客户端源码必须与 SSH 路径同源。在仓库根对固定修订执行 `git archive`，记录 SHA256 摘要，经团队批准的独立私密渠道分发；本 HTTPS 站点只转发 `/v1`，不提供源码下载，不得作为分发通道。成员校验摘要一致后再解压安装，不接受来源不明的压缩包。
+客户端源码必须与 SSH 路径同源。在仓库根对固定修订执行 `git archive`，记录 SHA256 摘要，经团队批准的独立私密渠道分发；本 HTTPS 站点不提供源码下载，不得作为分发通道。成员校验摘要一致后再解压安装，不接受来源不明的压缩包。
 
 ```sh
 revision='<pinned-revision>'
@@ -69,6 +69,6 @@ python3 -m scripts.ci.version --local --sha "$revision" > "$stage/TEAMUP-VERSION
 
 ## 已验证与未验证
 
-自动化验收在回环环境用临时私有 CA 与 `localhost` 证书运行真实 Caddy（经 `TEAMUP_CADDY_BIN` 或 `PATH` 提供 caddy 后执行 `uv run --no-sync pytest tests/integration/test_https_proxy.py`），覆盖：经代理的账号登录与 Agent 登记；独立实时 SSE 证据——一条独立鉴权的代理 SSE 流先等到真实的 `: ready` 帧，另一句柄发出 @mention 后，同一条流在限时内读到完整的 `inbox_changed` 帧；运行中成员的桌面通知与离线成员重连补收（与 SSE 证据分开断言）；错误 CA 信任失败、错误口令失败，以及非 `/v1` 路径 404。同一套件还用真实 `caddy adapt` 验证 `TEAMUP_HTTPS_BIND` 的三种取值：未设置时仅回环监听、显式空串时配置被拒绝、显式地址原样保留；并验证每个必需环境变量未设置或为空串时配置一律被拒绝（实测 Caddy v2.11.9）。
+自动化验收在回环环境用临时私有 CA 与 `localhost` 证书运行真实 Caddy（经 `TEAMUP_CADDY_BIN` 或 `PATH` 提供 caddy 后执行 `uv run --no-sync pytest tests/integration/test_https_proxy.py`），覆盖：经代理的账号登录与 Agent 登记；独立实时 SSE 证据——一条独立鉴权的代理 SSE 流先等到真实的 `: ready` 帧，另一句柄发出 @mention 后，同一条流在限时内读到完整的 `inbox_changed` 帧；运行中成员的桌面通知与离线成员重连补收（与 SSE 证据分开断言）；错误 CA 信任失败、错误口令失败，以及控制台和 API 以外路径返回 404。同一套件还用真实 `caddy adapt` 验证 `TEAMUP_HTTPS_BIND` 的三种取值：未设置时仅回环监听、显式空串时配置被拒绝、显式地址原样保留；并验证每个必需环境变量未设置或为空串时配置一律被拒绝（实测 Caddy v2.11.9）。
 
 未验证：真实内网或 VPN 部署、跨网段链路、第二台设备与生产网络。在完成这些验证并取得 owner 同意前，线上试点保持 SSH 隧道，本页路径不作为默认接入方式。

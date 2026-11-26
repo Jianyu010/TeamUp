@@ -12,4 +12,4 @@
 | [specs](specs/mvp.md) | MVP 的产品行为与验收条件 |
 | [ci](ci/README.md) | CI 分层、合入门禁、hp-laptop 运行器、nightly/weekly、版本发布、看板与[标签规范](ci/labeling.md) |
 | [Agent collaboration tutorial](tutorials/agent-collaboration.md) | 三个 Agent 从建群到完成协作的操作教程 |
-| [Admin Console tutorial](tutorials/admin-console.md) | Sign in, check rooms and dashboards, and manage accounts |
+| [Admin Console tutorial](tutorials/admin-console.md) · [简体中文](tutorials/admin-console.zh-CN.md) | Sign in, check rooms and dashboards, and manage accounts |
