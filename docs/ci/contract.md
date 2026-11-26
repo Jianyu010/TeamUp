@@ -30,6 +30,8 @@ Run all commands from the repository root. Set up the Python environment with `u
 
 The `TEAMUP_RESULTS_DIR` environment variable controls where the summary goes and defaults to `results`. The `conftest.py` file writes `results/nightly/scenarios.json`. The workflow then runs `scripts/ci/results.py merge` to produce `results/nightly/summary.json`.
 
+The nightly report attempts to publish the summary and sets the merge freeze when the verdict is red. The report then fails the GitHub Actions run so its conclusion reflects the suite verdict.
+
 ## Results file (schema 1)
 
 ```json
