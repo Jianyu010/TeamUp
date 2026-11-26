@@ -332,4 +332,11 @@ test("remembered sign-in stays on the desktop side of the bridge", async (t) => 
   await submit(true);
   await manager.forget();
   assert.equal(saved, null);
+
+  state = "sign_in_required";
+  saved = {...credentials, scope};
+  remember_scope = null;
+  const manual = await submit(false);
+  assert.deepEqual(await manual.json(), {state: "ready"});
+  assert.equal(saved, null);
 });

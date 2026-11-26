@@ -66,7 +66,7 @@ function getEndpoint() {
 }
 
 async function openConsole() {
-  await getEndpoint();
+  const preparing = getEndpoint();
   const consoleWindow = new BrowserWindow({
     title: "TeamUp",
     width: 1200,
@@ -89,7 +89,7 @@ async function openConsole() {
   consoleWindow.webContents.on("will-navigate", (event) => event.preventDefault());
   consoleWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   consoleWindow.once("ready-to-show", () => consoleWindow.show());
-  await consoleWindow.loadURL(CONSOLE_URL);
+  await Promise.all([consoleWindow.loadURL(CONSOLE_URL), preparing]);
 }
 
 function showConsole() {

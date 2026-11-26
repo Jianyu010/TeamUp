@@ -44,18 +44,21 @@ function createDesktopLogin(keychain, profile) {
         const {status, result} = await requestPrivateLogin(endpoint, {username, password}, signal);
         const {state, authenticated_scope} = result;
         const view = {state};
-        if (state === "ready" && typeof authenticated_scope === "string") {
+        if (state === "ready") {
           try {
             if (remember) {
-              await keychain.put(profile, {username, password, scope: authenticated_scope});
-            } else {
+              if (typeof authenticated_scope !== "string") {
+                view.keychain = "save_failed";
+              } else {
+                await keychain.put(profile, {username, password, scope: authenticated_scope});
+              }
+            } else if (Object.hasOwn(result, "authenticated_scope")) {
+              // An already-active Client never validates the credentials in this request.
               await keychain.forget(profile);
             }
           } catch {
             view.keychain = remember ? "save_failed" : "forget_failed";
           }
-        } else if (state === "ready" && remember) {
-          view.keychain = "save_failed";
         }
         return {status, result: view};
       });
