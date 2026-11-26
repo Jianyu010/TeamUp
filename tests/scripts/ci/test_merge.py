@@ -628,3 +628,17 @@ def test_with_require_ready_on_a_failed_freeze_read_stops_the_run(
     monkeypatch.setenv("GITHUB_TOKEN", "t")
     with pytest.raises(RuntimeError):
         ci_merge.main(["--dry-run"])
+
+
+def test_unfrozen_plan_lets_the_owners_ready_close_a_freeze() -> None:
+    closer = Pull(
+        5,
+        "a" * 40,
+        frozenset(),
+        False,
+        "success",
+        override=True,
+        closes=frozenset({40}),
+    )
+    steps = plan([closer], frozen=False, freeze_issues=frozenset({40}))
+    assert [(s.number, s.freezes) for s in steps] == [(5, ())]

@@ -146,7 +146,8 @@ def plan(
 
     When not ``frozen`` but ``freeze_issues`` are open (``require_ready`` is off, so a freeze
     does not stop merges), a PR that would close one of them still waits: the issue is the
-    signal that ``main`` is red and closes itself once ``main`` is green again.
+    signal that ``main`` is red and closes itself once ``main`` is green again. The owner's
+    ``ready`` still lets it merge.
     """
     ordered = sorted(pulls, key=lambda p: p.number)
     steps = [
@@ -164,9 +165,10 @@ def plan(
             if not repairs or pull.closes & freeze_issues:
                 continue
             reason += f"; repairs freeze #{repairs[0]}"
-        elif not frozen and pull.closes & freeze_issues:
+        elif not frozen and not pull.override and pull.closes & freeze_issues:
             continue
-        frozen_now = tuple(sorted(freeze_issues)) if repairs or not frozen else ()
+        guarded = repairs or not (frozen or pull.override)
+        frozen_now = tuple(sorted(freeze_issues)) if guarded else ()
         steps.append(Step("merge", pull.number, pull.sha, reason, repairs, frozen_now))
     return steps
 
@@ -473,7 +475,8 @@ def main(argv: list[str] | None = None) -> int:
     if not owner:
         for pull in pulls:
             closed = sorted(pull.closes & freeze_issues)
-            if closed and pull.blocked() is None and pull.gate == "success":
+            eligible = pull.blocked() is None and pull.gate == "success"
+            if closed and eligible and not pull.override:
                 print(
                     f"merge: #{pull.number} waits: it would close freeze #{closed[0]}; "
                     "refer to it with `Refs` instead"
