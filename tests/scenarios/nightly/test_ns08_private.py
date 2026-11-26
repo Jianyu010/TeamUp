@@ -4,6 +4,16 @@ import pytest
 from _stack import deploy, tool
 
 
+async def wait_for_dm_notices(agent, message_id):
+    async with asyncio.timeout(20):
+        while True:
+            notifications = (await tool(agent, "notifications"))["notifications"]
+            notices = [notice for notice in notifications if notice.get("kind") == "dm"]
+            if any(notice["message_id"] == message_id for notice in notices):
+                return notices
+            await asyncio.sleep(0.1)
+
+
 async def run(alice, bob, carol):
     async with alice.agent() as a, bob.agent() as b, carol.agent() as c:
         a_member = await tool(
@@ -18,7 +28,7 @@ async def run(alice, bob, carol):
             name="Frontend",
             description="Owns interface behavior and coordinates API integration.",
         )
-        await tool(
+        c_member = await tool(
             c,
             "register",
             name="Bystander",
@@ -37,7 +47,7 @@ async def run(alice, bob, carol):
             client_message_id="q1",
             text=question,
         )
-        bob_notice = await asyncio.to_thread(bob.wait_for_notice, first["message_id"])
+        bob_notices = await wait_for_dm_notices(b, first["message_id"])
 
         reopened = await tool(b, "open_dm", member_id=a_member["member_id"])
         assert reopened["dm_id"] == dm_id
@@ -51,16 +61,15 @@ async def run(alice, bob, carol):
             client_message_id="r1",
             text=answer,
         )
-        alice_notice = await asyncio.to_thread(
-            alice.wait_for_notice, reply["message_id"]
-        )
+        alice_notices = await wait_for_dm_notices(a, reply["message_id"])
         assert [first["text"], reply["text"]] == [question, answer]
 
-        for agent, notice, received, sender in (
-            (a, alice_notice, reply, b_member),
-            (b, bob_notice, first, a_member),
+        for agent, notices, received, sender in (
+            (a, alice_notices, reply, b_member),
+            (b, bob_notices, first, a_member),
         ):
-            assert notice["kind"] == "dm"
+            assert len(notices) == 1
+            notice = notices[0]
             assert notice["dm_id"] == dm_id
             assert notice["message_id"] == received["message_id"]
             assert notice["sender_member_id"] == sender["member_id"]
@@ -78,8 +87,19 @@ async def run(alice, bob, carol):
             client_message_id="x",
             text="hi",
         )
-        notices = (await tool(c, "notifications"))["notifications"]
-        assert all(notice.get("kind") != "dm" for notice in notices)
+        # A later DM confirms Carol's notification feed has caught up.
+        separate_dm = await tool(a, "open_dm", member_id=c_member["member_id"])
+        control = await tool(
+            a,
+            "send_dm",
+            dm_id=separate_dm["dm_id"],
+            client_message_id="control",
+            text="This message is for Carol.",
+        )
+        carol_notices = await wait_for_dm_notices(c, control["message_id"])
+        assert [notice["message_id"] for notice in carol_notices] == [
+            control["message_id"]
+        ]
 
 
 @pytest.mark.scenario("NS-08", "Two-member direct message conversation")
