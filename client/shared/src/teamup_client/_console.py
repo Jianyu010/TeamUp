@@ -221,6 +221,12 @@ class Handler(BaseHTTPRequestHandler):
         self._run(operation, write=True)
 
     def _write_operation(self, path, query):
+        if path == "/api/admin/session" and self._loopback_host is not None:
+            if query:
+                raise ValueError
+            self._action_body(required=False)
+            return self._reader.admin_session()
+
         if path == "/api/wake-settings":
             body = self._action_body(required=True)
             if query or set(body) != {"enabled"} or type(body["enabled"]) is not bool:
@@ -368,7 +374,7 @@ class Handler(BaseHTTPRequestHandler):
     def _operation(self, path, query):
         params = self._params(query)
         if path == "/api/access" and not params:
-            return self._reader.access()
+            return self._reader.access(private=self._loopback_host is not None)
         if path == "/api/wake-settings" and not params:
             return self._reader.wake_settings()
         if path == "/api/versions":

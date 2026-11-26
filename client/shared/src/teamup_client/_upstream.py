@@ -48,6 +48,7 @@ def _status_error(response, *, member_auth):
 async def connect(config):
     limits = httpx.Limits(max_connections=None, max_keepalive_connections=20)
     transport = None
+    server_socket = None
     if config.server_socket is not None:
         try:
             server_socket = private_forward_socket(config.server_socket)
@@ -65,12 +66,13 @@ async def connect(config):
         limits=limits,
         transport=transport,
     ) as http:
-        yield Upstream(http)
+        yield Upstream(http, server_socket=server_socket)
 
 
 class Upstream:
-    def __init__(self, http):
+    def __init__(self, http, *, server_socket=None):
         self._http = http
+        self.server_socket = server_socket
 
     async def login(self, username, password):
         try:

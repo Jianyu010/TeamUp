@@ -127,6 +127,43 @@
         "summary": "Account Capabilities"
       }
     },
+    "/v1/auth/console-session": {
+      "post": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Issue Console Session V1 Auth Console Session Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Issue Console Session"
+      }
+    },
     "/v1/auth/login": {
       "post": {
         "requestBody": {

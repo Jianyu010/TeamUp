@@ -175,6 +175,8 @@ button.linkish {
   font-size: 26px;
 }
 
+.login-credentials { display: contents; }
+
 .login-note {
   margin: 0 0 14px;
   color: var(--muted-ink);

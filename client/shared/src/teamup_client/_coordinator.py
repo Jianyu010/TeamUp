@@ -726,7 +726,7 @@ class Coordinator:
             "older": str(page[0]["message_id"]) if len(rows) > page_size else None,
         }
 
-    async def console_access(self) -> dict:
+    async def console_access(self, *, private: bool = False) -> dict:
         if (token := self._account_token) is None:
             return {}
         try:
@@ -735,9 +735,32 @@ class Coordinator:
             )
         except ClientError:
             return {}
-        if capabilities.get("admin") is True:
-            return {"admin_url": self._server_url + "/console/"}
-        return {}
+        if capabilities.get("admin") is not True:
+            return {}
+        access = {"admin_url": self._server_url + "/console/"}
+        if private and self._upstream.server_socket is not None:
+            access["server_socket"] = str(self._upstream.server_socket)
+        return access
+
+    async def console_admin_session(self) -> dict:
+        server_socket = self._upstream.server_socket
+        if server_socket is None and not self._server_url.startswith("https://"):
+            return {"state": "forbidden"}
+        if (token := self._account_token) is None:
+            return {"state": "unauthorized"}
+        try:
+            session = await self._upstream.request(
+                "POST", "/auth/console-session", token, member_auth=False
+            )
+        except ClientError as error:
+            state = error.code if error.code in {"unauthorized", "forbidden", "not_found"} else "unavailable"
+            return {"state": state}
+        return {
+            "state": "ready",
+            "admin_url": self._server_url + "/console/",
+            "session": session,
+            "server_socket": None if server_socket is None else str(server_socket),
+        }
 
     async def console_wake_settings(self, enabled: bool | None = None) -> dict:
         if not self._signed_in_console:

@@ -416,6 +416,11 @@ class Gateway:
                 body.username, body.password, body.purpose or "enrollment"
             )
 
+        @app.post("/v1/auth/console-session", dependencies=[Depends(_reject_body)])
+        def issue_console_session(token: _Bearer, response: Response) -> dict:
+            _no_store(response)
+            return collaboration.issue_console_session(token)
+
         @app.get("/v1/auth/capabilities", dependencies=[Depends(_reject_body)])
         def account_capabilities(token: _Bearer, response: Response) -> dict:
             _no_store(response)
