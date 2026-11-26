@@ -2,6 +2,7 @@ const get = (id) => document.getElementById(id);
 const labels = {online: "Online", offline: "Offline", unknown: "Unknown"};
 const heartbeatLifetime = 45_000;
 const expiryTimers = new WeakMap();
+const nameOrder = new Intl.Collator(undefined, {sensitivity: "base"});
 
 function element(tag, text, css) {
   const item = document.createElement(tag);
@@ -77,21 +78,59 @@ export function memberNames(members, nameTag = "span") {
   });
 }
 
+function uptimeLabel(milliseconds) {
+  const seconds = Math.floor(milliseconds / 1000);
+  if (seconds < 60) return seconds + "s";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return minutes + "m " + seconds % 60 + "s";
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return hours + "h " + minutes % 60 + "m";
+  return Math.floor(hours / 24) + "d " + hours % 24 + "h";
+}
+
 export function renderTeam(result, requestedAt) {
   const list = get("team-list");
   const members = result.members || [];
   const names = memberNames(members);
-  list.replaceChildren(...members.map((member, index) => {
+  const rows = members.map((member, index) => {
     const row = element("tr");
     const identity = element("th");
     identity.scope = "row";
     names[index].view.title = names[index].label;
-    identity.append(names[index].view, presenceBadge(member.presence, requestedAt));
+    const badge = presenceBadge(member.presence, requestedAt);
+    identity.append(names[index].view, badge);
+    const since = element("td", "—", "team-since");
+    const duration = element("td", "—", "team-uptime");
+    const start = member.presence?.online_since;
+    const timestamp = Date.parse(start);
+    const onlineFor = member.presence?.online_for_ms;
+    if (badge.dataset.presence === "online" && Number.isFinite(timestamp) &&
+        Number.isSafeInteger(onlineFor) && onlineFor >= 0) {
+      const time = element("time", new Date(timestamp).toLocaleString());
+      time.dateTime = start;
+      since.replaceChildren(time);
+      duration.textContent = uptimeLabel(onlineFor);
+    }
     row.append(identity, element("td", member.owner_username ?? "—", "team-user"),
-      element("td", member.description ?? "—"));
-    return row;
-  }));
-  scheduleExpiry(list);
+      element("td", member.description ?? "—"), since, duration);
+    return {row, badge, since, duration, name: member.name ?? member.role, id: member.id};
+  });
+  const reorder = () => {
+    const rank = ({badge}) => Number(badge.dataset.presence === "online");
+    rows.sort((a, b) => rank(b) - rank(a) || nameOrder.compare(a.name, b.name) ||
+      a.id.localeCompare(b.id));
+    list.replaceChildren(...rows.map(({row}) => row));
+  };
+  reorder();
+  scheduleExpiry(list, () => {
+    for (const {badge, since, duration} of rows) {
+      if (badge.dataset.presence !== "online") {
+        since.textContent = "—";
+        duration.textContent = "—";
+      }
+    }
+    reorder();
+  });
 }
 
 export function renderSessionChoices(chooser, sessions, selected, empty) {

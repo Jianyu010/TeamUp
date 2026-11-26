@@ -114,10 +114,11 @@ Client 后台在每个获准且登记的成员绑定处观测自身连接。Gate
 | 路由 | 请求与响应 |
 | --- | --- |
 | `POST /v1/presence/heartbeat` | 成员 token，无正文。成功返回 `{observed_at}`，时间由 Server 接收时赋予。成员身份来自 token。 |
-| `GET /v1/presence` | 成员 token；返回 `{as_of,members:[{member_id,state,observed_at,age_ms}]}`。整份结果按成员 ID 升序，无任意 ID 查询。`as_of` 是 Server 计算状态时的 UTC RFC 3339 时间。`observed_at` 使用同一 UTC 时钟。`age_ms` 是按 Server 单调时钟计算并向上取整的毫秒数，无观测时为 null。 |
+| `GET /v1/presence` | 成员 token；返回 `{as_of,members:[{member_id,state,observed_at,age_ms,online_since,online_for_ms}]}`。整份结果按成员 ID 升序，无任意 ID 查询。`as_of` 是 Server 计算状态时的 UTC RFC 3339 时间。`observed_at` 使用同一 UTC 时钟。`age_ms` 是按 Server 单调时钟计算并向上取整的毫秒数，无观测时为 null。在线时 `online_since` 是当前连续在线时段开始的 Server UTC RFC 3339 时间，`online_for_ms` 是从该时段开始到快照时按 Server 单调时钟计算并向下取整的毫秒数。离线或未知时两字段均为 null。 |
 
 - 获准且已登记的 Client 绑定首次立即上报，之后每 15 秒续期。上报独立于控制台是否打开。Presence 按成员保留最新一次 Server 接收心跳的 UTC 时间和单调时钟读数。并发上报取最新观测，不让较早完成的请求覆盖较新的观测。
 - Server 单调时钟上距最近心跳不足 45 秒为 `online`，恰满 45 秒即为 `offline`，两者的 `observed_at` 都是最近一次收到心跳的 UTC RFC 3339 时间。尚未见过的成员为 `unknown`，时间为 null。Server 重启后回到 `unknown`，直到收到新心跳。停用后的下一次心跳和读请求均返回 401。
+- 首次接受的心跳开启连续在线时段。更新的心跳距上一次不足 45 秒时续期并保留起始时刻，间隔达到 45 秒时开启新时段。迟完成授权的旧心跳不修改已接受的最新心跳和在线起点。Server 重启清除时段。现有授权范围和心跳响应保持兼容。旧 Client 可忽略新增字段，新 Client 把旧 Server 省略的字段视为不可用。
 - 多个 Client 使用同一个成员身份时，每次心跳都续期。只要还有一个 Client 续期，该成员就保持在线。最后一个 Client 退出或失联后按 45 秒到期，重新收到心跳即恢复在线。[MVP](../specs/mvp.md) 的显式断线报告留给 #31 后续连接生命周期契约。
 - 成员栏和 Team 都按当前阅读会话的返回值展示状态。范围之外、缺少响应或授权失效时显示 Unknown。成功响应的在线标记最多保留本次心跳剩余的 45 秒有效期；Client 使用 `age_ms` 和本地从请求开始经过的时间判断剩余有效期。Server 调整 UTC 时钟时，状态和有效期仍由单调时钟决定。显示在线仅描述该 Client 连接。harness 忙闲、主机资料和工作内容属其他范围。
 
