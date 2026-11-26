@@ -64,7 +64,7 @@ Protected paths and required checks are listed in [`.github/ci/policy.json`](../
 | --- | --- | --- |
 | Changes to protected paths, deleted tests, or new skip or xfail markers | Wait for the owner's `ready` | The PR takes the automatic route. `1 · Protected Changes` stays green with a note |
 | More than 300 changed files | Wait for the owner's `ready`. `1 · Automation Limits` fails | Not blocked and not reported. A PR with 3,000 or more files (GitHub's listing cap, so the list may be incomplete) always needs AI review, whatever the switch says |
-| A freeze on `main` or nightly | Only PRs with `ready` or a freeze reference merge | Merges are not blocked. The freeze issue still opens and closes as a signal |
+| A freeze on `main` or nightly | Only PRs with `ready` or a freeze reference merge | Merges are not blocked. The freeze issue still opens and closes as a signal, so a PR that would close it (`Closes`, `Fixes`, `Resolves`) still waits. If the freeze issues cannot be read, merging goes on with a warning |
 
 These rules hold whatever the switch says: all required checks pass, `3 · AI Review` passes and its findings are addressed as described below, the PR links an issue, `pr/hold` blocks, drafts do not merge, and PRs from untrusted authors wait for a maintainer. `ready` still works as an override (for example, for unfixed P0 or P1 findings), but it is no longer required. The switch is per repository rather than an exception for the owner, because PRs are normally authored by the owner's account, which agents also use, so exempting the owner would turn it off for every PR anyway.
 
