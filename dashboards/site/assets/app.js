@@ -26,7 +26,7 @@ const METRIC_COPY = {
   },
   dm_delivery_latency: {
     title: "Mention Delivery Time",
-    description: "Measures the time from sending a mention to the recipient seeing the notice.",
+    description: "Measures the time from sending a mention to the receiving client reporting the notice.",
   },
   history_db_size: {
     title: "Message History Database Size",
@@ -53,8 +53,8 @@ const METRIC_COPY = {
     description: "Shows the total model tokens used across all agent turns in each scenario run.",
   },
   model_calls: {
-    title: "Model Calls per Scenario",
-    description: "Counts model calls across all agent turns in each scenario run.",
+    title: "Model Steps per Scenario",
+    description: "Counts completed model steps across all agent turns in each scenario run.",
   },
   room_errors: {
     title: "Failed Room Message Posts",
