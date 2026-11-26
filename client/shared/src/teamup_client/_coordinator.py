@@ -257,6 +257,11 @@ class Coordinator:
             binding.binding_key: (binding.harness_instance_id, binding.session_key)
             for binding in config.bindings
         }
+        self._codex_static = {
+            (binding.codex_install, binding.session_key.lower()): self._static[binding.binding_key]
+            for binding in config.bindings
+            if binding.codex_install is not None
+        }
         self._installs = {install.binding_key: install for install in config.installs}
         self._install_harnesses = {
             install.harness_instance_id for install in config.installs
@@ -316,7 +321,15 @@ class Coordinator:
             raise ClientError(
                 "invalid_request", "This install needs a session ID from its harness"
             )
-        return (install.harness_instance_id, session_ref["id"]), install
+        identity = (install.harness_instance_id, session_ref["id"])
+        if (
+            session_ref["kind"] == "codex"
+            and (static := self._codex_static.get((identity[0], identity[1].lower())))
+            and identity not in self._retired
+            and self._notices.session(*identity) is None
+        ):
+            return static, None
+        return identity, install
 
     async def _resolve(self, identity, install, session_ref):
         if session_ref is not None and session_ref["kind"] == "codex":

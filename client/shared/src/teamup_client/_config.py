@@ -12,7 +12,7 @@ from tempfile import NamedTemporaryFile
 from urllib.parse import urlsplit
 
 from ._local import LocalError, lock_endpoint, private_file
-from ._protocol import decode_json, is_secret, is_string
+from ._protocol import decode_json, is_secret, is_string, is_uuid
 
 
 class ConfigError(Exception):
@@ -25,6 +25,7 @@ class Binding:
     member_token: str = field(repr=False)
     harness_instance_id: str
     session_key: str
+    codex_install: str | None = None
 
 
 @dataclass(frozen=True)
@@ -132,8 +133,12 @@ def _parse(path, data):
     bindings = []
     secrets = {enrollment_key, account_token} - {None}
     sessions = set()
+    codex_threads = set()
+    binding_fields = set(Binding.__dataclass_fields__) - {"codex_install"}
     for item in data["bindings"]:
-        if not isinstance(item, dict) or set(item) != set(Binding.__dataclass_fields__):
+        if not isinstance(item, dict) or not (
+            binding_fields <= item.keys() <= binding_fields | {"codex_install"}
+        ):
             raise ConfigError("Invalid binding fields")
         binding = Binding(**item)
         identity = (binding.harness_instance_id, binding.session_key)
@@ -147,6 +152,13 @@ def _parse(path, data):
         credentials = {binding.binding_key, binding.member_token}
         if len(credentials) != 2 or secrets & credentials or identity in sessions:
             raise ConfigError("Binding secrets and session identities must be unique")
+        if "codex_install" in item:
+            if not is_string(binding.codex_install, 128) or not is_uuid(binding.session_key):
+                raise ConfigError("A Codex mapping needs an installation ID and a thread UUID")
+            thread = (binding.codex_install, binding.session_key.lower())
+            if thread in codex_threads:
+                raise ConfigError("A Codex installation must map each thread UUID at most once")
+            codex_threads.add(thread)
         secrets.update(credentials)
         sessions.add(identity)
         bindings.append(binding)
@@ -177,6 +189,11 @@ def _parse(path, data):
             raise ConfigError("Install secrets and harness instances must be unique")
         secrets.add(install.binding_key)
         installs.append(install)
+
+    if {install for install, _ in codex_threads} - {
+        install.harness_instance_id for install in installs
+    }:
+        raise ConfigError("codex_install must name a configured installation")
 
     ca_file = None
     if "ca_file" in data:
