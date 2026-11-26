@@ -584,9 +584,8 @@ function labelText(labels) {
 }
 
 function metricCopy(name) {
-  const key = name === "history_db_bytes" ? "history_db_size" : name;
-  if (Object.hasOwn(METRIC_COPY, key)) {
-    return METRIC_COPY[key];
+  if (Object.hasOwn(METRIC_COPY, name)) {
+    return METRIC_COPY[name];
   }
   const title = name.replaceAll("_", " ");
   return {
@@ -627,10 +626,11 @@ function renderMetricCharts(runs, stat, charts) {
       if (!metric || typeof metric.name !== "string" || !metric.name) {
         continue;
       }
-      let entry = names.get(metric.name);
+      const name = metric.name === "history_db_bytes" ? "history_db_size" : metric.name;
+      let entry = names.get(name);
       if (!entry) {
         entry = { unit: metric.unit || "", series: new Map() };
-        names.set(metric.name, entry);
+        names.set(name, entry);
       }
       if (!entry.unit && metric.unit) {
         entry.unit = metric.unit;
@@ -697,8 +697,9 @@ function renderMetricCharts(runs, stat, charts) {
         if (value == null) {
           return `${item.dataset.label}: —`;
         }
-        const unit = yTitle ? ` ${yTitle}` : "";
-        return `${item.dataset.label}: ${metricValueFormat.format(value)}${unit}`;
+        const shown = wholeNumbers ? formatInt(value) : metricValueFormat.format(value);
+        const unit = yTitle && !wholeNumbers ? ` ${yTitle}` : "";
+        return `${item.dataset.label}: ${shown}${unit}`;
       },
     };
 
