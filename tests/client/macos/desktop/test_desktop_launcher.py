@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import runpy
@@ -7,8 +8,9 @@ import socket
 import subprocess
 import sys
 from http.client import HTTPConnection
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
+from socketserver import ThreadingUnixStreamServer
 from tempfile import TemporaryDirectory
 from threading import Thread
 from time import monotonic, sleep
@@ -20,6 +22,9 @@ LAUNCHER = Path(__file__).resolve().parents[4] / "client/macos/desktop/launch.py
 
 
 class LoginServer(BaseHTTPRequestHandler):
+    def log_message(self, *_args):
+        pass
+
     def do_POST(self):
         credentials = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         assert self.path == "/v1/auth/login"
@@ -35,17 +40,24 @@ class LoginServer(BaseHTTPRequestHandler):
 
 @pytest.fixture
 def login_server():
-    with ThreadingHTTPServer(("127.0.0.1", 0), LoginServer) as server:
-        thread = Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05})
-        thread.start()
-        try:
-            yield f"http://127.0.0.1:{server.server_port}"
-        finally:
-            server.shutdown()
-            thread.join()
+    with TemporaryDirectory(prefix="tu-ssh-", dir="/tmp") as temp:
+        private = Path(temp) / "private"
+        private.mkdir(mode=0o700)
+        socket_path = private / "ssh.sock"
+        with ThreadingUnixStreamServer(str(socket_path), LoginServer) as server:
+            socket_path.chmod(0o600)
+            thread = Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05})
+            thread.start()
+            try:
+                yield "http://127.0.0.1:1", socket_path
+            finally:
+                server.shutdown()
+                thread.join()
 
 
 def test_desktop_launcher_reuses_pending_and_active_session(login_server, monkeypatch):
+    server_url, server_socket = login_server
+    scope = hashlib.sha256(f"{server_url}\0{server_socket}".encode()).hexdigest()
     # Keep the Client's Unix socket path short on macOS.
     with TemporaryDirectory(prefix="tu-desktop-", dir="/tmp") as temp:
         root = Path(temp)
@@ -55,7 +67,8 @@ def test_desktop_launcher_reuses_pending_and_active_session(login_server, monkey
         profile.write_text(
             json.dumps(
                 {
-                    "server_url": login_server,
+                    "server_url": server_url,
+                    "server_socket": str(server_socket),
                     "socket_path": str(client_socket),
                     "bindings": [],
                 }
@@ -127,20 +140,50 @@ def test_desktop_launcher_reuses_pending_and_active_session(login_server, monkey
             finally:
                 connection.close()
 
-            with socket.socket(socket.AF_UNIX) as sign_in:
-                sign_in.settimeout(3)
-                sign_in.connect(login_socket)
-                body = json.dumps({"username": "alice", "password": "desktop test password"})
+            def private_login(credentials=None):
                 host = f"127.0.0.1:{url.port}"
-                sign_in.sendall((
-                    f"POST /api/login HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\n"
-                    f"Authorization: Bearer {url.fragment}\r\nContent-Type: application/json\r\n"
-                    f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n{body}"
-                ).encode())
-                with sign_in.makefile("rb") as result:
-                    headers, document = result.read().split(b"\r\n\r\n", 1)
-                assert headers.startswith(b"HTTP/1.0 200 ")
-                assert json.loads(document) == {"state": "ready"}
+                method = "GET" if credentials is None else "POST"
+                body = "" if credentials is None else json.dumps(credentials)
+                with socket.socket(socket.AF_UNIX) as sign_in:
+                    sign_in.settimeout(3)
+                    sign_in.connect(login_socket)
+                    sign_in.sendall((
+                        f"{method} /api/login HTTP/1.1\r\nHost: {host}\r\n"
+                        f"Origin: http://{host}\r\nAuthorization: Bearer {url.fragment}\r\n"
+                        f"Content-Type: application/json\r\nContent-Length: {len(body)}\r\n"
+                        f"Connection: close\r\n\r\n{body}"
+                    ).encode())
+                    with sign_in.makefile("rb") as result:
+                        headers, document = result.read().split(b"\r\n\r\n", 1)
+                return int(headers.split(b" ", 2)[1]), json.loads(document)
+
+            assert private_login() == (200, {
+                "state": "sign_in_required", "remember_scope": scope
+            })
+            credentials = {"username": "alice", "password": "desktop test password"}
+            original = profile.read_bytes()
+            assert private_login({**credentials, "remember_scope": "a" * 64}) == (
+                409, {"state": "profile_unavailable"}
+            )
+            assert profile.read_bytes() == original
+            assert not client_socket.exists()
+            server_socket.chmod(0o766)
+            assert private_login({**credentials, "remember_scope": scope}) == (
+                503, {"state": "unavailable"}
+            )
+            server_socket.chmod(0o600)
+            shared_parent = server_socket.parent.parent
+            shared_parent.chmod(0o777)
+            try:
+                assert private_login({**credentials, "remember_scope": scope}) == (
+                    503, {"state": "unavailable"}
+                )
+            finally:
+                shared_parent.chmod(0o700)
+            assert private_login({**credentials, "remember_scope": scope}) == (200, {
+                "state": "ready", "authenticated_scope": scope
+            })
+            assert private_login(credentials) == (200, {"state": "ready"})
             assert client_socket.is_socket()
             assert launch() == address
         finally:

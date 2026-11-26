@@ -4,6 +4,7 @@ import asyncio
 import concurrent.futures
 import hmac
 import json
+import re
 import secrets
 import sqlite3
 import threading
@@ -43,8 +44,9 @@ CSP = (
 
 
 class ConsoleSession:
-    def __init__(self, reader, sign_in):
+    def __init__(self, reader, sign_in, remember_scope):
         self.reader = reader
+        self.remember_scope = remember_scope
         self._sign_in = sign_in
         self._lock = asyncio.Lock()
         self._login_task = None
@@ -52,7 +54,7 @@ class ConsoleSession:
     def status(self):
         return {"state": "ready" if self.reader is not None else "sign_in_required"}
 
-    async def login(self, username, password):
+    async def login(self, username, password, *, private=False, remember_scope=None):
         async with self._lock:
             if self.reader is not None:
                 return self.status()
@@ -66,7 +68,9 @@ class ConsoleSession:
             self._login_task = asyncio.current_task()
             try:
                 async with asyncio.timeout(CONSOLE_LOGIN_SECONDS):
-                    self.reader = await self._sign_in(username, password)
+                    self.reader, authenticated_scope = await self._sign_in(
+                        username, password, remember_scope
+                    )
             except ClientError as error:
                 if error.code in {"unauthorized", "invalid_request"}:
                     return {"state": "wrong_credentials"}
@@ -79,7 +83,10 @@ class ConsoleSession:
                 return {"state": "unavailable"}
             finally:
                 self._login_task = None
-            return self.status()
+            result = self.status()
+            if private:
+                result["authenticated_scope"] = authenticated_scope
+            return result
 
     async def close(self):
         self._sign_in = None
@@ -158,7 +165,10 @@ class Handler(BaseHTTPRequestHandler):
             self._json(401, {"state": "unauthorized"})
             return
         if target.path == "/api/login" and not target.query:
-            self._json(200, self._session.status())
+            status = self._session.status()
+            if self._loopback_host is not None:
+                status["remember_scope"] = self._session.remember_scope
+            self._json(200, status)
             return
         if self._reader is None:
             self._json(409, {"state": "sign_in_required"})
@@ -186,9 +196,17 @@ class Handler(BaseHTTPRequestHandler):
                 if target.query:
                     raise ValueError
                 credentials = self._action_body(required=True)
-                if set(credentials) != {"username", "password"}:
+                private = self._loopback_host is not None
+                fields = {"username", "password"}
+                optional = {"remember_scope"} if private else set()
+                if not fields <= credentials.keys() <= fields | optional:
                     raise ValueError
-                operation = self._session.login(**credentials)
+                if "remember_scope" in credentials and not (
+                    isinstance(credentials["remember_scope"], str)
+                    and re.fullmatch(r"[0-9a-f]{64}", credentials["remember_scope"])
+                ):
+                    raise ValueError
+                operation = self._session.login(**credentials, private=private)
             elif self._reader is None:
                 self._json(409, {"state": "sign_in_required"})
                 return
@@ -203,6 +221,12 @@ class Handler(BaseHTTPRequestHandler):
         self._run(operation, write=True)
 
     def _write_operation(self, path, query):
+        if path == "/api/wake-settings":
+            body = self._action_body(required=True)
+            if query or set(body) != {"enabled"} or type(body["enabled"]) is not bool:
+                raise ValueError
+            return self._reader.wake_settings(body["enabled"])
+
         if path in {"/api/sessions/leave", "/api/sessions/retire"}:
             params = self._params(query)
             required = {"session", "room"} if path.endswith("/leave") else {"session"}
@@ -335,6 +359,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _operation(self, path, query):
         params = self._params(query)
+        if path == "/api/wake-settings" and not params:
+            return self._reader.wake_settings()
         if path == "/api/versions":
             if params:
                 raise ValueError
@@ -455,10 +481,12 @@ class _DesktopListener(ThreadingUnixStreamServer):
 
 
 @asynccontextmanager
-async def serve_console(reader: ConsoleReader | None, *, sign_in=None, desktop=False):
+async def serve_console(
+    reader: ConsoleReader | None, *, sign_in=None, desktop=False, remember_scope=None
+):
     loop = asyncio.get_running_loop()
     token = secrets.token_urlsafe(32)
-    session = ConsoleSession(reader, sign_in)
+    session = ConsoleSession(reader, sign_in, remember_scope)
     handler = partial(
         Handler, loop=loop, session=session, secret=f"Bearer {token}".encode()
     )

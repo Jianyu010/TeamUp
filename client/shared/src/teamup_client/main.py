@@ -36,7 +36,7 @@ from ._upstream import connect
 from .ipc import ClientError, call
 
 
-async def _activate_client(runtime, config):
+async def _activate_client(runtime, config, *, signed_in_console=False):
     async with AsyncExitStack() as startup:
         upstream = await startup.enter_async_context(connect(config))
         notices = startup.enter_context(open_store(config.socket_path))
@@ -50,6 +50,7 @@ async def _activate_client(runtime, config):
             NoticeOutput(),
             notifier,
             drivers(default_codex_command() if codex is None else codex),
+            signed_in_console=signed_in_console,
         )
         await startup.enter_async_context(
             listen(config.socket_path, partial(handle, coordinator=coordinator))
@@ -67,18 +68,26 @@ async def _serve(path, *, console=False, desktop=False):
         with locked_config(path, remove_stale_socket=True) as (config, _, _):
             async with AsyncExitStack() as runtime:
 
-                async def sign_in(username, password):
+                async def sign_in(username, password, remember_scope):
                     profile = read_locked_profile(path, config.socket_path)
+                    if remember_scope is not None and profile[0].remember_scope != remember_scope:
+                        raise ConfigError("Server transport changed before sign-in")
                     async with connect(profile[0]) as upstream:
                         updated = await sign_in_profile(
                             path, profile, upstream.login, username, password
                         )
-                    return await _activate_client(runtime, updated)
+                    reader = await _activate_client(runtime, updated, signed_in_console=True)
+                    return reader, updated.remember_scope
 
                 needs_login = console and config.enrollment_key is None
                 reader = None if needs_login else await _activate_client(runtime, config)
                 viewer = (
-                    serve_console(reader, sign_in=sign_in if needs_login else None, desktop=desktop)
+                    serve_console(
+                        reader,
+                        sign_in=sign_in if needs_login else None,
+                        desktop=desktop,
+                        remember_scope=config.remember_scope,
+                    )
                     if console
                     else nullcontext()
                 )

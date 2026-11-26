@@ -67,6 +67,7 @@ def transcript(ws):
             original = developer.config_path.read_bytes()
             assert console.get("/api/login").json() == {"state": "sign_in_required"}
             assert console.get("/api/workspace").status_code == 409
+            assert console.get("/api/wake-settings").status_code == 409
             endpoint = "/api/login"
             headers = {"Origin": origin.rstrip("/")}
             credentials = {"username": "carol", "password": password}
@@ -100,6 +101,17 @@ def transcript(ws):
                 "state": "ready"
             }
             assert developer.config_path.read_bytes() == updated
+            wake = "/api/wake-settings"
+            assert console.get(wake).json() == {"state": "ready", "enabled": True}
+            assert console.post(wake, json={"enabled": False}).status_code == 403
+            assert console.post(wake, headers=headers, json={"enabled": "false"}).status_code == 400
+            assert console.post(wake, headers=headers, json={"enabled": False}).json() == {
+                "state": "ready", "enabled": False
+            }
+            assert console.get(wake).json() == {"state": "ready", "enabled": False}
+            assert console.post(wake, headers=headers, json={"enabled": True}).json() == {
+                "state": "ready", "enabled": True
+            }
             response = console.get("/api/workspace")
             response.raise_for_status()
             (session,) = response.json()["sessions"]
