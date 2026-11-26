@@ -313,3 +313,16 @@ def test_asgi_lifespan_runs_archive_maintenance(tmp_path):
             assert len(result.json()["rooms"]) == 1
 
     asyncio.run(verify())
+
+
+def test_joined_replacement_session_of_the_creating_account_can_archive(tmp_path):
+    with api(tmp_path / "team.sqlite3") as client:
+        enroll(client, "sender")
+        enroll(client, "replacement")
+        path = room(client)
+        error(post(client, "replacement", f"{path}/archive"), 404, "not_found")
+        join(client, "replacement", path)
+        assert post(client, "sender", "/members/me/retire").status_code == 200
+        response = post(client, "replacement", f"{path}/archive")
+        assert response.status_code == 200
+        assert response.json()["archive_reason"] == "goal_reached"

@@ -92,7 +92,7 @@ TOOLS = [
     ),
     tool(
         "archive_room",
-        "Mark a room's goal reached and archive it. Only the joined room creator can do this.",
+        "Mark a room's goal reached and archive it. Requires a joined session owned by the creating account.",
         ROOM,
     ),
     tool(

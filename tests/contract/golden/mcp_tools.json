@@ -23,7 +23,7 @@
       }
     },
     "teamup_archive_room": {
-      "description": "Mark a room's goal reached and archive it. Only the joined room creator can do this.",
+      "description": "Mark a room's goal reached and archive it. Requires a joined session owned by the creating account.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
