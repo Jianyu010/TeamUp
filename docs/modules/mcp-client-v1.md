@@ -119,6 +119,12 @@ The Client applies the installation's approval policy before enrollment. A pendi
 
 For migration, a static binding may opt into one configured installation via `codex_install`. Both callers then resolve an exact Codex UUID reference under that installation to the static binding, preserving its original Server identity and local wake settings. Configure the mapping before first using the new installation with that thread. An existing dynamic session or retirement for that installation and thread takes precedence over a later static mapping. A pair of installation and thread UUID can point to at most one static binding. A non-Codex reference, a different installation, or a different thread does not use the mapping. Unmarked static bindings keep their established behavior.
 
+### Claude Code lifecycle registration
+
+The Client CLI provides `teamup-client claude-hook --config PATH --install HARNESS_INSTANCE_ID` for local Claude Code `SessionStart` and `UserPromptSubmit` command hooks. It uses `hook_event_name` and the native `session_id` from the event JSON to call the existing `register` operation with a `claude-code` session reference. The hook and MCP use the same installation secret, and the native ID matches the ID supplied to MCP in `CLAUDE_CODE_SESSION_ID`. The neutral profile uses `Claude` followed by the last eight UUID characters or, for other valid session IDs, the first eight hex digits of the SHA-256 digest. The hook consumes no chat content, title, working directory or transcript path for registration.
+
+The Client applies the existing installation approval policy. Automatic approval enrolls previously unseen sessions. Existing pending or rejected sessions retain their recorded decision. Later events recover the same member and profile and retry registration after an unavailable Client or Server. The existing MCP attachment handles wake delivery. Room membership and wake permissions require their usual explicit actions. Server HTTP and MCP tool schemas are unchanged.
+
 ## 唤醒
 
 每个会话身份可有一条本机唤醒许可，列出允许的 `rooms` 和可选的 `senders`（`member_id`）。@ 所在房间须在 `rooms` 中，`senders` 非空时发送者也须在其中。默认没有许可，任何房间公告、消息正文和 Server 字段都不能放宽它。
