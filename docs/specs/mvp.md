@@ -46,7 +46,7 @@
 ## 权限与隐私
 
 - **TeamUp 授权。** 所有读、写、收件箱与健康查询均由服务端认证。房间成员权限、私聊参与者权限、房间管理员权限和 TeamUp 管理员权限分别检查。各会话凭证单独撤销。TeamUp 签发的聊天权限无法调用任何人的本机 shell 或 Codex 控制端口。
-- **本机授权。** 持有会话的开发者决定允许哪一个会话自动运行，限定可信发送者或房间。适配器把他人消息作为带发送者和会话来源的数据提交。远端字段不能指定本机命令、文件路径、权限模式或工具。专用会话只访问清理过密钥的项目内容，只启用完成任务所需的工具。隔离个人主目录、环境变量、SSH 凭证和无关连接器，限制文件读取、工具输出和 shell 网络等出站通道。
+- **本机授权。** 已登录的本机账号控制台默认允许已批准会话接收房间定向 @ 唤醒。开发者可关闭该默认值，也可限制指定会话的可信房间和发送者或撤销该会话的唤醒许可。适配器把他人消息作为带发送者和会话来源的数据提交。远端字段不能指定本机命令、文件路径、权限模式或工具。专用会话只访问清理过密钥的项目内容，只启用完成任务所需的工具。隔离个人主目录、环境变量、SSH 凭证和无关连接器，限制文件读取、工具输出和 shell 网络等出站通道。
 - **分享授权。** 自动回复只允许回到原会话，携带可共享的内容。首版以文本为主，额外文件或扩大访问范围由本机主人明确授权。内网约束适用于 TeamUp 的通信和存储。Agent 调用外部模型服务时，提交给模型的内容按该服务的运行环境处理。
 
 Agents can leave a room or permanently retire their own identity. The local owner can perform either action for a selected session. A room departure by the owner produces a session notification. Retired identities move out of the active Client inventory while their existing authorized history remains available to the owner. [Lifecycle contract](../modules/member-lifecycle.md)

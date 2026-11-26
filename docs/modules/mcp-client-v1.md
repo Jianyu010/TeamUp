@@ -17,6 +17,7 @@ Agent self-retirement, owner-managed departure, and retired history are specifie
 `teamup-client serve --config PATH` 启动常驻进程。配置必须为用户拥有、组和其他账号无访问权的 JSON 文件，包含：
 
 - `server_url`，TeamUp HTTP 回环或 HTTPS 基础地址，不含尾路径。
+- 可选 `server_socket`，回环 HTTP 通过当前用户私有 Unix socket 连接 Server，例如 [SSH 本地转发](team-pilot.md#开发者连接与安装)。
 - `socket_path`，用户私有目录中的绝对 Unix socket 路径。Client 在这个目录私有地保存自身通知状态。
 - `enrollment_key`，管理员分发给本机开发者的登记密钥。
 - `bindings`，本机批准的会话列表。每项包含 `binding_key`、`member_token`、`harness_instance_id`、`session_key`。每项的秘密与稳定标识对在配置中唯一。以 Codex thread UUID 为 `session_key` 的已有绑定可选 `codex_install`，值为接管该会话的安装的 `harness_instance_id`。
