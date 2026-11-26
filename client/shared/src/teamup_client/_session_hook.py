@@ -1,14 +1,17 @@
-"""Register a local Codex thread from its lifecycle event."""
+"""Register a local harness session from its lifecycle event."""
 
 import asyncio
+import hashlib
 from contextlib import suppress
 
 from ._config import ConfigError, read_config
-from ._protocol import RESPONSE_LIMIT, decode_json, is_uuid
+from ._protocol import RESPONSE_LIMIT, decode_json, is_string, is_uuid
 from .ipc import ClientError, call
 
+HARNESS_NAMES = {"codex": "Codex", "claude-code": "Claude"}
 
-async def register_thread(config_path, harness_instance_id, stdin):
+
+async def register_session(config_path, harness_instance_id, stdin, *, kind):
     try:
         data = stdin.read(RESPONSE_LIMIT + 1)
         if len(data) > RESPONSE_LIMIT:
@@ -21,10 +24,15 @@ async def register_thread(config_path, harness_instance_id, stdin):
         "UserPromptSubmit",
     ):
         return
-    thread = event.get("session_id")
-    if not is_uuid(thread):
+    session_id = event.get("session_id")
+    if is_uuid(session_id):
+        suffix = session_id[-8:].lower()
+    elif kind == "claude-code" and is_string(session_id, limit=128):
+        suffix = hashlib.sha256(session_id.encode()).hexdigest()[:8]
+    else:
         return
 
+    name = HARNESS_NAMES[kind]
     config = read_config(config_path)
     install = next(
         (
@@ -35,7 +43,7 @@ async def register_thread(config_path, harness_instance_id, stdin):
         None,
     )
     if install is None:
-        raise ConfigError("The Codex hook needs a configured TeamUp installation")
+        raise ConfigError(f"The {name} hook needs a configured TeamUp installation")
     with suppress(ClientError, TimeoutError):
         async with asyncio.timeout(5):
             await call(
@@ -43,8 +51,8 @@ async def register_thread(config_path, harness_instance_id, stdin):
                 install.binding_key,
                 "register",
                 {
-                    "name": f"Codex {thread[-8:].lower()}",
-                    "description": "Available for TeamUp collaboration from a local Codex session.",
+                    "name": f"{name} {suffix}",
+                    "description": f"Available for TeamUp collaboration from a local {name} session.",
                 },
-                session={"kind": "codex", "id": thread},
+                session={"kind": kind, "id": session_id},
             )
