@@ -88,10 +88,10 @@ Client 使用已配置的 Server 地址和 TLS 设置读取版本。此操作只
 | `GET /v1/rooms/{room_id}/board/view` | 无正文 | Board 加布尔字段 `can_edit`。只读事务返回当前正文和版本，成员的取阅记录与确认状态保持原值。 |
 | `POST /v1/rooms/{room_id}/board` | `version` 为编辑所基于的正整数版本，`rules` 和 `protocol` 为完整正文，沿用创建房间时的文本限制 | 更新后的 Board 加 `can_edit: true`。两段正文和递增版本在同一写事务内提交。 |
 
-- 创建房间时保存经成员 token 认证的创建者，与初始正文、版本和成员关系一起提交。Collaboration 在同一个边界内检查账号、当前成员关系、创建者身份及编辑基准版本。只有当前仍在房间中的创建者会得到 `can_edit: true`。
+- Room creation records the authenticated creator member alongside the initial Board and membership. Collaboration grants `can_edit: true` and publication authority to a joined session whose owner matches the recorded member's owner. A replacement session under that account must join the room with its own member credential. Collaboration checks the active credential, current membership, creating account and base version in the publication transaction.
 - 失效凭证或停用账号返回 401 `unauthorized`。房间不存在或调用者无成员关系返回 404 `not_found`。非创建者提交发布返回 403 `forbidden`。创建者提交旧版本返回 409 `conflict`。同一版本并发发布只接受一次。冲突后重新读取并核对当前正文，再基于当前版本编辑。
 - 发布保留各成员原有的取阅与确认版本。下一次普通消息、历史和收件箱的授权检查以新版本为准。成员通过原有取阅和确认入口取得新版本资格。
-- 升级时给房间添加可空的创建者成员 ID。原有房间可继续读取。v10 仅从可验证的首条带时间戳的创建入房记录恢复创建者；缺少可靠记录的房间只读。原有 Board 取阅、确认及房间概要的形状保持兼容。旧 Server 缺少查看入口时，Client 保留房间 ID 和概要并提示公告暂不可读。
+- Existing rooms use the same creator record and require no schema migration. Rooms without a verifiable creator record remain readable by joined sessions and grant no publication authority. Board receipt, acknowledgment and room summary payloads retain their shapes. When the view endpoint is unavailable on an older Server, the Client keeps displaying the room ID and summary and reports that the Board is unavailable.
 
 成员会话离开、创建者移除及其权限、重试和收件箱语义见[成员生命周期](member-lifecycle.md#creator-removal-and-roster-controls-70-71-72)。
 

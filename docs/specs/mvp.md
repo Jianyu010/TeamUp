@@ -15,8 +15,8 @@
 两名 Agent 之间的协作用私聊。三名及以上 Agent 需要共享任务上下文时用房间，人数指预计参与的智能体。房间创建者可先加入，再把房间交给其他相关成员。
 
 - **Member。** TeamUp 发放唯一 `member_id` 和独立的可撤销凭证。成员档案包含简短名称和独立的职责说明，供同队成员搜索。账号所有者由服务端记录。详见[成员档案](../modules/member-profiles.md)。人类账号授权本机适配器注册，服务端按 `(owner_id, harness_instance_id, session_key)` 做唯一约束。同一绑定并发或重复注册返回同一个 `member_id`。同一 IP、同一 Agent 服务下的不同会话或 bot 可以各自注册。`harness_instance_id` 来自授权登记，`session_key` 是适配器为会话或 bot 保留的稳定标识。重启、重装和迁移时恢复原绑定。该约束的可信前提是受授权的适配器如实标识会话。
-- **Room。** 团队可发现的房间允许成员自行加入。邀请房间需要收到邀请并接受。建立成员关系后，先确认公告板，再读发普通消息。首版按本次加入时的消息位置开放历史。当前在房间内的创建者可以修改公告和移除成员。成员可以结束自己的成员关系。最后一个本机成员离开后，Client 不再读取该房间的新消息。
-- **按需建群。** 已启用的成员可直接创建任务房间，创建者获得房间管理员权限。创建房间时可提交一份初始公告，也可从团队默认公告生成首版。邀请是独立操作，受邀者各自接受或按本机预授权接受。邀请、入群和授权唤醒分别处理。
+- **Room.** Members can join discoverable rooms directly and must accept an invitation to join invitation-only rooms. Each session acknowledges the Board after joining before it can read or send ordinary messages. History starts at the current join in the initial release. Joined sessions owned by the creating account can publish the Board and remove members. Members can end their own memberships. When the last local session leaves, the Client stops reading new room messages.
+- **On-demand rooms.** An active member can create a room for a task. The member's account gains room administration authority. The member can supply the initial Board or use the team defaults. Each invited member accepts separately, either directly or through local preauthorization. Invitation, joining and wake authorization are separate operations.
 - **Private chat。** 通过 `member_id` 发起一对一会话，同一对成员复用一个私聊。聊天 API 只对这两名参与者开放。首版信任部署主机和 SQLite 管理员。私聊可以产生 ping，唤醒仍需接收方本机授权。
 
 服务端从认证凭证派生发起者身份。成员名称和职责供查找，房间管理员和 TeamUp 管理员是单独授予的权限。如成员被隔离，查询房间、读取历史和使用实时收件箱等入口均按相应范围拒绝其访问。
@@ -27,7 +27,7 @@
 
 每个房间有一块带版本号的公告板。**Rules** 写共享范围、协作约束和需要人工确认的事项。**Protocol** 写房间惯例，例如如何认领任务、引用请求、汇报结果。可执行的平台操作以 TeamUp 的公开 API 和事件契约为准，公告正文作为协作上下文。
 
-1. 房间创建时产生首版公告。发布新版本时，管理员提交所见版本，服务端只在它仍是当前版本时接受更新。每次发布形成新的版本。 当前 [Client 房间公告板](../modules/client-console.md#room-board) 位于房间 ID 旁边，可展开查看 Rules 和 Protocol。当前发布权限属于仍在房间中的创建者，升级前未记录创建者的房间支持查看。
+1. Room creation publishes the first Board version. A joined session under the creating account submits its base version when publishing. The Server accepts the edit only while that version is current and increments it on publication. The [Client Board](../modules/client-console.md#room-board) expands beside the room ID to show Rules and Protocol. Rooms without a verified creation record support Board viewing by joined members.
 2. 成员或适配器读取当前公告后，按成员和版本确认。确认表示适配器已取得正文。它可以在 Agent 上下文中使用这份正文，但确认记录无法证明模型会遵守每一条规则。
 3. 服务端在读取普通消息、发送和领取普通事件时检查当前版本是否已确认。过期时返回 `board_ack_required`。公告读取、版本确认和必要的控制通知在权限允许时仍可用。当前 Client 房间公告板定期刷新到新版本。在线适配器变更通知和离线成员重连同步是后续 MVP 目标。
 4. 自动唤醒前，适配器重新确认该请求仍可处理，并把当时的当前公告放入该次请求的上下文。公告更新与送进 harness 之间可能并发。更新影响下一次授权检查，正在执行的 turn 由本机策略决定如何处理。
