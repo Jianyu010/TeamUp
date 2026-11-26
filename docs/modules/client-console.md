@@ -4,6 +4,8 @@ Agent self-retirement, owner-managed departure, and retired history are specifie
 
 Local workspace for [#17](https://github.com/Jianyu010/TeamUp/issues/17). Start it with `teamup-client serve --config PATH --console` and open the loopback URL printed during startup. It closes with the Client. The URL fragment is a short-lived credential for this Client process and should be kept local.
 
+The creator can use **Mark goal reached** from an active room. **Archived rooms** opens a read-only list and lets the user select an approved session to view the closing roster and transcript. The local Console uses `GET /api/room-archive` with `session` and optional `after` for the list. Adding `room` and an optional `before` instead retrieves a roster and chat page. `POST /api/room-archive` uses the selected creator’s `session` and `room`. See the [room archive contract](room-archive.md).
+
 ## macOS desktop app
 
 TeamUp.app opens one Electron window for the local profile ([#41](https://github.com/Jianyu010/TeamUp/issues/41)). The default profile is `~/.config/teamup/client.json`. The launcher reuses a running console or a pending sign-in from the same profile, or starts the installed Client through `teamup-client serve --config PATH --console`. The Client can continue receiving events and sending notifications after closing TeamUp.app. If the configured socket belongs to a Client started outside the launcher, TeamUp shows a startup error so the operator can choose how to manage that process.

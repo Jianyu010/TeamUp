@@ -51,6 +51,8 @@ Each call uses one connection and sends one newline-terminated UTF-8 JSON reques
 | `teamup_register` | `register` | `name`, `description` (legacy calls that recover an existing binding can pass `role_description`) | Member. Registers with an approved binding and is safe to retry. See [member profiles](member-profiles.md). |
 | `teamup_retire_identity` | `retire_identity` | None | `{member_id,role_description,retired:true}`. Permanently retires the current identity and is safe to retry. |
 | `teamup_find_members` | `find_members` | Optional `q` | `{"members":[Member]}` |
+| `teamup_archive_room` | `archive_room` | `room_id` | Archive receipt for the goal-reached action. Requires creator authority. |
+| `teamup_list_archived_rooms` | `list_archived_rooms` | Optional UUID `after` and numeric `limit` | Member-scoped archive page with `rooms` and `next_after`. |
 | `teamup_list_rooms` | `list_rooms` | None | `{"rooms":[Room summary]}`, in stable `room_id` order |
 | `teamup_create_room` | `create_room` | `name`, optional `rules`, `protocol`, `history_policy` | Room |
 | `teamup_join_room` | `join_room` | `room_id` | Room |

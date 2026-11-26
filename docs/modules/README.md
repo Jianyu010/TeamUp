@@ -21,6 +21,7 @@
 | [Codex desktop wake verification](codex-wake.md) | Standalone Harness Driver checks and pass criteria |
 | [Claude Code desktop wake verification](claude-code-wake.md) | Local socket entry point and evidence of a model turn |
 | [Local Client Console](client-console.md) | Local console, data access, and integration acceptance checks |
+| [Room archive](room-archive.md) | Goal completion, 24-hour inactivity, read-only access, and permanent chat history |
 | [Room tasks v1](room-tasks.md) | Room tasks, participants, progress, and stall tracking |
 | [Client console reads proposal](client-console-read-proposal.md) | Contract scope for room metadata, the public directory, and member presence, plus remaining proposals for the board and DM list |
 | [Maintenance Console](maintenance-console.md) | Operator grants, system metrics, room load, and redacted events |
