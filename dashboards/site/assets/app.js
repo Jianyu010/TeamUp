@@ -19,6 +19,79 @@ const PALETTE = [
   "#475569",
 ];
 
+const METRIC_COPY = {
+  agent_turns: {
+    title: "Agent Turns per Scenario",
+    description: "Counts the turns taken by all agents in each scenario run.",
+  },
+  dm_delivery_latency: {
+    title: "Mention Delivery Time",
+    description: "Measures the time from sending a mention to the recipient seeing the notice.",
+  },
+  history_db_size: {
+    title: "Message History Database Size",
+    description: "Shows the database file size at each message history checkpoint.",
+  },
+  history_full_scan: {
+    title: "Full History Scan Time",
+    description: "Measures how long it takes to read the full message history page by page.",
+  },
+  history_latest_page_latency: {
+    title: "Latest Messages Load Time",
+    description: "Measures how long it takes to fetch the latest 100 messages at each history size.",
+  },
+  history_post_latency: {
+    title: "Posting Time by History Size",
+    description: "Measures how long posting a message takes as stored history grows.",
+  },
+  history_read_latency: {
+    title: "Message History Read Time",
+    description: "Measures how long reading messages takes at each history size.",
+  },
+  llm_tokens: {
+    title: "Model Token Usage",
+    description: "Shows the total model tokens used across all agent turns in each scenario run.",
+  },
+  model_calls: {
+    title: "Model Calls per Scenario",
+    description: "Counts model calls across all agent turns in each scenario run.",
+  },
+  room_errors: {
+    title: "Failed Room Message Posts",
+    description: "Counts failed attempts to post a room message at each load level.",
+  },
+  room_fanout_latency: {
+    title: "Room Message Delivery Time",
+    description: "Measures how long room messages take to reach other members at each load level.",
+  },
+  room_post_latency: {
+    title: "Room Message Posting Time",
+    description: "Measures how long the server takes to accept a room message at each load level.",
+  },
+  room_throughput: {
+    title: "Room Messages per Second",
+    description: "Shows how many room messages the server accepts per second at each load level.",
+  },
+  room_undelivered: {
+    title: "Missed Room Message Deliveries",
+    description: "Counts expected recipient deliveries that were still missing at the end of each run.",
+  },
+  teamup_tool_calls: {
+    title: "TeamUp Tool Calls",
+    description: "Counts TeamUp tool calls across all agent turns in each scenario run.",
+  },
+  wake_to_reply_latency: {
+    title: "Time to Agent Reply",
+    description: "Measures the time from the start of a wake turn to the agent sending its first message.",
+  },
+  wall_time: {
+    title: "Scenario Run Time",
+    description: "Measures elapsed time from the start to the end of each scenario run.",
+  },
+};
+
+const metricValueFormat = new Intl.NumberFormat("en", { maximumSignificantDigits: 4 });
+
 function create(tag, className, text) {
   const node = document.createElement(tag);
   if (className) {
@@ -184,14 +257,18 @@ function initChartDefaults() {
     'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
 }
 
-function chartOptions({ yTitle, stacked = false, maxY } = {}) {
+function chartOptions({ yTitle, stacked = false, maxY, wholeNumbers = false } = {}) {
   const theme = chartTheme();
   const yScale = {
+    type: "linear",
     beginAtZero: true,
     stacked,
     grid: { color: theme.grid },
     ticks: { maxTicksLimit: 6 },
   };
+  if (wholeNumbers) {
+    yScale.ticks.precision = 0;
+  }
   if (yTitle) {
     yScale.title = { display: true, text: yTitle };
   }
@@ -356,7 +433,7 @@ async function initRepo() {
           lineDataset("Forks", rows.map((row) => numeric(row.forks)), PALETTE[2]),
         ],
       },
-      options: chartOptions({ yTitle: "数量" }),
+      options: chartOptions({ yTitle: "数量", wholeNumbers: true }),
     },
     hasRows,
   );
@@ -380,7 +457,7 @@ async function initRepo() {
           ),
         ],
       },
-      options: chartOptions({ yTitle: "数量" }),
+      options: chartOptions({ yTitle: "数量", wholeNumbers: true }),
     },
     hasRows,
   );
@@ -414,7 +491,7 @@ async function initRepo() {
           ),
         ],
       },
-      options: chartOptions({ yTitle: "数量" }),
+      options: chartOptions({ yTitle: "数量", wholeNumbers: true }),
     },
     hasRows,
   );
@@ -448,7 +525,7 @@ async function initRepo() {
           lineDataset("14 天 Views", views, PALETTE[2]),
         ],
       },
-      options: chartOptions({ yTitle: "数量" }),
+      options: chartOptions({ yTitle: "数量", wholeNumbers: true }),
     },
     [downloads, clones, views].some((series) =>
       series.some((value) => value !== null),
@@ -506,6 +583,35 @@ function labelText(labels) {
   return keys.map((key) => `${key}=${labels[key]}`).join(", ");
 }
 
+function metricCopy(name) {
+  const key = name === "history_db_bytes" ? "history_db_size" : name;
+  if (Object.hasOwn(METRIC_COPY, key)) {
+    return METRIC_COPY[key];
+  }
+  const title = name.replaceAll("_", " ");
+  return {
+    title: title.charAt(0).toUpperCase() + title.slice(1),
+    description: "Shows the selected statistic for each benchmark run.",
+  };
+}
+
+function metricScale(name, unit) {
+  if (unit === "bytes") {
+    return { yTitle: "GB", divisor: 1e9 };
+  }
+  if (name === "history_full_scan" && unit === "ms") {
+    return { yTitle: "s", divisor: 1e3 };
+  }
+  if (unit === "tokens") {
+    return { yTitle: "k tokens", divisor: 1e3 };
+  }
+  return {
+    yTitle: unit === "count" ? "Count" : unit,
+    divisor: 1,
+    wholeNumbers: unit === "count",
+  };
+}
+
 function renderMetricCharts(runs, stat, charts) {
   const container = document.getElementById("metric-charts");
   const empty = document.getElementById("metric-empty");
@@ -555,15 +661,12 @@ function renderMetricCharts(runs, stat, charts) {
   for (const [name, entry] of [...names.entries()].sort(([a], [b]) =>
     a.localeCompare(b),
   )) {
+    const { title, description } = metricCopy(name);
+    const { yTitle, divisor, wholeNumbers } = metricScale(name, entry.unit);
     const card = create("article", "card chart-card");
-    card.append(create("h2", null, name));
-    card.append(
-      create(
-        "p",
-        "chart-note",
-        entry.unit ? `单位：${entry.unit}` : "无单位",
-      ),
-    );
+    card.lang = "en";
+    card.append(create("h2", null, title));
+    card.append(create("p", "chart-note", description));
     const frame = create("div", "chart-frame");
     const canvas = document.createElement("canvas");
     frame.append(canvas);
@@ -574,23 +677,16 @@ function renderMetricCharts(runs, stat, charts) {
     let colorIndex = 0;
     for (const [key, values] of entry.series) {
       const color = PALETTE[colorIndex % PALETTE.length];
-      datasets.push({
-        label: key,
-        data: runs.map((_, index) =>
-          values.has(index) ? values.get(index) : null,
-        ),
-        borderColor: color,
-        backgroundColor: color,
-        tension: 0.25,
-        pointRadius: 2,
-        spanGaps: false,
+      const data = runs.map((_, index) => {
+        const value = values.get(index);
+        return value == null ? null : value / divisor;
       });
+      datasets.push(lineDataset(key, data, color));
       colorIndex += 1;
     }
 
-    const options = chartOptions({ yTitle: entry.unit || undefined });
-    options.datasets = { bar: { grouped: false } };
-  options.plugins.tooltip.callbacks = {
+    const options = chartOptions({ yTitle, wholeNumbers });
+    options.plugins.tooltip.callbacks = {
       title(items) {
         const index = items[0].dataIndex;
         const run = runs[index] || {};
@@ -598,8 +694,11 @@ function renderMetricCharts(runs, stat, charts) {
       },
       label(item) {
         const value = item.parsed.y;
-        const shown = value === null || value === undefined ? "—" : value;
-        return `${item.dataset.label}: ${shown}`;
+        if (value == null) {
+          return `${item.dataset.label}: —`;
+        }
+        const unit = yTitle ? ` ${yTitle}` : "";
+        return `${item.dataset.label}: ${metricValueFormat.format(value)}${unit}`;
       },
     };
 
@@ -997,7 +1096,7 @@ async function initCi() {
           barDataset("无判定", pr("no_verdict"), PALETTE[7]),
         ],
       },
-      options: chartOptions({ yTitle: "runs", stacked: true }),
+      options: chartOptions({ yTitle: "Runs", stacked: true, wholeNumbers: true }),
     },
     days.length > 0,
   );
@@ -1038,12 +1137,14 @@ async function initCi() {
     suiteRuns.length > 0,
   );
 
-  const mergeOptions = chartOptions({ yTitle: "PRs" });
+  const mergeOptions = chartOptions({ yTitle: "PRs", wholeNumbers: true });
   mergeOptions.scales.y1 = {
+    type: "linear",
     position: "right",
     beginAtZero: true,
     grid: { drawOnChartArea: false },
     title: { display: true, text: "小时" },
+    ticks: { maxTicksLimit: 6 },
   };
   makeChart(
     "ci-merge-chart",
