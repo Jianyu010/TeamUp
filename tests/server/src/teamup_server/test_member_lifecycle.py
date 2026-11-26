@@ -351,7 +351,7 @@ def test_migration_preserves_bindings_and_room_messages(tmp_path, version):
             "messages": [message]
         }
         with closing(sqlite3.connect(db_path)) as connection:
-            assert connection.execute("PRAGMA user_version").fetchone()[0] == 11
+            assert connection.execute("PRAGMA user_version").fetchone()[0] == 12
 
 
 def test_self_retirement_can_be_retried_without_restoring_access(lifecycle):

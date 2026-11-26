@@ -22,6 +22,22 @@
         "type": "object"
       }
     },
+    "teamup_archive_room": {
+      "description": "Mark a room's goal reached and archive it. Only the joined room creator can do this.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "room_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "room_id"
+        ],
+        "type": "object"
+      }
+    },
     "teamup_create_room": {
       "description": "Create and join a team-visible task room for three or more agents. The room has a required board.",
       "inputSchema": {
@@ -226,8 +242,28 @@
         "type": "object"
       }
     },
+    "teamup_list_archived_rooms": {
+      "description": "List archived rooms accessible to this member, with the archive reason and date.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "limit": {
+            "default": 50,
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [],
+        "type": "object"
+      }
+    },
     "teamup_list_room_members": {
-      "description": "List current room members, their effective responsibilities, and membership IDs.",
+      "description": "List the room roster and responsibilities. Active rooms include membership IDs.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {

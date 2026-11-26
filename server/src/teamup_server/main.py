@@ -2,10 +2,12 @@
 
 import argparse
 import json
+import logging
 import os
 import socket
 import sys
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
+from contextlib import asynccontextmanager
 from ipaddress import ip_address
 from pathlib import Path
 
@@ -16,11 +18,12 @@ from . import account_cli
 from .collaboration import Collaboration
 from .gateway import Gateway
 from .host_observations import HostObservations
-from .maintenance import MAX_RETENTION_HOURS, Maintenance, retention
+from .maintenance import MAINTENANCE_CADENCE, Maintenance
 from .operational_events import OperationalEvents
 from .presence import Presence
 
 _TRACER_MAX_PERIOD_SECONDS = 60
+_MAX_LEGACY_RETENTION_HOURS = 876_000
 
 
 def create_app(
@@ -34,24 +37,20 @@ def create_app(
     return _compose(
         db_path,
         enrollment_keys or {},
-        None,
-        None,
         task_stall_after=task_stall_after,
         task_reminder_interval=task_reminder_interval,
         clock=clock,
-    )[0].app
+    ).app
 
 
 def _compose(
     db_path: str | Path,
     enrollment_keys: Mapping[str, str],
-    room_retention_hours: int | None,
-    dm_retention_hours: int | None,
     *,
     task_stall_after: int | None = None,
     task_reminder_interval: int | None = None,
     clock=None,
-) -> tuple[Gateway, Maintenance | None]:
+) -> Gateway:
     collaboration = Collaboration(
         db_path,
         enrollment_keys,
@@ -75,26 +74,23 @@ def _compose(
         host=HostObservations(Path(db_path).resolve().parent),
         event_log=OperationalEvents(),
     )
-    return gateway, retention(collaboration, room_retention_hours, dm_retention_hours)
+    maintenance = Maintenance(collaboration.archive_inactive_rooms, MAINTENANCE_CADENCE)
+    gateway_lifespan = gateway.app.router.lifespan_context
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        with maintenance:
+            async with gateway_lifespan(app):
+                yield
+
+    gateway.app.router.lifespan_context = lifespan
+    return gateway
 
 
 class _Server(uvicorn.Server):
-    def __init__(
-        self,
-        config: uvicorn.Config,
-        gateway: Gateway,
-        maintenance: Maintenance | None,
-    ):
+    def __init__(self, config: uvicorn.Config, gateway: Gateway):
         super().__init__(config)
         self._gateway = gateway
-        self._maintenance = maintenance
-
-    def run(self, sockets: list[socket.socket] | None = None) -> None:
-        if self._maintenance is None:
-            super().run(sockets=sockets)
-        else:
-            with self._maintenance:
-                super().run(sockets=sockets)
 
     async def shutdown(self, sockets: list[socket.socket] | None = None) -> None:
         self._gateway.stop_streams()
@@ -149,22 +145,26 @@ def main() -> None:
     parser.add_argument("--tls-key", type=Path)
     parser.add_argument("--task-stall-after", type=_positive_seconds)
     parser.add_argument("--task-reminder-interval", type=_positive_seconds)
-    parser.add_argument("--room-retention-hours", type=int)
-    parser.add_argument("--dm-retention-hours", type=int)
+    parser.add_argument("--room-retention-hours", type=int, help="Deprecated; history is retained indefinitely")
+    parser.add_argument("--dm-retention-hours", type=int, help="Deprecated; history is retained indefinitely")
     args = parser.parse_args()
     if not 0 <= args.port <= 65535:
         parser.error("--port must be between 0 and 65535")
     if args.room_retention_hours is not None and not (
-        1 <= args.room_retention_hours <= MAX_RETENTION_HOURS
+        1 <= args.room_retention_hours <= _MAX_LEGACY_RETENTION_HOURS
     ):
         parser.error(
-            f"--room-retention-hours must be an integer between 1 and {MAX_RETENTION_HOURS}"
+            f"--room-retention-hours must be an integer between 1 and {_MAX_LEGACY_RETENTION_HOURS}"
         )
     if args.dm_retention_hours is not None and not (
-        1 <= args.dm_retention_hours <= MAX_RETENTION_HOURS
+        1 <= args.dm_retention_hours <= _MAX_LEGACY_RETENTION_HOURS
     ):
         parser.error(
-            f"--dm-retention-hours must be an integer between 1 and {MAX_RETENTION_HOURS}"
+            f"--dm-retention-hours must be an integer between 1 and {_MAX_LEGACY_RETENTION_HOURS}"
+        )
+    if args.room_retention_hours is not None or args.dm_retention_hours is not None:
+        logging.getLogger("uvicorn.error").warning(
+            "The room and DM retention options are deprecated. History expiration is disabled."
         )
     if bool(args.tls_cert) != bool(args.tls_key):
         parser.error("--tls-cert and --tls-key are both required to enable TLS")
@@ -176,11 +176,9 @@ def main() -> None:
     if not _loopback(host) and not args.tls_cert:
         parser.error("Non-loopback listeners require TLS")
     try:
-        gateway, maintenance = _compose(
+        gateway = _compose(
             args.db,
             _enrollment_keys(),
-            args.room_retention_hours,
-            args.dm_retention_hours,
             task_stall_after=args.task_stall_after,
             task_reminder_interval=args.task_reminder_interval,
         )
@@ -194,7 +192,7 @@ def main() -> None:
         ssl_keyfile=args.tls_key,
         timeout_graceful_shutdown=5,
     )
-    _Server(config, gateway, maintenance).run()
+    _Server(config, gateway).run()
 
 
 if __name__ == "__main__":

@@ -492,6 +492,7 @@ function renderRooms() {
 function roomSummary(room) {
   const members =
     room.member_count + (room.member_count === 1 ? " member" : " members");
+  if (room.archived_at) return members + " · archived";
   if (!room.last_activity) {
     return members + " · no activity";
   }
@@ -629,7 +630,7 @@ function renderRoomDetail() {
   const count = detail.member_count;
   els.roomTitle.textContent = detail.name;
   els.roomMeta.textContent =
-    String(count) + (count === 1 ? " member" : " members") + " · TeamUp room";
+    String(count) + (count === 1 ? " member" : " members") + (detail.archived_at ? " · Archived room" : " · TeamUp room");
   els.roomId.textContent = "Room " + detail.room_id;
   els.rosterBody.replaceChildren();
   for (const entry of room.members) {
