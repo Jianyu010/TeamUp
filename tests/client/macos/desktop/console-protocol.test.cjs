@@ -1,7 +1,8 @@
 const assert = require("node:assert/strict");
 const { once } = require("node:events");
+const { mkdtemp, rm } = require("node:fs/promises");
 const http = require("node:http");
-const { resolve } = require("node:path");
+const { join, resolve } = require("node:path");
 const test = require("node:test");
 const { CONSOLE_URL, createConsoleHandler, parseConsoleEndpoint } = require("../../../../client/macos/desktop/console-protocol.cjs");
 
@@ -162,6 +163,50 @@ test("relays named reads and writes with the main process credential", async (t)
     cookie: undefined,
     body,
   })));
+});
+
+test("relays sign-in from the local console to the private socket only", async (t) => {
+  let calls = 0;
+  const directory = await mkdtemp("/tmp/teamup-console-");
+  const loginSocket = join(directory, "login.sock");
+  const server = http.createServer((request, response) => {
+    assert.equal(request.url, "/api/login");
+    assert.equal(request.method, "GET");
+    response.setHeader("Content-Type", "application/json");
+    response.end(JSON.stringify({state: "sign_in_required"}));
+  });
+  const login = http.createServer(async (request, response) => {
+    calls += 1;
+    assert.equal(request.url, "/api/login");
+    assert.equal(request.headers.authorization, `Bearer ${token}`);
+    assert.equal(request.headers.origin, `http://127.0.0.1:${server.address().port}`);
+    response.setHeader("Content-Type", "application/json");
+    assert.equal(request.method, "POST");
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    assert.equal(Buffer.concat(chunks).toString(), body);
+    response.writeHead(401);
+    response.end(JSON.stringify({state: "wrong_credentials"}));
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  login.listen(loginSocket);
+  await once(login, "listening");
+  t.after(async () => {
+    server.close();
+    login.close();
+    await rm(directory, {recursive: true});
+  });
+  const handle = createConsoleHandler(assets, () => ({port: server.address().port, token, loginSocket}));
+  const body = JSON.stringify({username: "alice", password: "example password"});
+  const options = {method: "POST", headers: {"Content-Type": "application/json"}, body};
+
+  assert.equal((await handle(consoleRequest("/api/login", options, "https://example.com"))).status, 403);
+  assert.deepEqual(await (await handle(consoleRequest("/api/login"))).json(), {state: "sign_in_required"});
+  const rejected = await handle(consoleRequest("/api/login", options));
+  assert.equal(rejected.status, 401);
+  assert.deepEqual(await rejected.json(), {state: "wrong_credentials"});
+  assert.equal(calls, 1);
 });
 
 for (const route of ["/api/workspace", "/api/versions"]) {

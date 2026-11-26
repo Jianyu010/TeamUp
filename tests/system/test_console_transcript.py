@@ -1,5 +1,6 @@
 """Compare the local console's transcript with the Server's member history."""
 
+import stat
 from contextlib import closing
 from datetime import datetime, timedelta
 
@@ -62,6 +63,43 @@ def transcript(ws):
             timeout=10,
             trust_env=False,
         ) as console:
+            assert not developer.socket_path.exists()
+            original = developer.config_path.read_bytes()
+            assert console.get("/api/login").json() == {"state": "sign_in_required"}
+            assert console.get("/api/workspace").status_code == 409
+            endpoint = "/api/login"
+            headers = {"Origin": origin.rstrip("/")}
+            credentials = {"username": "carol", "password": password}
+            assert console.post(endpoint, json=credentials).status_code == 403
+            assert console.post(
+                endpoint, headers={**headers, "Authorization": ""}, json=credentials
+            ).status_code == 401
+            failures = (
+                {"username": "unknown", "password": password},
+                {"username": "carol", "password": new_secret()},
+                {"username": "carol", "password": "short"},
+            )
+            for attempt in failures:
+                error = console.post(endpoint, headers=headers, json=attempt)
+                assert error.status_code == 401
+                assert error.json() == {"state": "wrong_credentials"}
+            assert developer.config_path.read_bytes() == original
+            assert not developer.socket_path.exists()
+
+            # Local edits between attempts should survive and remain usable.
+            developer.config_path.write_bytes(original + b"\n")
+            response = console.post(endpoint, headers=headers, json=credentials)
+            assert response.status_code == 200
+            assert response.json() == {"state": "ready"}
+            assert developer.socket_path.is_socket()
+            assert stat.S_IMODE(developer.config_path.stat().st_mode) == 0o600
+            updated = developer.config_path.read_bytes()
+            assert b"account_token" in updated
+            assert password.encode() not in updated
+            assert console.post(endpoint, headers=headers, json=failures[0]).json() == {
+                "state": "ready"
+            }
+            assert developer.config_path.read_bytes() == updated
             response = console.get("/api/workspace")
             response.raise_for_status()
             (session,) = response.json()["sessions"]

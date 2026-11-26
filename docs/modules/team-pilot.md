@@ -33,7 +33,9 @@ uv sync --locked --all-packages --python 3.12
 uv run --no-sync teamup-client init-install claude-code-local
 ```
 
-按 [Client 配置示例](quickstart.md#启动-client) 把生成的条目加入权限为 `0600` 的私有 JSON 的 `installs`。将 `server_url` 设为 `http://127.0.0.1:18765`，省略 `enrollment_key`。在此配置里登录一次，然后启动服务。
+按 [Client 配置示例](quickstart.md#启动-client) 把生成的条目加入权限为 `0600` 的私有 JSON 的 `installs`。将 `server_url` 设为 `http://127.0.0.1:18765`，省略 `enrollment_key`。打开 TeamUp.app，在控制台输入 TeamUp 用户名和口令。使用浏览器时，先运行 `uv run --no-sync teamup-client serve --config /private/path/client.json --console`，再打开输出的回环地址登录。
+
+无控制台的终端或后台部署可以继续使用以下命令。
 
 ```sh
 uv run --no-sync teamup-client login --config /private/path/client.json --username alice

@@ -163,16 +163,17 @@ def developer(ws):
     )
     assert status == 0, output
 
-    return developer
+    return developer, password
 
 
 def test_retirement_revokes_every_mcp_connection_using_the_same_member(developer):
+    developer, _ = developer
     developer.start()
     asyncio.run(asyncio.wait_for(walk(developer), 30))
 
 
 @asynccontextmanager
-async def console_client(developer):
+async def console_client(developer, password):
     argv, env = command("client")
     proc = developer.ws.spawn(
         "console",
@@ -198,15 +199,21 @@ async def console_client(developer):
             headers={"Authorization": f"Bearer {token}", "Origin": origin.rstrip("/")},
             trust_env=False,
         ) as console:
+            response = await console.post(
+                "/api/login", json={"username": "alice", "password": password}
+            )
+            response.raise_for_status()
             yield console
     finally:
         await asyncio.to_thread(proc.stop)
 
 
 def test_console_departure_and_retirement_reach_mcp_and_persist_history(developer):
+    developer, password = developer
+
     async def scenario():
         async with (
-            console_client(developer) as console,
+            console_client(developer, password) as console,
             developer.agent() as target,
             developer.agent(index=1) as peer,
         ):
@@ -338,7 +345,7 @@ def test_console_departure_and_retirement_reach_mcp_and_persist_history(develope
             }
             assert await tool(peer, "retire_identity") == result
 
-        async with console_client(developer) as restarted:
+        async with console_client(developer, password) as restarted:
             inventory = (await restarted.get("/api/workspace")).json()
             assert not inventory["sessions"]
             assert {entry["member_id"] for entry in inventory["retired_sessions"]} == {
@@ -382,9 +389,11 @@ def test_console_departure_and_retirement_reach_mcp_and_persist_history(develope
 
 
 def test_creator_removes_using_console_and_mcp_without_sharing_permissions(developer):
+    developer, password = developer
+
     async def exercise():
         async with (
-            console_client(developer) as console,
+            console_client(developer, password) as console,
             developer.agent() as creator,
             developer.agent(index=1) as sibling,
         ):

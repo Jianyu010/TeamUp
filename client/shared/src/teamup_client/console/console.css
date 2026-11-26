@@ -46,6 +46,21 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
 .chrome nav { display: flex; gap: 4px; }
 #connection { margin-left: auto; color: var(--muted); font-size: 12px; }
 #connection[data-live="true"] { color: var(--active); }
+.sign-in { display: grid; align-items: safe center; justify-items: center; padding: 24px; overflow: auto; }
+.sign-in form {
+  display: grid; gap: 16px; width: min(100%, 340px);
+  padding: clamp(16px, 4vw, 28px); border: 1px solid var(--edge);
+  border-radius: 10px; background: var(--panel);
+}
+.sign-in h2 { font-size: 20px; }
+.sign-in label { display: grid; gap: 5px; }
+.sign-in input {
+  width: 100%; padding: 8px 10px; border: 1px solid var(--edge);
+  border-radius: 6px; background: var(--shell);
+}
+.sign-in button { border-color: var(--edge); background: #293b38; color: var(--accent); }
+.sign-in button:disabled { opacity: .6; cursor: wait; }
+#sign-in-status { min-height: 1.45em; color: var(--muted); }
 .stage {
   --rail: 22%; position: relative; isolation: isolate;
   overflow: hidden;

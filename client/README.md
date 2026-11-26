@@ -7,7 +7,7 @@
 - [开发视图](../docs/architecture/development-view.md) 定义模块导入方向。
 - [Client 和 MCP 契约](../docs/modules/client-mcp.md) 定义本机接口、绑定和会话生命周期。
 
-On macOS, [build and open TeamUp.app](macos/desktop/README.md) for the desktop console. The browser entry is available with `teamup-client serve --config PATH --console`. See the [console contract](../docs/modules/client-console.md) for owner access and supported actions.
+On macOS, [build and open TeamUp.app](macos/desktop/README.md) for the desktop console. The browser entry is available with `teamup-client serve --config PATH --console`. Sign in with your TeamUp username and password when starting a new account-based Client. The desktop app reopens a running session directly. See the [console contract](../docs/modules/client-console.md) for owner access and supported actions.
 
 ## One member per agent session
 
@@ -58,7 +58,7 @@ To migrate a shared binding, use the Client config for the owning account.
 teamup-client members --config PATH retire OLD_MEMBER_ID
 ```
 
-Rename and retire use the account login saved by `teamup-client login`. They work with the daemon stopped as well as running. If the login has expired, refresh it using the [account login steps](../docs/modules/account-login-v1.md#client-启动配置).
+Rename and retire use the account login saved by the console or by `teamup-client login`. They work with the daemon stopped as well as running. If the login has expired, refresh it using the [account login steps](../docs/modules/account-login-v1.md#client-启动配置).
 
 ## Leave a room or retire a session
 

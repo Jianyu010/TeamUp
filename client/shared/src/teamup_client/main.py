@@ -9,12 +9,18 @@ import secrets
 import signal
 import sqlite3
 import sys
-from contextlib import nullcontext, suppress
+from contextlib import AsyncExitStack, nullcontext, suppress
 from functools import partial
 from pathlib import Path
 
 from ._codex_hook import register_thread
-from ._config import ConfigError, locked_config, owner_key, read_config
+from ._config import (
+    ConfigError,
+    locked_config,
+    owner_key,
+    read_config,
+    read_locked_profile,
+)
 from ._console import serve_console
 from ._console_data import ConsoleReader
 from ._coordinator import Coordinator
@@ -22,7 +28,7 @@ from ._daemon import handle
 from ._desktop import DesktopNotifier, default_command
 from ._harness import default_codex_command, drivers
 from ._local import LocalError, listen
-from ._login import login
+from ._login import login, sign_in_profile
 from ._notice_output import NoticeOutput
 from ._notices import open_store
 from ._protocol import is_string, is_uuid
@@ -30,42 +36,53 @@ from ._upstream import connect
 from .ipc import ClientError, call
 
 
-async def _serve(path, *, console=False):
+async def _activate_client(runtime, config):
+    async with AsyncExitStack() as startup:
+        upstream = await startup.enter_async_context(connect(config))
+        notices = startup.enter_context(open_store(config.socket_path))
+        command = config.notify_command
+        notifier = DesktopNotifier(default_command() if command is None else command)
+        codex = config.codex_command
+        coordinator = Coordinator(
+            config,
+            upstream,
+            notices,
+            NoticeOutput(),
+            notifier,
+            drivers(default_codex_command() if codex is None else codex),
+        )
+        await startup.enter_async_context(
+            listen(config.socket_path, partial(handle, coordinator=coordinator))
+        )
+        await startup.enter_async_context(coordinator.watching_inboxes())
+        runtime.push_async_exit(startup.pop_all())
+        return ConsoleReader(coordinator.console_sessions, upstream.request, coordinator)
+
+
+async def _serve(path, *, console=False, desktop=False):
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     loop.add_signal_handler(signal.SIGTERM, stop.set)
     try:
-        with (
-            locked_config(path, remove_stale_socket=True) as (config, _, _),
-            open_store(config.socket_path) as notices,
-        ):
-            async with connect(config) as upstream:
-                command = config.notify_command
-                notifier = DesktopNotifier(
-                    default_command() if command is None else command
-                )
-                codex = config.codex_command
-                coordinator = Coordinator(
-                    config,
-                    upstream,
-                    notices,
-                    NoticeOutput(),
-                    notifier,
-                    drivers(default_codex_command() if codex is None else codex),
-                )
-                on_call = partial(handle, coordinator=coordinator)
+        with locked_config(path, remove_stale_socket=True) as (config, _, _):
+            async with AsyncExitStack() as runtime:
+
+                async def sign_in(username, password):
+                    profile = read_locked_profile(path, config.socket_path)
+                    async with connect(profile[0]) as upstream:
+                        updated = await sign_in_profile(
+                            path, profile, upstream.login, username, password
+                        )
+                    return await _activate_client(runtime, updated)
+
+                needs_login = console and config.enrollment_key is None
+                reader = None if needs_login else await _activate_client(runtime, config)
                 viewer = (
-                    serve_console(
-                        ConsoleReader(coordinator.console_sessions, upstream.request, coordinator)
-                    )
+                    serve_console(reader, sign_in=sign_in if needs_login else None, desktop=desktop)
                     if console
                     else nullcontext()
                 )
-                async with (
-                    listen(config.socket_path, on_call),
-                    coordinator.watching_inboxes(),
-                    viewer as console_url,
-                ):
+                async with viewer as console_url:
                     if console_url:
                         print(console_url, flush=True)
                     await stop.wait()
@@ -149,8 +166,9 @@ def main(argv=None):
     serve = commands.add_parser("serve")
     serve.add_argument("--config", required=True, type=Path)
     serve.add_argument(
-        "--console", action="store_true", help="Start the local browser console"
+        "--console", action="store_true", help="Start the local console with interactive sign-in"
     )
+    serve.add_argument("--desktop-console", action="store_true", help=argparse.SUPPRESS)
     sign_in = commands.add_parser("login")
     sign_in.add_argument("--config", required=True, type=Path)
     sign_in.add_argument("--username", required=True)
@@ -239,7 +257,11 @@ def main(argv=None):
             print(json.dumps(updated, ensure_ascii=False, indent=2))
         elif args.command == "serve":
             with suppress(KeyboardInterrupt):
-                asyncio.run(_serve(args.config, console=args.console))
+                asyncio.run(_serve(
+                    args.config,
+                    console=args.console or args.desktop_console,
+                    desktop=args.desktop_console,
+                ))
         elif args.command == "login":
             login(args.config, args.username)
             print("TeamUp login saved.")

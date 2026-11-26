@@ -1,6 +1,6 @@
 # TeamUp for macOS
 
-TeamUp.app opens a single desktop window for the local Client console. It can use an existing profile and reuse a Client started by the previous TeamUp launcher.
+TeamUp.app opens a single desktop window for the local Client console. It can use an existing profile and reuse a Client started by the TeamUp launcher. A new account-based session opens a username and password form.
 
 ## Build and open
 
