@@ -21,6 +21,16 @@ PAGE = {
     "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50},
 }
 HISTORY = PAGE | {"before": {"type": "integer", "minimum": 1}}
+RETRY = {"type": "string", "minLength": 1, "maxLength": 128}
+DESCRIPTION = {"type": ["string", "null"], "minLength": 1, "maxLength": 8_000}
+TASK_STATUS = {"type": "string", "enum": ["open", "finished"]}
+ADDRESSED = {
+    "type": "array",
+    "items": {"type": "string", "format": "uuid"},
+    "maxItems": 100,
+    "uniqueItems": True,
+}
+TASK = ROOM | {"task_id": {"type": "string", "format": "uuid"}}
 
 
 def tool(
@@ -45,12 +55,29 @@ def tool(
 TOOLS = [
     tool(
         "register",
-        "Register this owner-approved session or recover its existing member ID.",
-        {"role_description": NAME},
+        "Register this owner-approved session or recover its existing member ID. "
+        "Reuse one identity across rooms.",
+        {
+            "name": {
+                **NAME,
+                "description": "Functional name of at most three words, e.g. Release Lead.",
+            },
+            "description": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160,
+                "description": "One line describing your scope and what you handle or hand off.",
+            },
+        },
+    ),
+    tool(
+        "retire_identity",
+        "Permanently retire your bound TeamUp identity and leave its rooms. "
+        "Earlier conversation history remains available to authorized readers.",
     ),
     tool(
         "find_members",
-        "Find teammates by a substring of their role description.",
+        "Find teammates by name or responsibility. Use the member ID to address them.",
         optional={"q": {"type": "string", "default": ""}},
     ),
     tool(
@@ -66,6 +93,21 @@ TOOLS = [
         {"rules": TEXT, "protocol": TEXT, "history_policy": HISTORY_POLICY},
     ),
     tool("join_room", "Join a team-visible room.", ROOM),
+    tool("leave_room", "Leave a room as this member. You can rejoin later.", ROOM),
+    tool(
+        "list_room_members",
+        "List current room members, their effective responsibilities, and membership IDs.",
+        ROOM,
+    ),
+    tool(
+        "remove_room_member",
+        "Remove a member from a room you created and are still joined to. "
+        "Use the target's membership ID from the roster. Reuse it on retry.",
+        ROOM | {
+            "member_id": {"type": "string", "format": "uuid"},
+            "membership_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+        },
+    ),
     tool("get_board", "Read the room's current rules, protocol and version.", ROOM),
     tool(
         "ack_board",
@@ -74,19 +116,61 @@ TOOLS = [
     ),
     tool(
         "send_message",
-        "Send a room message and optionally notify one other member.",
+        "Send a room message. Optionally notify one member with mention_member_id "
+        "or up to 16 with mention_member_ids. Preserve the target order on retry.",
         ROOM
         | {
             "client_message_id": {"type": "string", "minLength": 1, "maxLength": 128},
             "text": TEXT,
         },
-        {"mention_member_id": {"type": ["string", "null"], "format": "uuid"}},
+        {
+            "mention_member_id": {"type": ["string", "null"], "format": "uuid"},
+            "mention_member_ids": {**ADDRESSED, "minItems": 1, "maxItems": 16},
+        },
     ),
     tool("read_messages", "Read room messages after a message ID.", ROOM, HISTORY),
     tool(
         "search_room",
         "Search readable room messages for a case-insensitive substring.",
         ROOM | {"q": QUERY},
+        PAGE,
+    ),
+    tool(
+        "create_task",
+        "Create an explicit room task after reading and acknowledging the current "
+        "board. Use a new client_task_id and reuse it when retrying this task.",
+        ROOM | {"client_task_id": RETRY, "title": NAME},
+        {"description": DESCRIPTION, "addressed_member_ids": ADDRESSED},
+    ),
+    tool(
+        "list_tasks",
+        "List authorized room tasks after a task number, optionally filtered by "
+        "status. Read and acknowledge a stale board first.",
+        ROOM,
+        PAGE | {"status": TASK_STATUS},
+    ),
+    tool("get_task", "Read one authorized room task.", TASK),
+    tool(
+        "join_task",
+        "Join an open unaddressed task or an open task addressed to you.",
+        TASK,
+    ),
+    tool(
+        "report_progress",
+        "Record progress on a task you participate in. Use a new "
+        "client_progress_id and reuse it when retrying this update.",
+        TASK | {"client_progress_id": RETRY, "note": TEXT},
+    ),
+    tool(
+        "finish_task",
+        "Finish a task you created or participate in. Finishing is terminal.",
+        TASK,
+    ),
+    tool(
+        "task_history",
+        "Read a task's created, joined, progress and finished events after an "
+        "event number.",
+        TASK,
         PAGE,
     ),
     tool(
@@ -110,8 +194,8 @@ TOOLS = [
     ),
     tool(
         "notifications",
-        "List received mentions and DM notices after an event ID. "
-        "Open room or DM history for their text. Rows stay after delivery, "
+        "List received mentions, DM notices, and owner-requested room departures after an event ID. "
+        "Open room or DM history for message text. Rows stay after delivery, "
         "so a full first page can hold only older rows: when a page returns "
         "limit rows, pass its last event_id as after until a shorter page "
         "returns.",
@@ -120,19 +204,11 @@ TOOLS = [
 ]
 
 
-def claude_code_session(environ=os.environ) -> dict | None:
-    """Claude Code gives the MCP servers it launches its own session's inbox."""
+def claude_code_session(environ=os.environ) -> dict[str, str] | None:
     session_id = environ.get("CLAUDE_CODE_SESSION_ID")
-    address = environ.get("CLAUDE_CODE_MESSAGING_SOCKET")
-    token = environ.get("CLAUDE_CODE_MESSAGING_TOKEN")
-    if session_id and address and token:
-        return {
-            "id": session_id,
-            "kind": "claude-code",
-            "address": address,
-            "token": token,
-        }
-    return None
+    if not session_id:
+        return None
+    return {"id": session_id, "kind": "claude-code"}
 
 
 def codex_session(meta: Any) -> dict | None:
@@ -144,19 +220,25 @@ def codex_session(meta: Any) -> dict | None:
     return None
 
 
-async def hold_attachment(socket_path: str, binding_key: str, live: dict) -> None:
+async def hold_attachment(
+    socket_path: str,
+    binding_key: str,
+    session: dict[str, str],
+    address: str,
+    token: str,
+) -> None:
     """Keep this session reachable by the Client; reattach after Client restarts."""
-    session = {"id": live["id"], "kind": live["kind"]}
     delay = 0.5
     while True:
         try:
             async with attach(
-                socket_path, binding_key, session, live["address"], live["token"]
+                socket_path, binding_key, session, address, token
             ) as closed:
                 delay = 0.5
                 await closed.wait()
-        except ClientError:
-            pass
+        except ClientError as exc:
+            if exc.code == "member_retired":
+                return
         await asyncio.sleep(delay)
         delay = min(delay * 2, 10)
 
@@ -171,37 +253,60 @@ async def unread_hint(
         )
     except ClientError:
         return None
-    count = status.get("unread_mentions")
-    if type(count) is not int or count < 1:
+    unread = []
+    for field, singular, plural in (
+        ("unread_mentions", "mention", "mentions"),
+        ("unread_room_departures", "room departure", "room departures"),
+    ):
+        count = status.get(field)
+        if type(count) is int and count > 0:
+            unread.append(f"{count} unread {singular if count == 1 else plural}")
+    if not unread:
         return None
-    noun = "mention" if count == 1 else "mentions"
-    return f"TeamUp: {count} unread {noun}. Call teamup_notifications to read them."
+    return f"TeamUp: {' and '.join(unread)}. Call teamup_notifications to read them."
 
 
-def create_mcp(socket_path: str, binding_key: str, live: dict | None = None) -> Server:
+def create_mcp(
+    socket_path: str,
+    binding_key: str,
+    claude: dict[str, str] | None = None,
+    *,
+    require_claude_session: bool = False,
+) -> Server:
     server = Server(
         "TeamUp",
         instructions=(
             "Use a DM for two agents. Use a shared room for three or more agents "
             "who need the same context. If DM tools are unavailable, ask for an "
             "approved private handoff. "
-            "Register the approved local session with a specific role and "
-            "responsibility from the task, or ask the user; keep the returned "
-            "member ID and existing approval requirements. Short examples: "
-            "'Backend · Accounts API', 'Frontend · Accounts screen', 'QA · Accounts "
-            "fixtures'. Avoid bare titles like 'Developer' and do not invent a "
-            "teammate's role. Before creating a room, write rules and protocol for "
+            "Register the approved session with a functional name of up to three "
+            "words and one line describing its responsibility. For example, use "
+            "Release Lead with 'Coordinates releases and hands off deployment.' "
+            "Ask the user for the responsibility if needed. Keep the returned "
+            "member ID and reuse that identity across rooms. Read member "
+            "responsibilities in the team directory or room roster before choosing "
+            "the recipient. Before creating a room, write rules and protocol for "
             "its purpose, expected roles, progress, handoff, and completion, and "
             "preserve requirements the user gave explicitly. After joining or "
             "creating a room, read and acknowledge its current board. Reuse "
-            "teamup_list_rooms for joined-room discovery. Give a short room "
-            "responsibility introduction only when needed, prefer board role "
-            "choices, do not repeat it on rejoin, and do not invent a persistent "
-            "room role. Until the task contract is published, treat natural task "
-            "requests as discussion and never invent task tools. "
+            "teamup_list_rooms for joined-room discovery. Use teamup_leave_room "
+            "to end membership in one room and teamup_retire_identity to permanently "
+            "retire the current TeamUp identity. Introduce your responsibilities "
+            "once after joining if the room needs it. "
+            "Turn a natural request to assign work into an explicit room "
+            "task: read and acknowledge the current board, then call "
+            "teamup_create_task with a fresh client_task_id and reuse it on retry. "
+            "Use teamup_join_task to take eligible open work, report progress with "
+            "teamup_report_progress using a fresh client_progress_id reused on "
+            "retry, and finish with teamup_finish_task. Read the current room board "
+            "and task history with teamup_list_tasks, teamup_get_task and "
+            "teamup_task_history; keep ordinary chat and mentions unchanged. "
             "Open a pair DM with the teammate's member ID; teamup_open_dm returns "
             "the same conversation on every repeat. "
+            "Cite TeamUp messages as msg-<message_id>, for example msg-42. "
+            "Reply via the corresponding room_id or dm_id and use numeric history cursors. "
             "To request someone's attention, pass their member ID as mention_member_id. "
+            "Use mention_member_ids for an ordered list of room recipients. "
             "Use a fresh client_message_id for each new message and keep it on retry. "
             "Keep DM text between the two participants and out of logs and rooms. "
             "Follow local sharing permissions."
@@ -221,16 +326,18 @@ def create_mcp(socket_path: str, binding_key: str, live: dict | None = None) -> 
         try:
             if name not in methods:
                 raise ClientError("invalid_request", "Unknown TeamUp tool")
-            session = (
-                {"id": live["id"], "kind": live["kind"]}
-                if live
-                else codex_session(server.request_context.meta)
-            )
+            if require_claude_session and claude is None:
+                raise ClientError(
+                    "invalid_request",
+                    "Claude Code did not provide a session ID. Reconnect TeamUp from a "
+                    "local Claude Code version that provides CLAUDE_CODE_SESSION_ID.",
+                )
+            session = claude or codex_session(server.request_context.meta)
             result = await call(
                 socket_path, binding_key, methods[name], arguments, session=session
             )
             content = [TextContent(type="text", text=json.dumps(result, indent=2))]
-            if name != "teamup_notifications" and (
+            if name not in {"teamup_notifications", "teamup_retire_identity"} and (
                 hint := await unread_hint(socket_path, binding_key, session)
             ):
                 content.append(TextContent(type="text", text=hint))
@@ -247,11 +354,20 @@ def create_mcp(socket_path: str, binding_key: str, live: dict | None = None) -> 
 
 
 async def serve(socket_path: str, binding_key: str) -> None:
-    live = claude_code_session()
-    server = create_mcp(socket_path, binding_key, live)
+    claude = claude_code_session()
+    address = os.getenv("CLAUDE_CODE_MESSAGING_SOCKET")
+    token = os.getenv("CLAUDE_CODE_MESSAGING_TOKEN")
+    server = create_mcp(
+        socket_path,
+        binding_key,
+        claude,
+        require_claude_session=bool(os.getenv("CLAUDECODE") or address or token),
+    )
     holder = (
-        asyncio.create_task(hold_attachment(socket_path, binding_key, live))
-        if live
+        asyncio.create_task(
+            hold_attachment(socket_path, binding_key, claude, address, token)
+        )
+        if claude and address and token
         else None
     )
     try:

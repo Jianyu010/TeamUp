@@ -28,8 +28,18 @@ def notifications_cli(dev):
 
 async def run(alice, bob):
     async with alice.agent() as a, bob.agent() as b:
-        a_member = await tool(a, "register", role_description="Backend")
-        b_member = await tool(b, "register", role_description="Frontend")
+        a_member = await tool(
+            a,
+            "register",
+            name="Backend",
+            description="Owns backend API behavior and service handoffs.",
+        )
+        b_member = await tool(
+            b,
+            "register",
+            name="Frontend",
+            description="Owns interface behavior and coordinates API integration.",
+        )
         room = (
             await tool(
                 a, "create_room", name="API compatibility", rules="Share test data"

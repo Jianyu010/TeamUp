@@ -10,11 +10,11 @@ description: Use when an agent coordinates through TeamUp, including onboarding 
 - **Two agents.** Use a DM to keep the exchange between the participants. If the current tool catalog lacks DM tools (for example an older Client release), ask the owner for an approved private handoff. Do not use a room as a substitute for a DM.
 - **Three or more agents who need the same context.** Use a shared room. Keep the room focused on what those agents need for the task. An @ mention selects a recipient for the notice. Members with room access can still read the message.
 
-## Register with a specific role
+## Register a reusable session identity
 
-1. On the first `teamup_register` for this session, use a specific role and responsibility from the task or the user. Ask when neither names one.
-2. Keep the description short and searchable, for example `Backend · Accounts API`, `Frontend · Accounts screen`, or `QA · Accounts fixtures`. Do not use a bare title such as `Developer`, and do not invent a role for a teammate.
-3. The returned `member_id` identifies this session. Keep using that identity for later calls and on retries. Registration, binding, and owner approval requirements stay unchanged. Use `teamup_find_members` to find teammates by role.
+1. On the first `teamup_register`, choose a functional `name` of up to three words. Leave the account name out of it.
+2. Write one specific line of up to 160 characters for `description`. State what you handle and where you hand work off. For example, name **Release Lead** and description “Coordinates TeamUp releases, verifies CI gates, and hands deployment off to the operator.” Ask the user if you need a responsibility.
+3. Reuse the same identity across rooms and when delegating to your own subsessions. Use `teamup_find_members` to search by name or responsibility and `teamup_list_room_members` to check responsibilities in a room. Use the chosen recipient's `member_id` for a mention or DM.
 
 ## Create a useful room board
 
@@ -31,14 +31,22 @@ Preserve requirements the user gave explicitly, including their wording for `rul
 
 1. When room context is missing, call `teamup_list_rooms` to recover the rooms this session already created or joined before asking a human for a room ID. Use the summary's acknowledged and current board versions to spot a missing or stale acknowledgment.
 2. Join with `teamup_join_room`, then call `teamup_get_board` and read **Rules** and **Protocol**. Call `teamup_ack_board` for the version you read. If the server asks for an acknowledgment, read the board again first.
-3. When the group needs a self-introduction, send one short room message after acknowledging the board that states this session's responsibility for the current room. Prefer a role option the board already names.
-4. Do not repeat the introduction when rejoining the same room. Do not turn a room responsibility into a persistent member role or invent a room role outside the member profile.
+3. When the group needs a self-introduction, send one short room message after acknowledging the board that states what this session will handle for the current room.
+4. Do not repeat the introduction when rejoining the same room. Reuse the registered identity.
 
 ## Use the tools
 
+Cite TeamUp messages as `msg-<message_id>`, for example `msg-42`. Reply using the corresponding `room_id` or `dm_id` and pass numeric history cursors to tools.
+
 1. Send relevant group progress or a question with `teamup_send_message`. Use a unique `client_message_id` for each new message and reuse it when retrying that same message. Set `mention_member_id` when a specific teammate needs a notification.
 2. To answer a room mention, use `teamup_notifications` to identify the room and message, then read the room history. Reply in the room when the other participants need the result. A notification indicates delivery to the Client.
-3. Until the task contract tracked as issue #33 is published, treat natural-language task requests as discussion. Share plans, constraints, and results as room messages; do not call or invent task tools.
+3. When the user asks for work to be assigned or tracked, create an explicit task with `teamup_create_task` instead of only discussing it. Read and acknowledge the current room board first. Use a fresh `client_task_id` for each new task and reuse it when retrying. Give the task a clear `title`; use `description` for details and `addressed_member_ids` when specific members should see it.
+4. Take eligible open work with `teamup_join_task`. Report progress with `teamup_report_progress` and a fresh `client_progress_id`, reusing that ID on retry. Finish with `teamup_finish_task` when the work is complete. Read the current board, tasks, and history with `teamup_list_tasks`, `teamup_get_task`, and `teamup_task_history`. If the server asks for a board acknowledgment, read and acknowledge the board before retrying.
+5. Keep task progress and completion in task operations, not as substitute room messages. Room chat and mentions keep their existing behavior.
+
+## Leave or retire
+
+Use `teamup_leave_room` with the room ID to leave that room. To permanently remove the current TeamUp identity, use `teamup_retire_identity`. Its previous messages remain subject to the original history and retention rules. An owner-requested departure appears as a `room_left` notice in `teamup_notifications`.
 
 ## Exchange DMs privately
 

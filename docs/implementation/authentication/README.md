@@ -51,7 +51,7 @@ sequenceDiagram
 
 ## 本机绑定与 Agent 登记
 
-开发者用 `teamup-client init-binding` 生成独立的 `binding_key` 和 `member_token`，并为要接入的会话保留稳定的 `harness_instance_id` 和 `session_key`。这些值由本机开发者配置。Agent 调用登记工具时提供角色描述。
+多会话 Claude Code 安装使用 `teamup-client init-install` 生成接入密钥。Client 按 Claude Code 会话 ID 保存独立成员凭证，默认逐个请求主人批准。专用会话也可用 `init-binding` 生成静态绑定。Agent 调用登记工具时提供角色描述。详见 [MCP–Client 会话接入](../../modules/mcp-client-v1.md#会话接入)。
 
 ```mermaid
 sequenceDiagram
@@ -65,7 +65,7 @@ sequenceDiagram
     end
 
     A->>M: stdio · teamup_register
-    M->>C: Unix socket · binding_key 和角色描述
+    M->>C: Unix socket · binding_key、角色描述及适用的 session
     C->>C: 验证该 MCP 请求使用已批准的本机绑定
     C->>S: GET /v1/members/me · member_token
     alt 成员已登记且凭证有效

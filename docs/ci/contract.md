@@ -100,4 +100,6 @@ CI 健康统计行（`scripts/ci/ci_stats.py`）。`pr_checks`、`main_checks`�
 
 ## 版本
 
-`scripts/ci/version.py` 是唯一的版本计算入口：最新 `vX.Y.Z` 标签之后，`main` 上每个首父提交计为一次合入，构建版本为 `X.Y.(Z+1).devN`。nightly 绿且 N > 0 时发布 `vX.Y.(Z+1)`。weekly 绿且自上一个 `vX.Y.0` 以来有合入时发布 `vX.(Y+1).0`。
+`scripts/ci/version.py` 负责计算构建版本。在 `vX.Y.Z` 标签上版本为 `X.Y.Z`。标签之后每个首父提交计一次，开发版本为 `X.Y.(Z+1).devN`。例如按 PEP 440 排序，`0.0.1 < 0.0.2.dev1 < 0.0.2`。nightly 绿且 N > 0 时发布 `vX.Y.(Z+1)`。weekly 绿且自上一个 `vX.Y.0` 以来有合入时发布 `vX.(Y+1).0`。
+
+Client 和 Server 在构建时将版本写入各自的 Python 包元数据。从 Git checkout 构建时，使用构建修订的首父链上最近的稳定标签。`python3 -m scripts.ci.version --local --sha <revision>` 可为固定修订计算同一版本。无 Git 记录的源码可携带根目录下的 `TEAMUP-VERSION` 文件。缺少该文件时，CI 可在构建时通过 `TEAMUP_VERSION` 传入已计算的版本。未获得版本的构建在包元数据中标为 `0.0.0+unknown`，运行时报告未知。已生成的源码发行包和 wheel 保留其构建版本。

@@ -10,7 +10,7 @@ TeamUp 的 main 分支只接受合入门禁的自动合入。仓库 owner（`Jia
 | --- | --- | --- | --- |
 | 1 · 路由 | 由门禁判定：没有关联 issue；改受保护路径、删除测试、新增 skip/xfail，或改动超过 300 个文件 | 每次判定 | 关联 issue；`require_ready` 打开时，其余几项还要等待 owner 审查并加 `ready` |
 | 2 · 静态检查 | `2 · Lint`（ruff）、`2 · Architecture`（依赖方向） | 每次推送，草稿也运行 | 门禁红，不合入 |
-| 3 · 运行代码的检查 | `3 · Linux UT`（组件与 CI 单测）、`3 · Linux ST`（全仓 pytest，不含场景）、`3 · AI Review` | PR 标为 ready for review 之后；AI Review 在 CI 通过后由门禁派发 | 门禁红；P0/P1 发现未修复、P2 发现未回复时 `3 · Review Findings` 为红，不合入 |
+| 3 · 运行代码的检查 | `3 · Linux UT`（组件与 CI 单测）、`3 · Linux ST`（跨进程与 MCP 集成）、`3 · AI Review` | PR 标为 ready for review 之后；AI Review 在 CI 通过后由门禁派发 | 门禁红；P0/P1 发现未修复、P2 发现未回复时 `3 · Review Findings` 为红，不合入 |
 | 4 · 端到端 | `4 · Nightly`（免模型场景和性能）、`4 · Weekly`（真实 Agent） | main 上按计划运行 | main 冻结（nightly），或开 `weekly-failure` issue |
 | 5 · 合入 | `5 · Merge Gate`（`merge-gate` 状态）、`5 · Merge` | 检查结束、标签变化或每 15 分钟的扫描 | PR 留在门前 |
 
@@ -27,7 +27,7 @@ TeamUp 的 main 分支只接受合入门禁的自动合入。仓库 owner（`Jia
 | `1 · Automation Limits` | 1 | 同上 | PR 作者不受信、审查重跑次数用尽，或（`require_ready` 打开时）改动超过 300 个文件时为红 | 否，只报告 | – | 启用 |
 | `1 · Linked Issue` | 1 | 同上 | PR 的标题或正文没有引用本仓库的 issue（`#N` 或 `Jianyu010/TeamUp#N`，引用的是 PR 不算）时为红；门禁据此拦截，owner 加 `ready` 可放行 | 否，门禁执行 | – | 启用 |
 | `3 · Review Findings` | 3 | 同上 | 按下文"AI 审查发现"判定：有未修复的 P0/P1 或未回复的 P2 时为红；当前 head 还没有审查时为 pending | 否，门禁执行 | – | 启用 |
-| `2 · Type Check` | 2 | `type-check-01` | `uv run --no-sync mypy`，配置在根 `pyproject.toml` 的 `[tool.mypy]`，覆盖 `server/src`、`client/src`、`plugin/mcp/src` | 是 | `gate/type-check-failed` | 启用 |
+| `2 · Type Check` | 2 | `type-check-01` | `uv run --no-sync mypy`，配置在根 `pyproject.toml` 的 `[tool.mypy]`，覆盖 `server/src`、`client/shared/src`、`plugin/mcp/src` | 是 | `gate/type-check-failed` | 启用 |
 | `2 · Secrets` | 2 | `secrets-01` | `gitleaks dir . --config .gitleaks.toml --redact --exit-code 1` | 是 | `gate/secrets-failed` | 启用 |
 | `2 · Workflow Lint` | 2 | `workflow-lint-01` | `actionlint -config-file .github/actionlint.yaml`（列出自托管 runner 标签）与 `zizmor --offline .github/workflows`（配置 `.github/zizmor.yml`） | 是 | `gate/workflow-lint-failed` | 启用 |
 | `2 · Dependencies` | 2 | `dependencies-01` | `uv lock --check`：`uv.lock` 与各 `pyproject.toml` 一致（先把锁文件副本改写到清华镜像）；`pip-audit` 漏洞报告写入 job 摘要，只报告不失败 | 是（仅锁文件检查） | `gate/dependencies-failed` | 启用 |
@@ -39,6 +39,8 @@ TeamUp 的 main 分支只接受合入门禁的自动合入。仓库 owner（`Jia
 第 2 层的四项在草稿上也运行；第 3 层只在 PR 标为 ready for review 之后运行。第 1 层的三个状态由门禁写入，不运行 PR 代码，也不在必需检查里，合入与否仍只看 `merge-gate`。
 
 受保护路径和必需检查写在 [`.github/ci/policy.json`](../../.github/ci/policy.json)。该文件本身也受保护。
+
+`3 · Linux UT` 在 `tests/server/`、`tests/client/shared/`、`tests/client/macos/` 与 `tests/scripts/ci/` 运行 Python 测试。`3 · Linux ST` 运行 `tests/integration/` 和 `tests/plugin/mcp/`。macOS 控制台和共用界面的 Node 测试通过 `npm --prefix client/macos/desktop test` 运行。
 
 ## 合入规则
 

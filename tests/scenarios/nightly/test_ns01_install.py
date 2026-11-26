@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 from _stack import (
+    CLIENT_PACKAGE,
     ROOT,
     agent_tool_names,
     clean_env,
@@ -67,8 +68,8 @@ def test_install_each_package(workspace_venv):
     root = Path(tempfile.mkdtemp(prefix="tu-pkg-", dir="/tmp"))
     try:
         server = install_venv(root / "server", ["server"])
-        client = install_venv(root / "client", ["client"])
-        mcp = install_venv(root / "mcp", ["plugin/mcp", "client"])
+        client = install_venv(root / "client", [CLIENT_PACKAGE])
+        mcp = install_venv(root / "mcp", ["plugin/mcp", CLIENT_PACKAGE])
 
         # Packages must come from the venv, not from the checkout.
         for bin_dir, module in (

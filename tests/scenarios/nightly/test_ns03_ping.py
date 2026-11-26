@@ -32,7 +32,12 @@ def test_ping_and_restart(ws):
     assert api.call("GET", "/v1/members/me", KEY, error="unauthorized") == 401
 
     me = api.call("GET", "/v1/members/me", member.token)
-    assert me == {"member_id": member.member_id, "role_description": "Backend"}
+    assert me == {
+        "member_id": member.member_id,
+        "role_description": "Backend",
+        "name": "Backend",
+        "description": "Handles the Backend work in this scenario.",
+    }
 
     # SSE is the live channel; it announces readiness with a comment frame.
     with api.http.stream(

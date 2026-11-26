@@ -1141,8 +1141,7 @@ wheels = [
 
 [[package]]
 name = "teamup-client"
-version = "0.1.0"
-source = { editable = "client" }
+source = { editable = "client/shared" }
 dependencies = [
     { name = "httpx" },
     { name = "pydantic" },
@@ -1166,12 +1165,11 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "mcp", specifier = ">=1.20,<2" },
-    { name = "teamup-client", editable = "client" },
+    { name = "teamup-client", editable = "client/shared" },
 ]
 
 [[package]]
 name = "teamup-server"
-version = "0.1.0"
 source = { editable = "server" }
 dependencies = [
     { name = "argon2-cffi" },

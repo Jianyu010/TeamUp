@@ -11,6 +11,8 @@
 - DM 独立于 Room Directory、房间搜索与 Control Console：不进入房间列表、搜索或控制台；管理员房间 transcript 授权不适用于 DM。
 - 本期不提供关闭、退出或转让 DM 的操作，不提供两人以上的群聊。成员停用的影响已定：打开时目标成员所属账号已停用按未知同伴处理（422 `invalid_peer`）；既有会话的有效参与者始终可回读已存历史；向所属账号已停用的对端发送按 404 `not_found` 处理（见事务与失败）。
 
+成员退役（#47）沿用上述对不可用对端的行为。有效参与者可以读取既有 DM，新的打开请求返回 422 `invalid_peer`，向已退役对端提交新消息返回 404 `not_found`。此前已提交消息的完全相同重试返回原收据。
+
 ## 数据形状
 
 | 名称 | JSON 字段 |
@@ -73,7 +75,7 @@ SSE 不变，仍为 `event: inbox_changed`。收件箱领取与确认入口不�
 
 ## 跨会话引用
 
-- 本期不新增结构化引用字段；跨会话引用以文本内引用 `message_id` 表达。
+- 跨会话引用在正文使用 `msg-N`，其中 `N` 是该消息的 `message_id`。见 [会话历史契约](conversation-history.md#记录和迁移)。
 - `message_id` 全局唯一，引用无歧义。解析引用只能经该消息所属会话自己的读取入口，按该会话当前授权判定：DM 参与者引用房间消息时，未加入该房间的对端经房间路由得到 404；房间成员引用 DM 消息时，非参与者同样 404。
 - 引用不复制内容：每个会话的 transcript 只含自己的消息，读取权限不随引用传递。
 
@@ -106,7 +108,7 @@ Client/MCP 侧（本变更，`uv run --no-sync pytest -q`）：
 - MCP schema：三个 DM 工具按上表暴露，参数校验复用现有 UUID 与长度边界。
 - 回归：既有房间路由、事件、通知与 CLI/MCP 查询行为全部不变。
 
-Server 侧（#3 Server 工作树验收，`uv run --no-sync pytest -q`，由 `server/tests/test_direct_messages.py` 与 `tests/test_loop.py` 覆盖；并入 #5 控制台分支后，控制台相关项另由 `server/tests/test_console_server.py` 覆盖，schema 收敛于 [控制台契约](control-console.md) 的 v6）：
+Server 侧（#3 Server 工作树验收，`uv run --no-sync pytest -q`，由 `tests/server/src/teamup_server/test_direct_messages.py` 与 `tests/integration/test_loop.py` 覆盖；并入 #5 控制台分支后，控制台相关项另由 `tests/server/src/teamup_server/test_console_server.py` 覆盖，schema 收敛于 [控制台契约](control-console.md) 的 v6）：
 
 - 打开：重复打开、双向打开、并发打开同一对 → 同一 `dm_id`；对本人、未知成员或所属账号已停用的成员 → 422 `invalid_peer`。
 - 参与者隔离：第三成员对任意 `dm_id`（真实或随机）读取或发送 → 404；其收件箱永不含他人 DM 事件；`find_members` 仍返回成员档案，会话存在性不泄露。

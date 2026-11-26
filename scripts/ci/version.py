@@ -9,6 +9,10 @@ Works from the GitHub API (the runners get trees as tarballs, without ``.git``):
     python3 -m scripts.ci.version --sha <commit>          # prints e.g. 0.1.1.dev3
     python3 -m scripts.ci.version --sha <commit> --json   # tag, base, count, version
 
+A checkout can use its local first-parent history, including for pinned revisions::
+
+    python3 -m scripts.ci.version --local --sha <revision>
+
 Standard library only.
 """
 
@@ -18,9 +22,10 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 from dataclasses import asdict, dataclass
-from typing import Any
+from pathlib import Path
 
 from scripts.ci.gate import GitHub
 
@@ -35,6 +40,13 @@ def parse(tag: str) -> Version | None:
 
 def render(version: Version) -> str:
     return ".".join(map(str, version))
+
+
+def render_build(base: Version, count: int) -> str:
+    if count == 0:
+        return render(base)
+    major, minor, patch = base
+    return f"{major}.{minor}.{patch + 1}.dev{count}"
 
 
 def tags(gh: GitHub) -> dict[Version, str]:
@@ -101,27 +113,74 @@ def build(gh: GitHub, sha: str) -> Build:
         return Build(sha, None, None, 0, "0.0.0")
     latest = max(released)
     count = len(first_parents(gh, released[latest], sha))
-    if count == 0:
-        return Build(sha, f"v{render(latest)}", released[latest], 0, render(latest))
-    major, minor, patch = latest
     return Build(
         sha,
         f"v{render(latest)}",
         released[latest],
         count,
-        f"{major}.{minor}.{patch + 1}.dev{count}",
+        render_build(latest, count),
     )
+
+
+def checkout_build(root: Path, revision: str = "HEAD") -> Build | None:
+    """Use the closest stable tag on this revision's first-parent chain."""
+    if not (root / ".git").exists():
+        return None
+
+    def git(*args: str) -> str:
+        return subprocess.check_output(
+            ["git", *args],
+            cwd=root,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stderr=subprocess.DEVNULL,
+        )
+
+    try:
+        sha = git(
+            "rev-parse", "--verify", "--end-of-options", f"{revision}^{{commit}}"
+        ).strip()
+        refs = git(
+            "for-each-ref",
+            "--format=%(refname:strip=2) %(objectname) %(*objectname)",
+            "refs/tags",
+        )
+        chain = git("rev-list", "--first-parent", sha).splitlines()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+    by_commit: dict[str, Version] = {}
+    for ref in refs.splitlines():
+        name, obj, target = ref.split(" ")
+        base = parse(name)
+        if base is not None:
+            commit = target or obj
+            by_commit[commit] = max(base, by_commit.get(commit, base))
+    for count, commit in enumerate(chain):
+        base = by_commit.get(commit)
+        if base is not None:
+            return Build(
+                sha, f"v{render(base)}", commit, count, render_build(base, count)
+            )
+    return None
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="version", description=__doc__.splitlines()[0]
     )
-    parser.add_argument("--sha", default=os.environ.get("GITHUB_SHA", ""))
+    parser.add_argument("--sha")
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--local", action="store_true", help="read local Git history")
     args = parser.parse_args(argv)
-    gh = GitHub(os.environ["GITHUB_REPOSITORY"], os.environ["GITHUB_TOKEN"])
-    result: Any = build(gh, args.sha)
+    if args.local:
+        result = checkout_build(Path(__file__).resolve().parents[2], args.sha or "HEAD")
+        if result is None:
+            parser.error("no reachable vX.Y.Z tag in the local checkout")
+    else:
+        gh = GitHub(os.environ["GITHUB_REPOSITORY"], os.environ["GITHUB_TOKEN"])
+        result = build(gh, args.sha or os.environ.get("GITHUB_SHA", ""))
     print(json.dumps(asdict(result)) if args.json else result.version)
     return 0
 

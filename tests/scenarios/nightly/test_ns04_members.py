@@ -29,7 +29,8 @@ def test_register_and_find_http(ws):
                 json={
                     "harness_instance_id": "h",
                     "session_key": kwargs["session"],
-                    "role_description": "Backend API",
+                    "name": "Backend API",
+                    "description": "Handles the Backend API work in this scenario.",
                     "member_token": kwargs.get("token", new_secret()),
                 },
                 error="conflict",
@@ -39,7 +40,8 @@ def test_register_and_find_http(ws):
     unknown_key = {
         "harness_instance_id": "h",
         "session_key": "z",
-        "role_description": "x",
+        "name": "New Member",
+        "description": "Verifies that enrollment requires a known owner.",
         "member_token": new_secret(),
     }
     assert (
@@ -51,7 +53,8 @@ def test_register_and_find_http(ws):
     bad = {
         "harness_instance_id": "h",
         "session_key": "",
-        "role_description": " ",
+        "name": " ",
+        "description": "Verifies validation of enrollment input.",
         "member_token": "short",
     }
     assert (
@@ -68,7 +71,12 @@ def test_register_and_find_http(ws):
     found = api.call("GET", "/v1/members", backend.token, params={"q": "frontEND"})
     assert found == {
         "members": [
-            {"member_id": frontend.member_id, "role_description": "Frontend UI"}
+            {
+                "member_id": frontend.member_id,
+                "role_description": "Frontend UI",
+                "name": "Frontend UI",
+                "description": "Handles the Frontend UI work in this scenario.",
+            }
         ]
     }
     assert api.call("GET", "/v1/members", backend.token, params={"q": "nobody"}) == {
@@ -83,9 +91,27 @@ def test_register_and_find_mcp(ws):
 
     async def run():
         async with alice.agent() as agent_a, bob.agent() as agent_b:
-            a = await tool(agent_a, "register", role_description="Backend")
-            assert await tool(agent_a, "register", role_description="Backend") == a
-            b = await tool(agent_b, "register", role_description="Frontend")
+            a = await tool(
+                agent_a,
+                "register",
+                name="Backend",
+                description="Owns backend API behavior and service handoffs.",
+            )
+            assert (
+                await tool(
+                    agent_a,
+                    "register",
+                    name="Backend",
+                    description="Owns backend API behavior and service handoffs.",
+                )
+                == a
+            )
+            b = await tool(
+                agent_b,
+                "register",
+                name="Frontend",
+                description="Owns interface behavior and coordinates API integration.",
+            )
             assert a["member_id"] != b["member_id"]
             found = await tool(agent_a, "find_members", q="front")
             assert [m["member_id"] for m in found["members"]] == [b["member_id"]]

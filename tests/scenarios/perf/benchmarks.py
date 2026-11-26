@@ -14,7 +14,7 @@ import httpx
 
 from tests.scenarios import _results, _stack
 
-sys.path.insert(0, str(_stack.ROOT / "client/src"))
+sys.path.insert(0, str(_stack.ROOT / "client/shared/src"))
 from teamup_client.ipc import call as ipc_call  # public IPC entry point
 
 KEY = _stack.new_secret()
@@ -47,8 +47,21 @@ async def np01(ws, quick):
     try:
         sock_a, key_a = str(alice.socket_path), alice.binding_key
         sock_b, key_b = str(bob.socket_path), bob.binding_key
-        await ipc_call(sock_a, key_a, "register", {"role_description": "Backend"})
-        b = await ipc_call(sock_b, key_b, "register", {"role_description": "Frontend"})
+        await ipc_call(
+            sock_a,
+            key_a,
+            "register",
+            {"name": "Backend", "description": "Sends messages during the benchmark."},
+        )
+        b = await ipc_call(
+            sock_b,
+            key_b,
+            "register",
+            {
+                "name": "Frontend",
+                "description": "Receives messages during the benchmark.",
+            },
+        )
         room = (
             await ipc_call(
                 sock_a, key_a, "create_room", {"name": "dm", "rules": "pair"}
