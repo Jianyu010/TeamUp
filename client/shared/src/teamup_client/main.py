@@ -13,7 +13,6 @@ from contextlib import AsyncExitStack, nullcontext, suppress
 from functools import partial
 from pathlib import Path
 
-from ._codex_hook import register_thread
 from ._config import (
     ConfigError,
     locked_config,
@@ -32,6 +31,7 @@ from ._login import login, sign_in_profile
 from ._notice_output import NoticeOutput
 from ._notices import open_store
 from ._protocol import is_string, is_uuid
+from ._session_hook import register_session
 from ._upstream import connect
 from .ipc import ClientError, call
 
@@ -199,9 +199,12 @@ def main(argv=None):
         help="Generate a key that identifies sessions within a harness install",
     )
     install.add_argument("harness_instance_id")
-    codex_hook = commands.add_parser("codex-hook", help="Register a local Codex hook session")
-    codex_hook.add_argument("--config", required=True, type=Path)
-    codex_hook.add_argument("--install", required=True)
+    for name in ("codex", "claude"):
+        hook = commands.add_parser(
+            f"{name}-hook", help=f"Register a local {name.capitalize()} session"
+        )
+        hook.add_argument("--config", required=True, type=Path)
+        hook.add_argument("--install", required=True)
     sessions = commands.add_parser("sessions", help="List and manage agent sessions")
     sessions.add_argument("--config", required=True, type=Path)
     sessions.add_argument("decision", nargs="?", choices=("approve", "reject", "leave", "retire"))
@@ -248,8 +251,9 @@ def main(argv=None):
                     indent=2,
                 )
             )
-        elif args.command == "codex-hook":
-            asyncio.run(register_thread(args.config, args.install, sys.stdin.buffer))
+        elif args.command in ("codex-hook", "claude-hook"):
+            kind = "codex" if args.command == "codex-hook" else "claude-code"
+            asyncio.run(register_session(args.config, args.install, sys.stdin.buffer, kind=kind))
         elif args.command in ("sessions", "wake"):
             print(json.dumps(asyncio.run(_owner(args)), ensure_ascii=False, indent=2))
         elif args.command == "members":

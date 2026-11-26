@@ -112,3 +112,7 @@ macOS 26.6.2，Claude Desktop `6.28899.6`，测试会话为桌面版本机 Code 
 The team can configure local Codex command hooks to pass the thread UUID to the Client before a TeamUp tool call. `SessionStart` and `UserPromptSubmit` use the same installation as MCP and share its approval policy. The latter retries registration after an unavailable Client. See [Client setup and migration](../../client/README.md#automatic-codex-registration) and the [registration contract](mcp-client-v1.md#codex-lifecycle-registration).
 
 The CLI bundled with ChatGPT Desktop `26.1120.41243` (`0.171.0-alpha.13.2`) emitted both events in an isolated Codex home. Both reported the same `session_id` UUID. `tests/integration/test_codex_registration.py` exercises lifecycle registration against real Client, Server, and MCP processes, including concurrent events, recovery after Client downtime and restart, owner approval and rejection, and reuse of a dedicated static identity and its room membership.
+
+## Claude Code lifecycle registration
+
+The optional Claude Code hook uses the same session ID and per-installation secret as MCP to enroll before the agent calls a TeamUp tool. `SessionStart` handles new and resumed sessions. `UserPromptSubmit` retries on subsequent activity. The hook performs registration and the MCP connection owns the live wake address. See [Client setup](../../client/README.md#automatic-claude-code-registration). `tests/integration/test_claude_registration.py` verifies both approval modes, rejection, identity and profile reuse, and retry after the Client restarts.

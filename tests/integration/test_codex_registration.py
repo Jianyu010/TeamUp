@@ -14,16 +14,23 @@ from test_loop import ROOT, available_port, process, tcp_is_ready, wait_for
 from test_wake import InstallDeveloper
 
 
-async def hook(developer, thread, event="SessionStart"):
+async def hook(
+    developer,
+    thread,
+    event="SessionStart",
+    *,
+    command="codex-hook",
+    install="codex-local",
+):
     child = await asyncio.create_subprocess_exec(
         sys.executable,
         "-m",
         "teamup_client.main",
-        "codex-hook",
+        command,
         "--config",
         str(developer.config_path),
         "--install",
-        "codex-local",
+        install,
         env=os.environ | {"PYTHONPATH": str(ROOT / "client/shared/src")},
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
