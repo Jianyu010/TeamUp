@@ -131,6 +131,12 @@ if (!app.requestSingleInstanceLock()) {
       "teamup", createConsoleHandler(assetDirectory, getEndpoint, resetEndpoint, desktopLogin),
     );
     if (process.platform === "darwin") {
+      if (app.isPackaged) {
+        app.setAboutPanelOptions({
+          applicationVersion: require("./package.json").teamupVersion,
+          version: "",
+        });
+      }
       Menu.setApplicationMenu(Menu.buildFromTemplate([
         {label: app.name, submenu: [
           {role: "about"},
