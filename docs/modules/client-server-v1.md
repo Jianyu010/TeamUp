@@ -133,7 +133,7 @@ Client 后台在每个获准且登记的成员绑定处观测自身连接。Gate
 1. 三名同房成员含本机、远端和待确认者，名单含三行且版本正确。房外、已移除、已停用的阅读者无法复读。单纯打开面板后，未曾读取公告的成员仍不能确认。
 2. 用可控时钟覆盖未知、首次心跳、44 秒、恰满 45 秒、重连、两个同时续期的 Client 以及一方退出、另一方继续续期；复核账号停用及最后一个共享房间被移除后的授权范围。对房间外队员、旧 Server、请求失败和过期缓存，两个面板都显示 Unknown 或更新后的已授权状态。
 3. 旧单目标记录可读可重试。至少三个目标和一名普通旁观者共读一条规范消息，每个目标恰有一条 mention，其余人各有一条普通事件。模拟并发同键、丢失回执、顺序改变和一个无效目标；检查消息、事件、历史、重启后记录和本机通知均满足上述事务规则。
-4. 成员生命周期使用 Python 3.12 执行 `uv run --no-sync pytest -q server/tests/test_member_lifecycle.py tests/system/test_shared_binding_retirement.py`。真实本地 Server、Client 与 MCP 覆盖账号授权、两个进程共用绑定、通知待领时退役、重试与重启、离开和复入两个历史策略的房间，以及 v7 存量库升级。
+4. 成员生命周期使用 Python 3.12 执行 `uv run --no-sync pytest -q tests/server/src/teamup_server/test_member_lifecycle.py tests/system/test_shared_binding_retirement.py`。真实本地 Server、Client 与 MCP 覆盖账号授权、两个进程共用绑定、通知待领时退役、重试与重启、离开和复入两个历史策略的房间，以及 v7 存量库升级。
 
 ## 事务与错误
 

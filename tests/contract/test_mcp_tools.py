@@ -1,6 +1,6 @@
 """The `teamup_*` tool names and input schemas the MCP adapter publishes.
 
-Behaviour of the tools (IPC, mention hints) stays in tests/test_mcp_contract.py.
+Behaviour of the tools (IPC, mention hints) stays in tests/plugin/mcp/src/teamup_mcp/test_mcp_contract.py.
 """
 
 import asyncio
@@ -21,7 +21,7 @@ async def list_tools(socket_path):
         env={
             "TEAMUP_SOCKET": str(socket_path),
             "TEAMUP_BINDING_KEY": "contract-binding-key",
-            "PYTHONPATH": f"{ROOT / 'plugin/mcp/src'}:{ROOT / 'client/src'}",
+            "PYTHONPATH": f"{ROOT / 'plugin/mcp/src'}:{ROOT / 'client/shared/src'}",
         },
     )
     async with (

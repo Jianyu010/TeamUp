@@ -11,18 +11,18 @@ dev = ["mypy>=1.10,<2", "pytest>=8,<10", "pytest-cov>=6,<8", "ruff>=0.11,<1"]
 package = false
 
 [tool.uv.workspace]
-members = ["client", "server", "plugin/mcp"]
+members = ["client/shared", "server", "plugin/mcp"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "client/tests", "server/tests"]
-pythonpath = [".", "client/src", "server/src", "plugin/mcp/src"]
+testpaths = ["tests"]
+pythonpath = [".", "client/shared/src", "server/src", "plugin/mcp/src"]
 
 [tool.ruff]
 target-version = "py312"
 
 [tool.mypy]
 python_version = "3.12"
-mypy_path = ["server/src", "client/src", "plugin/mcp/src"]
+mypy_path = ["server/src", "client/shared/src", "plugin/mcp/src"]
 packages = ["teamup_server", "teamup_client", "teamup_mcp"]
 explicit_package_bases = true
 warn_unused_ignores = true

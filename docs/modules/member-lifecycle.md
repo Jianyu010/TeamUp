@@ -46,8 +46,8 @@ The retirement transaction records only each acknowledged room's visible message
 On macOS with Python 3.13 and Node 26, the lifecycle Server and system tests, HTTP/MCP snapshots, and desktop tests pass. The system test uses a real local Server, Client daemon, MCP sessions and a Claude socket stand-in. It checks live owner delivery, passive inbox replay, and archive access after a Client restart.
 
 ```sh
-uv run --no-sync pytest -q server/tests/test_member_lifecycle.py tests/system/test_shared_binding_retirement.py tests/contract
-npm --prefix client/desktop test
+uv run --no-sync pytest -q tests/server/src/teamup_server/test_member_lifecycle.py tests/system/test_shared_binding_retirement.py tests/contract
+npm --prefix client/macos/desktop test
 ```
 
 In the browser console, leaving the last local membership switches the public room to its directory preview. Retiring the session moves it to the bottom panel. Its archive opens at both desktop width and 390 px.

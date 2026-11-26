@@ -14,7 +14,7 @@ import httpx
 
 from tests.scenarios import _results, _stack
 
-sys.path.insert(0, str(_stack.ROOT / "client/src"))
+sys.path.insert(0, str(_stack.ROOT / "client/shared/src"))
 from teamup_client.ipc import call as ipc_call  # public IPC entry point
 
 KEY = _stack.new_secret()
