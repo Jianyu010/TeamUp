@@ -5,7 +5,7 @@ const { resolve } = require("node:path");
 const test = require("node:test");
 const { CONSOLE_URL, createConsoleHandler, parseConsoleEndpoint } = require("../../../../client/windows-wsl/desktop/console-protocol.cjs");
 
-const assets = resolve(__dirname, "../../../../client/src/teamup_client/console");
+const assets = resolve(__dirname, "../../../../client/shared/src/teamup_client/console");
 const origin = "teamup://console";
 const token = "a".repeat(43);
 

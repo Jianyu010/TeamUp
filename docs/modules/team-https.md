@@ -1,6 +1,6 @@
 # TeamUp 可选 HTTPS 直连
 
-本页是 [可信团队试用](team-pilot.md) 的可选部署路径：服务器上由 Caddy 终止 TLS，成员在内网或 VPN 内通过稳定 DNS 直接访问 TeamUp，不再依赖 SSH 隧道。该路径不改变 [Client–Server v1](client-server-v1.md) 与 [账号登录 v1](account-login-v1.md) 的契约，TeamUp Server 仍只监听回环地址。当前线上试点继续使用 SSH 隧道；本页方案只由回环环境中的自动化验收（`tests/test_https_proxy.py`）验证，真实部署与第二台设备未验证。
+本页是 [可信团队试用](team-pilot.md) 的可选部署路径：服务器上由 Caddy 终止 TLS，成员在内网或 VPN 内通过稳定 DNS 直接访问 TeamUp，不再依赖 SSH 隧道。该路径不改变 [Client–Server v1](client-server-v1.md) 与 [账号登录 v1](account-login-v1.md) 的契约，TeamUp Server 仍只监听回环地址。当前线上试点继续使用 SSH 隧道；本页方案只由回环环境中的自动化验收（`tests/integration/test_https_proxy.py`）验证，真实部署与第二台设备未验证。
 
 ## 前提与边界
 
@@ -69,6 +69,6 @@ python3 -m scripts.ci.version --local --sha "$revision" > "$stage/TEAMUP-VERSION
 
 ## 已验证与未验证
 
-自动化验收在回环环境用临时私有 CA 与 `localhost` 证书运行真实 Caddy（经 `TEAMUP_CADDY_BIN` 或 `PATH` 提供 caddy 后执行 `uv run --no-sync pytest tests/test_https_proxy.py`），覆盖：经代理的账号登录与 Agent 登记；独立实时 SSE 证据——一条独立鉴权的代理 SSE 流先等到真实的 `: ready` 帧，另一句柄发出 @mention 后，同一条流在限时内读到完整的 `inbox_changed` 帧；运行中成员的桌面通知与离线成员重连补收（与 SSE 证据分开断言）；错误 CA 信任失败、错误口令失败，以及非 `/v1` 路径 404。同一套件还用真实 `caddy adapt` 验证 `TEAMUP_HTTPS_BIND` 的三种取值：未设置时仅回环监听、显式空串时配置被拒绝、显式地址原样保留；并验证每个必需环境变量未设置或为空串时配置一律被拒绝（实测 Caddy v2.11.9）。
+自动化验收在回环环境用临时私有 CA 与 `localhost` 证书运行真实 Caddy（经 `TEAMUP_CADDY_BIN` 或 `PATH` 提供 caddy 后执行 `uv run --no-sync pytest tests/integration/test_https_proxy.py`），覆盖：经代理的账号登录与 Agent 登记；独立实时 SSE 证据——一条独立鉴权的代理 SSE 流先等到真实的 `: ready` 帧，另一句柄发出 @mention 后，同一条流在限时内读到完整的 `inbox_changed` 帧；运行中成员的桌面通知与离线成员重连补收（与 SSE 证据分开断言）；错误 CA 信任失败、错误口令失败，以及非 `/v1` 路径 404。同一套件还用真实 `caddy adapt` 验证 `TEAMUP_HTTPS_BIND` 的三种取值：未设置时仅回环监听、显式空串时配置被拒绝、显式地址原样保留；并验证每个必需环境变量未设置或为空串时配置一律被拒绝（实测 Caddy v2.11.9）。
 
 未验证：真实内网或 VPN 部署、跨网段链路、第二台设备与生产网络。在完成这些验证并取得 owner 同意前，线上试点保持 SSH 隧道，本页路径不作为默认接入方式。

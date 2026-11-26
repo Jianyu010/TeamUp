@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {readTranscript} from "../../../../client/src/teamup_client/console/console-history.mjs";
+import {readTranscript} from "../../../../client/shared/src/teamup_client/console/console-history.mjs";
 
 test("older pages and polls preserve survivors under a stable expiration watermark", async () => {
   const base = 90071992547409920n;

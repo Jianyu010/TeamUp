@@ -5,7 +5,7 @@ const { launchConsole } = require("./launcher-command.cjs");
 
 const assetDirectory = app.isPackaged
   ? join(__dirname, "console")
-  : join(__dirname, "../../src/teamup_client/console");
+  : join(__dirname, "../../shared/src/teamup_client/console");
 const launcher = join(app.isPackaged ? process.resourcesPath : __dirname, "launch.py");
 const windowsLauncher = join(app.isPackaged ? process.resourcesPath : __dirname, "launch-wsl.py");
 

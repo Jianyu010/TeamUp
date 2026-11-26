@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {messageRow} from "../../../../client/src/teamup_client/console/console-history.mjs";
+import {messageRow} from "../../../../client/shared/src/teamup_client/console/console-history.mjs";
 
 function render(message, disclosureState) {
   function node(tag, textContent, className) {

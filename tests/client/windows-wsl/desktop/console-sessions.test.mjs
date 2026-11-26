@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {sessionPage} from "../../../../client/src/teamup_client/console/console-sessions.mjs";
+import {sessionPage} from "../../../../client/shared/src/teamup_client/console/console-sessions.mjs";
 
 const session = (id, state = "ready") => ({id, label: id, harness: "codex", state});
 

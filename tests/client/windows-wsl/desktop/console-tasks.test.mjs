@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {openTaskLanes} from "../../../../client/src/teamup_client/console/console-tasks.js";
+import {openTaskLanes} from "../../../../client/shared/src/teamup_client/console/console-tasks.js";
 
 function task(task_id, participants, addressed = []) {
   return {task_id, participant_member_ids: participants, addressed_member_ids: addressed};

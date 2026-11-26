@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {roomMembers} from "../../../../client/src/teamup_client/console/console-members.js";
+import {roomMembers} from "../../../../client/shared/src/teamup_client/console/console-members.js";
 
 class Element {
   dataset = {};
