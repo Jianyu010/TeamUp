@@ -74,12 +74,11 @@ def _compose(
         host=HostObservations(Path(db_path).resolve().parent),
         event_log=OperationalEvents(),
     )
-    maintenance = Maintenance(collaboration.archive_inactive_rooms, MAINTENANCE_CADENCE)
     gateway_lifespan = gateway.app.router.lifespan_context
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        with maintenance:
+        with Maintenance(collaboration.archive_inactive_rooms, MAINTENANCE_CADENCE):
             async with gateway_lifespan(app):
                 yield
 
