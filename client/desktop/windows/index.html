@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>TeamUp 收件箱</title><link rel="stylesheet" href="/ui.css"><script src="/ui.js" defer></script></head>
+<body><main>
+  <header><div><p class="context">TEAMUP · WINDOWS</p><h1>TeamUp 收件箱</h1></div><div class="actions"><button id="workspace">返回工作台</button><button id="refresh">刷新通知</button></div></header>
+  <p id="status" role="status">正在连接 TeamUp…</p>
+  <section><h2>投递到 Codex</h2>
+    <label>目标会话 <input id="thread" placeholder="Codex 会话 UUID" autocomplete="off" spellcheck="false"></label>
+    <details><summary>自动投递设置</summary>
+      <p>开启后，将指定房间和发送人的新 @ 排入目标会话。此页面的本地进程需要保持运行。</p>
+      <div class="selectors"><label>房间 <select id="room"></select></label><label>发送人 <select id="sender"></select></label></div>
+      <button id="enable">启用自动投递</button> <button id="disable">关闭自动投递</button>
+    </details>
+    <p id="rule">正在读取设置…</p>
+  </section>
+  <h2>最近的 @</h2><div id="notices"></div>
+</main></body></html>
