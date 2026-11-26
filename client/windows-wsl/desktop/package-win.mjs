@@ -17,8 +17,8 @@ try {
   await Promise.all([
     ...["main.cjs", "console-protocol.cjs", "launcher-command.cjs", "package.json"].map((name) =>
       copyFile(join(desktop, name), join(source, name))),
-    cp(join(desktop, "../src/teamup_client/console"), join(source, "console"), { recursive: true }),
-    copyFile(join(desktop, "../../LICENSE"), join(source, "LICENSE")),
+    cp(join(desktop, "../../src/teamup_client/console"), join(source, "console"), { recursive: true }),
+    copyFile(join(desktop, "../../../LICENSE"), join(source, "LICENSE")),
   ]);
 
   // ICO supports a PNG payload; retain the existing 80x80 artwork byte-for-byte.

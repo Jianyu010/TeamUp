@@ -5,7 +5,7 @@ const { tmpdir } = require("node:os");
 const { join, resolve } = require("node:path");
 const test = require("node:test");
 
-const installer = resolve(__dirname, "../install-win.ps1");
+const installer = resolve(__dirname, "../../../../client/windows-wsl/desktop/install-win.ps1");
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), "teamup-install-test-"));
   const source = join(root, "portable package");

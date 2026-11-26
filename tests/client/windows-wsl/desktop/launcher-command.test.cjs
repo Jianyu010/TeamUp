@@ -1,6 +1,6 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const { distributionArguments, launchConsole } = require("../launcher-command.cjs");
+const { distributionArguments, launchConsole } = require("../../../../client/windows-wsl/desktop/launcher-command.cjs");
 
 function windowsRun() {
   const calls = [];

@@ -22,10 +22,21 @@
     <div id="stage" class="stage" data-page="workspace">
       <svg id="links" aria-hidden="true"></svg>
       <section class="session-panel" aria-labelledby="sessions-title">
-        <h2 id="sessions-title">My sessions (0)</h2>
+        <div class="session-heading">
+          <h2 id="sessions-title">My sessions (0)</h2>
+          <div class="session-tools">
+            <input type="search" id="session-search" aria-label="Find a session" placeholder="Find a session" autocomplete="off" spellcheck="false">
+            <button type="button" id="all-sessions" aria-pressed="false" aria-controls="sessions" hidden>All sessions</button>
+          </div>
+        </div>
         <div class="scroll-frame" id="session-scroll">
           <div class="nodes" id="sessions"></div>
         </div>
+        <nav class="session-pages" id="session-pages" aria-label="Session pages" hidden>
+          <button type="button" id="previous-sessions" aria-controls="sessions">Previous</button>
+          <span id="session-range" role="status"></span>
+          <button type="button" id="next-sessions" aria-controls="sessions">Next</button>
+        </nav>
         <button type="button" id="retire-identity" class="retire-action" hidden>Retire selected identity</button>
         <details id="retired-sessions">
           <summary id="retired-summary">Retired sessions (0)</summary>

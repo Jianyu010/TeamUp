@@ -7,7 +7,7 @@
 - [开发视图](../docs/architecture/development-view.md) 定义模块导入方向。
 - [Client 和 MCP 契约](../docs/modules/client-mcp.md) 定义本机接口、绑定和会话生命周期。
 
-[Build and open the desktop console](desktop/README.md) as TeamUp.app on macOS or TeamUp.exe on Windows x64 with a WSL2 Client backend. The browser entry is available with `teamup-client serve --config PATH --console`. See the [console contract](../docs/modules/client-console.md) for owner access and supported actions.
+Build and open [TeamUp.app on macOS](desktop/README.md) or [TeamUp.exe on Windows x64 with WSL2](windows-wsl/desktop/README.md). The browser entry is available with `teamup-client serve --config PATH --console`. See the [console contract](../docs/modules/client-console.md) for owner access and supported actions.
 
 ## One member per agent session
 

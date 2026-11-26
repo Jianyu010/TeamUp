@@ -5,7 +5,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-BRIDGE = Path(__file__).resolve().parents[1] / "client/desktop/launch-wsl.py"
+BRIDGE = (
+    Path(__file__).resolve().parents[4] / "client/windows-wsl/desktop/launch-wsl.py"
+)
 
 
 def test_bridge_enters_selected_runtime_without_shell_interpolation(tmp_path):
