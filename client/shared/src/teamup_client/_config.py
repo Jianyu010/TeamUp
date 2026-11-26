@@ -249,6 +249,15 @@ def read_config(path):
     return _parse(path, data)
 
 
+def read_locked_profile(path, socket_path):
+    """Read a profile without releasing the lock for its configured socket."""
+    data, contents = _read(path)
+    config = _parse(path, data)
+    if config.socket_path != socket_path:
+        raise ConfigError("Client socket path changed while opening the configuration")
+    return config, data, contents
+
+
 @contextmanager
 def locked_config(path, *, remove_stale_socket=False):
     original, original_contents = _read(path)

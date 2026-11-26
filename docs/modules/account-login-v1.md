@@ -41,6 +41,8 @@ Agent self-retirement, owner-managed departure, and retired history are specifie
 
 ## Client 启动配置
 
+打开 TeamUp.app，或运行 `teamup-client serve --config PATH --console` 后在浏览器打开控制台，可直接输入 TeamUp 用户名和口令。Client 在启动本机 IPC 前通过现有登记用途的登录接口完成认证并保存凭证。桌面启动器复用同一配置的常驻 Client。详见[本机控制台登录契约](client-console.md#sign-in-to-the-client)。
+
 `teamup-client login --config PATH --username USERNAME` 在本机终端无回显读取口令，使用现有 Server URL 和 TLS 信任配置登录，再将 `account_token` 原子写入权限为 0600 的本机配置，成功输出不含 token。初始配置可省略凭证字段。登录失败或等待期间配置文件被修改时，保留用户的文件并提示重试。登录前停止使用同一配置的 Client，成功后重新启动。Client 配置中的 `account_token` 和旧 `enrollment_key` 二选一。
 
 MCP 工具、IPC、Agent 绑定字段和成员凭证形状沿用 [MCP–Client v1](mcp-client-v1.md)。Client 在登记前用其成员 token 查询已有身份，成功即复用。未登记的绑定才用人类登录 token 登记，所以人类登录到期或重新登录不会使现有 Agent 中断。已停用账号的 Agent 仍由 Server 拒绝。
