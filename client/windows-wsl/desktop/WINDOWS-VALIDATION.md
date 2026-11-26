@@ -1,89 +1,99 @@
 # Windows desktop validation
 
-Validated on 2026-11-25. Desktop implementation: `665246d7364a6b3f352e2d8b0cf33492fd00361e`.
-This includes upstream `main` at `663928132d586ce0245ab3f5098aa8554bbbd08f`
-and its versions, room directory, presence ordering and Room Board changes.
-The latest upstream release observed during the upgrade was `v0.2.0`.
+Validated on 2026-11-26 against implementation `d58c804ddd85451da9c824d4489711af95e57155`.
+The branch includes upstream `main` at `b9320e4350394c68ddc0a8864ba23b8a008267c4`
+and release `v0.2.1`, including member identities, membership controls, retirement,
+and the new room-message layout.
 
+The Windows desktop is version `0.2.1`. Its Client reports `0.2.1.dev24`, calculated
+by the repository's first-parent version function for this feature branch. The
+configured Server reported `0.2.1.dev38` and was not upgraded by this work.
 Environment: Windows x64, WSL2 Ubuntu, Python 3.12.15, Node.js 24.15.0,
-npm 11.12.1, Electron 45.5.0. The Windows app is version `0.2.0`.
-The WSL Client was upgraded from `0.1.0` to `0.2.1.dev20`, using the
-repository's version calculation for merge commit
-`71d732ee1f81d4c7dfe35f44ac0ac4c951b24b47`. Client/MCP sources and Python
-launchers are unchanged between that merge and the desktop implementation commit.
-The configured Server reported `0.2.1.dev26`.
+Electron 45.5.0. Installer filesystem tests use Windows PowerShell.
+
+## Layout and scope
+
+Windows desktop code, its WSL launcher, installer and packager are under
+`client/windows-wsl/desktop/`. Platform tests mirror that directory under
+`tests/client/windows-wsl/desktop/`, following the desktop owner's request on
+[PR #53](https://github.com/Jianyu010/TeamUp/pull/53#issuecomment-7180173760).
+`client/windows/` is reserved for a native Windows Client.
+
+At the tested upstream revision, the shared Python Client and console renderer
+still live in `client/src/`; the packager reads those shared assets. The planned
+upstream move to `client/shared/` and `client/macos/` had not landed on main.
+The Windows adapter uses the existing Client console API. The local compact
+session-list changes were carried forward with upstream's member identities,
+retirement selection and archive controls retained.
 
 ## Automated checks
 
-- `npm --prefix client/desktop test`: 20 passed, 0 skipped. Includes Windows
-  literal argument/path handling, invalid distribution/path rejection, macOS
-  defaults, protocol/history, stale version endpoint renewal, board routes,
-  presence ordering and three real PowerShell installer filesystem checks.
-- `pytest -q tests/test_desktop_wsl.py client/tests/test_desktop_launcher.py
-  client/tests/test_console.py`: 40 passed, 0 skipped, in the staged candidate's
-  installed WSL runtime. The launcher starts and reuses a real Client.
-- `pytest -q tests/test_boundaries.py tests/test_mcp_contract.py
-  tests/contract/test_mcp_tools.py client/tests/test_task_ipc.py`: 8 passed.
-- Ruff check and format check passed for `launch-wsl.py` and
-  `tests/test_desktop_wsl.py`. `git diff --check` passed.
+- `npm --prefix client/windows-wsl/desktop test`: **38 passed, 0 skipped**.
+  Covers literal WSL arguments, invalid path/distribution rejection, three real
+  PowerShell installer checks, console authorization and forwarding, history,
+  presence, messages, task views, and session filtering/search/pagination.
+- `npm --prefix client/desktop test`: **24 passed, 0 skipped** for the shared
+  renderer and existing desktop protocol.
+- In the isolated candidate WSL environment, the following pytest selection:
+  **72 passed, 0 skipped**:
 
-The host's `/tmp` tmpfs was full. Python used `TMPDIR=/var/tmp` and an external
-collection hook remapping only the launcher's existing explicit
-`TemporaryDirectory(dir="/tmp")` fixture to `/var/tmp`. Assertions and Client
-authorization were unchanged. An initial run against the previous environment
-failed the launcher case (39 passed, 1 failed); the candidate-runtime run passed
-all 40. The installer fixture initially compared an 8.3 path with its long
-spelling; its assertion now resolves both filesystem paths.
+  ```sh
+  python -m pytest -q tests/client/windows-wsl/desktop \
+    client/tests/test_console.py client/tests/test_task_ipc.py \
+    tests/test_boundaries.py tests/test_mcp_contract.py tests/contract tests/system
+  ```
 
-## Package, installation and runtime
+- Full-tree Ruff check, Ruff formatting for the Windows Python launcher and tests,
+  mypy (28 production source files), JavaScript syntax and `git diff --check`: pass.
 
-- The Windows packager produced the complete portable directory with
-  `Install-TeamUp.ps1`. The cached Electron archive matched its pinned SHA-256:
+This host's `/tmp` tmpfs was full. The initial cross-process run failed with
+`database or disk is full`. The final run used `TMPDIR=/var/tmp` and an external
+test bootstrap redirecting explicit `tempfile.mkdtemp(dir="/tmp")` and
+`TemporaryDirectory(dir="/tmp")` calls to `/var/tmp`. Test assertions and
+production authorization were unchanged. The final 72 checks all passed.
+
+## Package and installed runtime
+
+- `npm --prefix client/windows-wsl/desktop ci --offline --ignore-scripts` and
+  `npm --prefix client/windows-wsl/desktop run package:win` completed. Packaging
+  used the cached Electron ZIP with pinned SHA-256
   `20155c8b8aa5b1f575f3757bdf21490e0bac2f19a65a26ce9ba99bcf9f2c69bd`.
-- The real installer upgraded the per-user app, updated its desktop shortcut and
-  retained the previous app beside it for rollback. Both EXE ProductVersion and
-  FileVersion report `0.2.0`. Its explicit `-Start` option uses normal window
-  style for the interactive app.
-- The WSL runtime was staged separately. Offline dependency resolution could not
-  complete, so the isolated environment retained the existing 38 third party
-  dependency distributions. Client and MCP were built from the staged sources;
-  `uv pip check` passed for all 40 installed distributions.
-- Switching the existing managed user service preserved the private profile
-  byte-for-byte at the switch, its approved member identity and four rooms.
-  The previous runtime and a private service/state backup were retained.
-  Local MCP bootstraps now select the current runtime. No Server upgrade was
-  performed.
+- Missing Python dependencies were fetched through the verified `hk-leihui`
+  SOCKS tunnel and matched against `uv.lock` hashes. A fresh candidate venv
+  installed the locked requirements and source-built Client, MCP and Server
+  distributions; `uv pip check` passed for all 49 installed distributions.
+- The per-user installer upgraded the app and shortcut, retained the previous
+  app directory, and launched TeamUp.exe. ProductVersion and FileVersion are
+  `0.2.1`. The installed main/protocol/command modules, all ten console assets,
+  launchers and installer match the tested sources. Packaged manifest identity,
+  version, entry point and engine fields match too.
+- The existing managed WSL service was switched with a private state backup and
+  retained the previous runtime for rollback. The profile was byte-identical at
+  the switch; existing session identities, credentials and rooms were preserved.
+  A fresh MCP stdio session listed 25 tools, including room departure and identity
+  retirement. Tool discovery sent zero member operations.
+- Repeated production launcher calls reused the same private console endpoint.
+  Real Windows-to-WSL protocol reads of versions, workspace, transcript, board,
+  member roster, tasks and team directory returned HTTP 200 with ready state.
 
-## Live Windows and console checks
+## Desktop interaction
 
-- The real window's accessibility tree showed `teamup://console/`, `Live`,
-  the existing PR Review transcript, an acknowledged board, member presence,
-  Client `0.2.1.dev20` and Server `0.2.1.dev26`. The renderer URL contained
-  no launch credential.
-- The installed ASAR's main, protocol and launcher modules and five console
-  assets were byte-compared with the tested sources. Manifest version/entry
-  fields and the bundled installer were checked too.
-- Repeated production launcher invocation reused the private console endpoint.
-  The production console handler read workspace, versions, room transcript,
-  board, member roster and tasks across Windows-to-WSL localhost forwarding:
-  all HTTP 200. It observed four rooms, an available room directory, 30 transcript
-  messages, 13 members and the two user-requested PR review tasks.
-- Fresh MCP stdio sessions listed and invoked current task tools with the
-  existing approved member binding. The two requested review tasks were created
-  successfully, separately from the read-only package verification.
-- Terminating and relaunching only the installed GUI preserved the running WSL
-  Client PID. Fresh EXE launch created one window; repeated launch retained one.
-- Room-tab clicking was not completed: the automation helper repeatedly reported
-  the window minimized after activation. Board, roster and tasks were verified
-  through the named console APIs; broader interactive workflows are not claimed.
+The installed window's accessibility state showed Live, **My sessions (3)**,
+**All sessions (277)** and Client `0.2.1.dev24`. The Windows input helper reported
+`coordinate input geometry is unavailable` and a minimized window during click
+attempts, so interaction checks used an isolated installed Electron process and
+its temporary loopback DevTools endpoint.
 
-Portable ZIP: `TeamUp-Windows-x64-0.2.0-20261125.zip`, 158385062 bytes.
-SHA-256: `5cce92958edfd5203199a9d37c41a92cf452505a8d51abe9d881aab634bc94cc`.
-It contains the full app directory without a private profile or tokens.
+The final desktop smoke test passed: eight rows per page, distinct second-page
+rows, search and empty results, retirement selection cleared by search, PR Review
+transcript and member roster loading, authorized Room Board expansion, task lanes,
+Team directory, and return to the default compact workspace. The final inventory
+contained 280 approved sessions and three registered sessions. The renderer stayed
+at `teamup://console/` with Node integration disabled. The isolated process was
+closed after testing; the ordinary app remained available.
 
-## Scope
-
-This preview is unsigned, Windows x64 only, and requires a configured WSL2 Client
-and localhost forwarding. The installer updates the Windows app; the WSL runtime
-is a separate upgrade. macOS packaging and the full repository suite were not run
-on this host. Hosted CI results are reported on the PR.
+Portable ZIP: `TeamUp-Windows-x64-0.2.1-20261126.zip`, **162696984 bytes**.
+SHA-256: `eb66ca0d83d4249539bfb30983baabbae19d4e170392ec7e96ba26c585da21d5`.
+It contains the complete app directory. This unsigned x64 build requires a
+configured WSL2 Client and localhost forwarding. macOS packaging and the full
+repository pytest suite were not run locally; hosted checks are reported on the PR.
