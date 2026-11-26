@@ -57,9 +57,14 @@ async function read(path, params, action) {
     },
     body: action?.body ? JSON.stringify(action.body) : undefined,
     cache: "no-store",
-    signal: AbortSignal.timeout(21000),
+    signal: AbortSignal.timeout(action?.timeout ?? 21000),
   });
-  if (!response.ok && !action) throw new Error(response.status === 401 ? "access" : "connection");
+  if (!response.ok && !action) {
+    if (response.status === 409 && (await response.json()).state === "sign_in_required") {
+      throw new Error("sign_in_required");
+    }
+    throw new Error(response.status === 401 ? "access" : "connection");
+  }
   return await response.json();
 }
 
@@ -533,7 +538,10 @@ function setConnection(message, live) {
   get("connection").dataset.live = String(live);
 }
 
+let versionsTimer;
+
 async function refreshVersions() {
+  clearTimeout(versionsTimer);
   try {
     const result = await read("/api/versions");
     get("client-version").textContent = result.client_version ?? "Unknown";
@@ -545,7 +553,7 @@ async function refreshVersions() {
     get("server-version").textContent = "Unavailable";
     if (error.message === "access") return;
   }
-  setTimeout(refreshVersions, refreshInterval);
+  if (!stage.hidden) versionsTimer = setTimeout(refreshVersions, refreshInterval);
 }
 
 function applyWorkspace(snapshot) {
@@ -591,6 +599,132 @@ function applyWorkspace(snapshot) {
   }
 }
 
+const signIn = get("sign-in");
+const signInPassword = get("sign-in-password");
+const rememberLogin = get("remember-login");
+const wakeSettings = get("wake-settings");
+const wakeOnMention = get("wake-on-mention");
+const preferenceStatus = get("login-preference-status");
+const rememberLoginLabel = get("remember-login-label");
+
+async function loadRememberOption() {
+  rememberLogin.checked = false;
+  rememberLoginLabel.hidden = true;
+  if (!desktop) return;
+  try {
+    const result = await read("/api/login");
+    rememberLoginLabel.hidden = signIn.hidden || result.remember_available !== true;
+  } catch {
+    // Interactive sign-in is available while the preference check is retried.
+  }
+}
+
+function showPreferenceStatus(text) {
+  preferenceStatus.textContent = text;
+  preferenceStatus.hidden = !text;
+}
+
+async function loadWakeSettings() {
+  wakeSettings.hidden = true;
+  try {
+    const result = await read("/api/wake-settings");
+    if (result.state === "ready" && !stage.hidden) {
+      wakeOnMention.checked = result.enabled;
+      wakeSettings.hidden = false;
+    }
+  } catch {
+    // The Workspace can open with an older or temporarily disconnected Client.
+  }
+}
+
+wakeOnMention.addEventListener("change", async () => {
+  const enabled = wakeOnMention.checked;
+  wakeOnMention.disabled = true;
+  showPreferenceStatus("");
+  try {
+    const result = await read("/api/wake-settings", null, {body: {enabled}});
+    if (result.state !== "ready") throw new Error("wake_settings");
+    wakeOnMention.checked = result.enabled;
+  } catch {
+    wakeOnMention.checked = !enabled;
+    showPreferenceStatus("TeamUp could not save the wake setting.");
+  } finally {
+    wakeOnMention.disabled = false;
+  }
+});
+const loginMessages = {
+  wrong_credentials: "Wrong username or password.",
+  rate_limited: "Too many sign-in attempts. Try again later.",
+  profile_unavailable: "TeamUp could not save the Client profile. Check the profile and try again.",
+  unavailable: "TeamUp could not complete sign-in. Check the Server connection and try again.",
+};
+
+function displaySignIn() {
+  const opening = signIn.hidden;
+  signIn.hidden = false;
+  stage.hidden = true;
+  get("client-nav").hidden = true;
+  get("versions").hidden = true;
+  clearTimeout(versionsTimer);
+  setConnection("Sign-in required", false);
+  if (opening) {
+    loadRememberOption();
+    get("retire-dialog").close();
+    get("sign-in-username").focus();
+  }
+}
+
+function displayWorkspace() {
+  if (!stage.hidden) return;
+  signIn.hidden = true;
+  signInPassword.value = "";
+  get("sign-in-status").textContent = "";
+  stage.hidden = false;
+  get("client-nav").hidden = false;
+  get("versions").hidden = false;
+  loadWakeSettings();
+  refreshVersions();
+}
+
+get("sign-in-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const submit = get("sign-in-submit");
+  const status = get("sign-in-status");
+  if (submit.disabled) return;
+  submit.disabled = true;
+  status.textContent = "Signing in…";
+  const pending = read("/api/login", null, {
+    body: {
+      username: get("sign-in-username").value,
+      password: signInPassword.value,
+      ...(desktop ? {remember: rememberLogin.checked} : {}),
+    },
+    timeout: 35000,
+  });
+  signInPassword.value = "";
+  try {
+    const result = await pending;
+    if (result.state === "ready") {
+      const keychainMessage = {
+        save_failed: "TeamUp could not save credentials in Keychain.",
+        forget_failed: "TeamUp could not remove saved credentials from Keychain.",
+      };
+      showPreferenceStatus(keychainMessage[result.keychain] ?? "");
+      rememberLogin.checked = false;
+      await refresh();
+    } else if (Object.hasOwn(loginMessages, result.state)) {
+      status.textContent = loginMessages[result.state];
+    } else {
+      status.textContent = loginMessages.unavailable;
+    }
+  } catch {
+    status.textContent = loginMessages.unavailable;
+  } finally {
+    submit.disabled = false;
+    if (!signIn.hidden) signInPassword.focus();
+  }
+});
+
 let workspaceRequest = 0;
 let workspaceTimer;
 
@@ -600,9 +734,21 @@ async function refresh() {
   let expire = false;
   try {
     const snapshot = await read("/api/workspace");
-    if (request === workspaceRequest) applyWorkspace(snapshot);
+    if (request === workspaceRequest) {
+      displayWorkspace();
+      applyWorkspace(snapshot);
+    }
   } catch (error) {
     if (request !== workspaceRequest) return;
+    if (error.message === "sign_in_required") {
+      state.workspace = {sessions: [], rooms: []};
+      state.chat = null;
+      state.room = null;
+      state.focused = null;
+      show("workspace");
+      displaySignIn();
+      return;
+    }
     expire = error.message === "access";
     setConnection(expire ? "Open a fresh console link" : "Reconnecting…", false);
     state.workspace = {sessions:[], rooms:[]};
@@ -675,7 +821,6 @@ window.addEventListener("keydown", (event) => {
 });
 if (desktop || key) {
   refresh();
-  refreshVersions();
 } else {
   setConnection("Open the URL printed by TeamUp Client", false);
   renderWorkspace();

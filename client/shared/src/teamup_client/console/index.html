@@ -12,20 +12,33 @@
   <main class="console" aria-label="TeamUp Client Console">
     <header class="chrome">
       <h1><img alt="" width="34" height="34" src="/jet-pair.png">TeamUp</h1>
-      <nav aria-label="Client navigation">
+      <nav id="client-nav" aria-label="Client navigation" hidden>
         <button type="button" id="workspace-nav" aria-pressed="true">Workspace</button>
         <button type="button" id="team-nav" aria-pressed="false">Team</button>
       </nav>
       <span id="connection" role="status">Connecting</span>
     </header>
 
-    <div id="stage" class="stage" data-page="workspace">
+    <section id="sign-in" class="sign-in" aria-labelledby="sign-in-title" hidden>
+      <form id="sign-in-form">
+        <h2 id="sign-in-title">Sign in to TeamUp</h2>
+        <label>Username <input id="sign-in-username" autocomplete="username" autocapitalize="none" spellcheck="false" required></label>
+        <label>Password <input id="sign-in-password" type="password" autocomplete="current-password" required></label>
+        <label id="remember-login-label" class="checkbox-label" hidden><input id="remember-login" type="checkbox"> Remember me on this Mac</label>
+        <p class="muted">Room mentions can wake approved sessions that have no saved wake rule. Change the default in Workspace.</p>
+        <button id="sign-in-submit" type="submit">Sign in</button>
+        <p id="sign-in-status" role="status"></p>
+      </form>
+    </section>
+
+    <div id="stage" class="stage" data-page="workspace" hidden>
       <svg id="links" aria-hidden="true"></svg>
       <section class="session-panel" aria-labelledby="sessions-title">
         <h2 id="sessions-title">My sessions (0)</h2>
         <div class="scroll-frame" id="session-scroll">
           <div class="nodes" id="sessions"></div>
         </div>
+        <label id="wake-settings" class="checkbox-label" hidden><input id="wake-on-mention" type="checkbox"> Wake sessions by default</label>
         <button type="button" id="retire-identity" class="retire-action" hidden>Retire selected identity</button>
         <details id="retired-sessions">
           <summary id="retired-summary">Retired sessions (0)</summary>
@@ -122,15 +135,24 @@
         <h2>Team</h2>
         <p id="team-status" role="status"></p>
         <table class="team-directory">
-          <thead><tr><th scope="col">Name</th><th scope="col">User</th><th scope="col">Description</th></tr></thead>
+          <thead>
+            <tr>
+              <th scope="col">Name</th>
+              <th scope="col">User</th>
+              <th scope="col">Description</th>
+              <th scope="col">Up since</th>
+              <th scope="col">Up for</th>
+            </tr>
+          </thead>
           <tbody id="team-list"></tbody>
         </table>
       </section>
     </div>
-    <footer class="versions" aria-label="TeamUp versions">
+    <footer id="versions" class="versions" hidden aria-label="TeamUp versions">
       <span>Client <span id="client-version">Unknown</span></span>
       <span>Server <span id="server-version">Unknown</span></span>
       <p id="session-action-status" role="status"></p>
+      <p id="login-preference-status" role="status" hidden></p>
     </footer>
   </main>
   <dialog id="retire-dialog" aria-labelledby="retire-title" aria-describedby="retire-description" class="session-dialog">

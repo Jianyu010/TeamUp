@@ -1,183 +1,171 @@
-# CI、自动合入与发布
+# CI, automated merges, and releases
 
-TeamUp 的 main 分支只接受合入门禁的自动合入。仓库 owner（`Jianyu010`）可以手动合入，其他人不行。本页说明分层结构、运行位置、维护者操作和发布规则。套件之间的字段、路径和命令以 [共享契约](contract.md) 为准，issue 与 PR 的标签以 [标签规范](labeling.md) 为准。
+TeamUp uses the merge gate to merge changes into `main` automatically. Only the repository owner (`Jianyu010`) can merge manually. The [shared CI contract](contract.md) defines the fields, paths, and commands the suites use. The [labeling standard](labeling.md) governs issue and PR labels.
 
-## 分层
+## CI layers
 
-命名沿用 DigitalMate 的规则：job 显示为 `<层号> · <名称>`，runner 标签是名称的小写短横线形式，runner 注册名是标签加两位序号，如 `linux-ut-01`。
+TeamUp follows DigitalMate's naming convention. The job display name is `<layer> · <name>`. The runner label is the lowercase, hyphenated job name, and the registered runner name appends a two-digit suffix, as in `linux-ut-01`.
 
-| 层 | Job | 何时运行 | 失败后果 |
+| Layer | Jobs or checks | When it runs | What happens on failure |
 | --- | --- | --- | --- |
-| 1 · 路由 | 由门禁判定：没有关联 issue；改受保护路径、删除测试、新增 skip/xfail，或改动超过 300 个文件 | 每次判定 | 关联 issue；`require_ready` 打开时，其余几项还要等待 owner 审查并加 `ready` |
-| 2 · 静态检查 | `2 · Lint`（ruff）、`2 · Architecture`（依赖方向） | 每次推送，草稿也运行 | 门禁红，不合入 |
-| 3 · 运行代码的检查 | `3 · Linux UT`（组件与 CI 单测）、`3 · Linux ST`（跨进程与 MCP 集成）、`3 · AI Review` | PR 标为 ready for review 之后；AI Review 在 CI 通过后由门禁派发 | 门禁红；P0/P1 发现未修复、P2 发现未回复时 `3 · Review Findings` 为红，不合入 |
-| 4 · 端到端 | `4 · Nightly`（免模型场景和性能）、`4 · Weekly`（真实 Agent） | main 上按计划运行 | main 冻结（nightly），或开 `weekly-failure` issue |
-| 5 · 合入 | `5 · Merge Gate`（`merge-gate` 状态）、`5 · Merge` | 检查结束、标签变化或每 15 分钟的扫描 | PR 留在门前 |
+| 1 · Routing | The merge gate checks for a missing linked issue, changes to protected paths, deleted tests, new skip or xfail markers, and changes spanning more than 300 files | Every gate evaluation | Link an issue. When `require_ready` is on, the other cases also wait for the owner to review and apply `ready` |
+| 2 · Static checks | `2 · Lint` (ruff) and `2 · Architecture` (dependency direction) | Every push, including draft PRs | The gate blocks the merge |
+| 3 · Tests and review | `3 · Linux UT` (component and CI unit tests), `3 · Linux ST` (cross-process and MCP integration), and `3 · AI Review` | After the PR is marked ready for review. The gate dispatches AI Review once CI passes | The gate blocks the merge. `3 · Review Findings` fails when a P0 or P1 finding remains unresolved or a P2 finding goes unanswered |
+| 4 · End-to-end | `4 · Nightly` (model-free scenarios and performance tests) and `4 · Weekly` (real agents) | On a schedule for `main` | A nightly failure freezes `main`. A weekly failure opens a `weekly-failure` issue |
+| 5 · Merge | `5 · Merge Gate` (the `merge-gate` status) and `5 · Merge` | When checks finish, labels change, or the 15-minute scan runs | The PR stays in the queue |
 
-草稿只运行第 2 层，不占 UT、ST 和审查的名额。转为 ready for review 时 `CI` 重新运行，第 3 层随之启动。
+Draft PRs run only layer 2, leaving the unit test, system test, and review slots available. Marking a PR ready for review reruns `CI` and starts layer 3.
 
-### 第 1–3 层补充检查（契约）
+### Additional checks in layers 1–3
 
-下列检查按本节实现，均已启用；标"是"的检查列在 `.github/ci/policy.json` 的必需检查里。job 名、runner 标签、命令和失败标签以本表为准，实现方不得私自改名。
+All checks below are enabled and follow this contract. Checks marked required appear in `.github/ci/policy.json`. The job names, runner labels, commands, and failure labels in this table are binding.
 
-| Job | 层 | runner（标签 = 名称的短横线形式） | 命令或判定 | 必需 | 失败标签 | 状态 |
+| Job | Layer | Runner (label = hyphenated name) | Command or decision rule | Required | Failure label | Status |
 | --- | --- | --- | --- | --- | --- | --- |
-| `1 · PR Routing` | 1 | 门禁写入的提交状态（`merge-gate-01`） | 门禁的路由结论：PR 走自动路径还是等待 owner | 否，只报告 | – | 启用 |
-| `1 · Protected Changes` | 1 | 同上 | 改了受保护路径、删除测试或新增 skip/xfail 时为红，owner 加 `ready` 后为绿；`require_ready` 关闭时只报告，保持绿色并注明 | 否，只报告 | – | 启用 |
-| `1 · Automation Limits` | 1 | 同上 | PR 作者不受信、审查重跑次数用尽，或（`require_ready` 打开时）改动超过 300 个文件时为红 | 否，只报告 | – | 启用 |
-| `1 · Linked Issue` | 1 | 同上 | PR 的标题或正文没有引用本仓库的 issue（`#N` 或 `Jianyu010/TeamUp#N`，引用的是 PR 不算）时为红；门禁据此拦截，owner 加 `ready` 可放行 | 否，门禁执行 | – | 启用 |
-| `3 · Review Findings` | 3 | 同上 | 按下文"AI 审查发现"判定：有未修复的 P0/P1 或未回复的 P2 时为红；当前 head 还没有审查时为 pending | 否，门禁执行 | – | 启用 |
-| `2 · Type Check` | 2 | `type-check-01` | `uv run --no-sync mypy`，配置在根 `pyproject.toml` 的 `[tool.mypy]`，覆盖 `server/src`、`client/shared/src`、`plugin/mcp/src` | 是 | `gate/type-check-failed` | 启用 |
-| `2 · Secrets` | 2 | `secrets-01` | `gitleaks dir . --config .gitleaks.toml --redact --exit-code 1` | 是 | `gate/secrets-failed` | 启用 |
-| `2 · Workflow Lint` | 2 | `workflow-lint-01` | `actionlint -config-file .github/actionlint.yaml`（列出自托管 runner 标签）与 `zizmor --offline .github/workflows`（配置 `.github/zizmor.yml`） | 是 | `gate/workflow-lint-failed` | 启用 |
-| `2 · Dependencies` | 2 | `dependencies-01` | `uv lock --check`：`uv.lock` 与各 `pyproject.toml` 一致（先把锁文件副本改写到清华镜像）；`pip-audit` 漏洞报告写入 job 摘要，只报告不失败 | 是（仅锁文件检查） | `gate/dependencies-failed` | 启用 |
-| `3 · Contract` | 3 | `contract-01` | `uv run --no-sync pytest -q tests/contract`：HTTP API、SSE 事件和 MCP 工具 schema 与 `tests/contract/golden/` 的快照一致 | 是 | `gate/contract-failed` | 启用 |
-| `3 · Install` | 3 | `install-01`–`03` | `uv run --no-sync pytest -q tests/install`：构建三个包的 wheel，装进全新虚拟环境，命令行入口可用 | 是 | `gate/install-failed` | 启用 |
-| `3 · Linux UT` 覆盖率下限 | 3 | `linux-ut-01`–`03` | `pytest --cov`，下限写在根 `pyproject.toml` 的 `[tool.coverage.report] fail_under`（现为 48%，实测约 50%） | 是（随 `3 · Linux UT`） | `gate/linux-ut-failed` | 启用 |
-| `3 · Linux ST · 跨组件` | 3 | `linux-st-cross-01`–`03` | `uv run --no-sync pytest -q tests/system`：Server、Client 守护进程和 MCP 一起启动，走完登记、建房、公告、消息与提醒的链路 | 是 | `gate/linux-st-cross-failed` | 启用 |
+| `1 · PR Routing` | 1 | Commit status written by the gate (`merge-gate-01`) | Reports whether the PR can proceed automatically or needs owner review | No, reports only | – | Enabled |
+| `1 · Protected Changes` | 1 | Same as above | Fails for changes to protected paths, deleted tests, or new skip or xfail markers. The owner can clear it with `ready`. When `require_ready` is off, it only reports: it stays green with a note | No, reports only | – | Enabled |
+| `1 · Automation Limits` | 1 | Same as above | Fails if the PR has an untrusted author, has exhausted its review reruns, or (when `require_ready` is on) changes more than 300 files | No, reports only | – | Enabled |
+| `1 · Linked Issue` | 1 | Same as above | Fails if the title or body lacks a reference to an issue in this repository (`#N` or `Jianyu010/TeamUp#N`). References to PRs do not count. The gate blocks the merge unless the owner applies `ready` | No, enforced by the gate | – | Enabled |
+| `3 · Review Findings` | 3 | Same as above | Fails if any P0 or P1 finding remains unresolved or any P2 finding goes unanswered, as described under AI review findings below. Stays pending until the current head has been reviewed | No, enforced by the gate | – | Enabled |
+| `2 · Type Check` | 2 | `type-check-01` | `uv run --no-sync mypy` uses `[tool.mypy]` in the root `pyproject.toml` and covers `server/src`, `client/shared/src`, and `plugin/mcp/src` | Yes | `gate/type-check-failed` | Enabled |
+| `2 · Secrets` | 2 | `secrets-01` | `gitleaks dir . --config .gitleaks.toml --redact --exit-code 1` | Yes | `gate/secrets-failed` | Enabled |
+| `2 · Workflow Lint` | 2 | `workflow-lint-01` | `actionlint -config-file .github/actionlint.yaml` (lists self-hosted runner labels) and `zizmor --offline .github/workflows` (uses `.github/zizmor.yml`) | Yes | `gate/workflow-lint-failed` | Enabled |
+| `2 · Dependencies` | 2 | `dependencies-01` | `uv lock --check` verifies that `uv.lock` agrees with each `pyproject.toml`, after a temporary copy of the lockfile is rewritten to use the Tsinghua mirror. `pip-audit` reports vulnerabilities in the job summary without failing the job | Yes, lockfile check only | `gate/dependencies-failed` | Enabled |
+| `3 · Contract` | 3 | `contract-01` | `uv run --no-sync pytest -q tests/contract` checks HTTP APIs, SSE events, and MCP tool schemas against the snapshots in `tests/contract/golden/` | Yes | `gate/contract-failed` | Enabled |
+| `3 · Install` | 3 | `install-01`–`03` | `uv run --no-sync pytest -q tests/install` builds wheels for all three packages, installs them in a fresh virtual environment, and checks their CLI entry points | Yes | `gate/install-failed` | Enabled |
+| Coverage minimum for `3 · Linux UT` | 3 | `linux-ut-01`–`03` | `pytest --cov` enforces `fail_under` in `[tool.coverage.report]` in the root `pyproject.toml` (currently 48%, with measured coverage around 50%) | Yes, as part of `3 · Linux UT` | `gate/linux-ut-failed` | Enabled |
+| `3 · Linux ST · 跨组件` | 3 | `linux-st-cross-01`–`03` | `uv run --no-sync pytest -q tests/system` starts the Server, Client daemon, and MCP together, then exercises registration, room creation, announcements, messaging, and notifications | Yes | `gate/linux-st-cross-failed` | Enabled |
 
-第 2 层的四项在草稿上也运行；第 3 层只在 PR 标为 ready for review 之后运行。第 1 层的三个状态由门禁写入，不运行 PR 代码，也不在必需检查里，合入与否仍只看 `merge-gate`。
+The four layer 2 checks above also run on drafts. Layer 3 starts only once a PR is marked ready for review. The gate writes the three layer 1 statuses without running PR code. Branch protection uses only `merge-gate` for the merge decision.
 
-受保护路径和必需检查写在 [`.github/ci/policy.json`](../../.github/ci/policy.json)。该文件本身也受保护。
+Protected paths and required checks are listed in [`.github/ci/policy.json`](../../.github/ci/policy.json), which is itself protected.
 
-`3 · Linux UT` 在 `tests/server/`、`tests/client/shared/`、`tests/client/macos/` 与 `tests/scripts/ci/` 运行 Python 测试。`3 · Linux ST` 运行 `tests/integration/` 和 `tests/plugin/mcp/`。macOS 控制台和共用界面的 Node 测试通过 `npm --prefix client/macos/desktop test` 运行。
+`3 · Linux UT` runs the Python tests in `tests/server/`, `tests/client/shared/`, `tests/client/macos/`, and `tests/scripts/ci/`. `3 · Linux ST` runs `tests/integration/` and `tests/plugin/mcp/`. The macOS console and shared UI Node tests run via `npm --prefix client/macos/desktop test`.
 
-## 合入规则
+## Merge rules
 
-- main 的分支保护要求状态 `merge-gate` 并且必须走 PR。管理员不受限，所以 owner 可以手动合入。
-- `merge-gate` 只在以下条件全部满足时变绿：
-  - 不是草稿；
-  - 没有 `pr/hold`；
-  - 必需检查都通过；
-  - 当前 head 的 `3 · AI Review` 通过，审查发现按下文处理完，或维护者加了 `ready`；
-  - PR 关联了至少一个 issue（改标题或正文后门禁重新判定，删掉引用会让门禁回到 pending）；
-  - 第 1 层路由没有拦截。
-- 合入者在 hp-laptop 的 `merge-01` 运行器上执行，令牌是仓库密钥 `TEAMUP_MERGE_TOKEN`。它每次合入一个 PR，用 squash 方式合入。
-- `ready` 只能由 admin 或 maintain 角色添加。见下文的 `require_ready` 开关：关闭时，受保护改动、超大 PR 和冻结都不再需要 `ready`；不受信作者的 PR，以及讨论被标为已解决却没有修复的 P0/P1，仍然只能由维护者加 `ready` 放行。PR 在加标签后又推送新提交时，标签会被自动移除。
-- `pr/hold` 让 PR 停在门前，直到移除该标签。
+- Branch protection on `main` requires a PR and a passing `merge-gate` status. Administrators are exempt, so the owner can merge manually.
+- `merge-gate` passes only when all of the following are true.
+  - The PR is ready for review.
+  - The PR has no `pr/hold` label.
+  - All required checks pass.
+  - The current head passes `3 · AI Review` and its findings have been addressed as described below, or a maintainer has applied `ready`.
+  - The PR links at least one issue. Editing the title or body triggers another evaluation. Removing the reference puts the gate back in pending.
+  - No layer 1 routing check blocks the PR.
+- The merge worker runs on `merge-01` on hp-laptop using the `TEAMUP_MERGE_TOKEN` repository secret. It squash-merges one PR at a time.
+- Only users with the admin or maintain role can add `ready`. Pushing new commits automatically removes the label. See the `require_ready` switch below: when it is off, protected changes, oversized PRs, and freezes no longer need `ready`. PRs from untrusted authors, and P0 or P1 findings whose threads were resolved without a fix, still need a maintainer's `ready`.
+- `pr/hold` blocks the PR until the label is removed.
 
-### owner 审查开关（`require_ready`）
+### Owner review switch (`require_ready`)
 
-`.github/ci/policy.json` 的 `require_ready` 决定哪些情况必须由 owner 加 `ready`。当前为 `false`（owner 的决定：`ready` 拖慢合入，暂时取消）。
+`require_ready` in `.github/ci/policy.json` decides which cases need the owner's `ready`. It is currently `false`: the owner turned it off because waiting for `ready` slowed merges down. Any value other than an explicit `false`, including a missing key, counts as on.
 
-| 情况 | `require_ready: true` | `require_ready: false`（当前） |
+| Case | `require_ready: true` | `require_ready: false` (current) |
 | --- | --- | --- |
-| 改受保护路径、删除测试、新增 skip/xfail | 等 owner 加 `ready` | 自动路径照常判定；`1 · Protected Changes` 保持绿色并注明 |
-| 改动超过 300 个文件 | 等 owner 加 `ready`，`1 · Automation Limits` 为红 | 不拦截，也不再报告；超过 3000 个文件（GitHub 列表上限，可能列不全）时不论开关都要 AI 审查 |
-| main 或 nightly 冻结 | 只合入带 `ready` 或引用冻结 issue 的 PR | 不拦截合入；冻结 issue 照常打开和关闭，用于提醒 |
+| Changes to protected paths, deleted tests, or new skip or xfail markers | Wait for the owner's `ready` | The PR takes the automatic route. `1 · Protected Changes` stays green with a note |
+| More than 300 changed files | Wait for the owner's `ready`. `1 · Automation Limits` fails | Not blocked and not reported. A PR with 3,000 or more files (GitHub's listing cap, so the list may be incomplete) always needs AI review, whatever the switch says |
+| A freeze on `main` or nightly | Only PRs with `ready` or a freeze reference merge | Merges are not blocked. The freeze issue still opens and closes as a signal |
 
-不受开关影响、仍然生效的规则：必需检查全绿、`3 · AI Review` 通过并按下文处理完发现、关联 issue、`pr/hold`、草稿不合入，以及不受信作者的 PR 等待维护者。`ready` 仍可用作放行（例如未修复的 P0/P1），只是不再是必需的。PR 作者一般就是 owner 的账号（agent 也用它），所以"只豁免 owner"等同于对所有 PR 关闭，开关因此按仓库设置。
+These rules hold whatever the switch says: all required checks pass, `3 · AI Review` passes and its findings are addressed as described below, the PR links an issue, `pr/hold` blocks, drafts do not merge, and PRs from untrusted authors wait for a maintainer. `ready` still works as an override (for example, for unfixed P0 or P1 findings), but it is no longer required. The switch is per repository rather than an exception for the owner, because PRs are normally authored by the owner's account, which agents also use, so exempting the owner would turn it off for every PR anyway.
 
-### AI 审查发现
+### AI review findings
 
-审查器给每条发现定严重度，对应关系是 `critical` = P0、`high` = P1、`medium` = P2。门禁读审查留下的发现台账（ledger），把结论写成提交状态 `3 · Review Findings`：
+The reviewer assigns a severity to each finding. `critical` maps to P0, `high` to P1, and `medium` to P2. The gate reads the review findings ledger and publishes the `3 · Review Findings` commit status.
 
-- **P0、P1 必须修复。** 只有审查器在后续轮次判定为已修复（`fixed`），或认可作者的解释（`answered`），才算处理完。作者回复或把讨论标为已解决都不够；推送修复后，审查器会在下一轮复查。
-- **P2 必须回复。** PR 作者或 owner 在该发现的讨论里回复修复方式或不改的理由，或把讨论标为已解决，或在 PR 对话里以 `F<n>: ...` 开头回复。审查器判定为已修复的也算处理完。
-- 不满足时 `3 · Review Findings` 为红，`merge-gate` 保持 pending 并写明还缺哪些发现。
-- 被标为已解决、但没有修复的 P0/P1 不会再被审查器复查，只能由 owner 审过后加 `ready` 放行。
+- **Fix P0 and P1 findings.** A finding counts as addressed once the reviewer confirms the fix (`fixed`) or accepts the author's explanation (`answered`) in a later round. Author replies and resolved threads alone do not clear these findings. After the fix is pushed, the reviewer checks it in the next round.
+- **Respond to P2 findings.** The PR author or owner can reply in the finding's thread with the fix or the reason for keeping the current behavior, mark the thread resolved, or post a reply starting with `F<n>: ...` in the PR conversation. Findings the reviewer marks as fixed also count as addressed.
+- While any required fixes or responses are outstanding, `3 · Review Findings` fails and `merge-gate` stays pending. The gate reports the outstanding findings.
+- The reviewer skips P0 and P1 findings whose threads were marked resolved before they were fixed. Only the owner can clear those findings by reviewing the PR and applying `ready`.
 
-### 冻结
+### Merge freezes
 
-以下情况会开一个带 `ci/freeze` 标签的 issue：
+A failed `CI` push run on `main` or a failed nightly run opens an issue labeled `ci/freeze`.
 
-- main 上的 `CI` 推送运行失败；
-- nightly 失败。
+When `require_ready` is on, during a freeze a PR can merge if it has `ready` or if it fixes an open freeze issue and cites that issue in its title or body using `Refs #N`, `Ref #N`, or `Part of #N`. A fix submitted through the second route still needs a passing gate, and it can proceed without waiting for the owner. Closing keywords such as `Closes`, `Fixes`, and `Resolves` make the PR ineligible for that route because GitHub would close the freeze issue as soon as the PR merged. The merge worker rereads the PR before merging and stops if the reference has been removed or changed to a closing keyword. The freeze issue closes automatically once `main` is green again and nightly passes. A weekly failure only opens a `weekly-failure` issue.
 
-`require_ready` 打开时，冻结期间只合入两种 PR：带 `ready` 的 PR；或在标题、正文里用 `Refs #N`（或 `Ref`、`Part of`）引用了某个打开的冻结 issue 的修复 PR，它仍要门禁全绿，但不必等 owner。用 `Closes`、`Fixes`、`Resolves` 引用冻结 issue 的 PR 不走这条路：那样修复一合入 issue 就被关闭，不会等到 main 真的恢复绿色。合入前合入者会重读 PR，引用被删掉或改成关闭关键字时不合入。main 恢复绿色、nightly 再次通过后，issue 自动关闭。weekly 失败不会冻结 main，只开 `weekly-failure` issue。
+## Runners
 
-## 运行器
+All jobs use self-hosted runners on the owner's hp-laptop. Each runner has its own home directory, runs in a bwrap sandbox, and is supervised by `~/opencode-review/runner/runner-ctl`. Register runners using [`scripts/ci/hp-laptop/register-runners.sh`](../../scripts/ci/hp-laptop/register-runners.sh).
 
-所有任务都在 owner 的 hp-laptop 上运行，不使用 GitHub 托管的运行器。每个实例在 bwrap 沙箱里运行，有独立的 home，由 `~/opencode-review/runner/runner-ctl` 监管。注册脚本是 [`scripts/ci/hp-laptop/register-runners.sh`](../../scripts/ci/hp-laptop/register-runners.sh)。
-
-| Runner | 标签 | 运行的代码 | 承接的 job |
+| Runner | Label | Code it runs | Jobs |
 | --- | --- | --- | --- |
-| `lint-01` | `lint` | PR 代码 | `2 · Lint` |
-| `architecture-01` | `architecture` | PR 代码 | `2 · Architecture` |
-| `type-check-01` | `type-check` | PR 代码 | `2 · Type Check` |
-| `secrets-01` | `secrets` | PR 代码 | `2 · Secrets` |
-| `workflow-lint-01` | `workflow-lint` | PR 代码 | `2 · Workflow Lint` |
-| `dependencies-01` | `dependencies` | PR 代码 | `2 · Dependencies` |
-| `linux-ut-01`–`03` | `linux-ut` | PR 代码 | `3 · Linux UT` |
-| `linux-st-01`–`03` | `linux-st` | PR 代码 | `3 · Linux ST` |
-| `linux-st-cross-01`–`03` | `linux-st-cross` | PR 代码 | `3 · Linux ST · 跨组件` |
-| `contract-01` | `contract` | PR 代码 | `3 · Contract` |
-| `install-01`–`03` | `install` | PR 代码 | `3 · Install` |
-| `ai-review-01`–`03` | `ai-review` | main 的审查工具 | `3 · AI Review`（并发还受共享审查名额限制） |
-| `e2e-01` | `e2e` | main | `4 · Nightly`、`4 · Weekly`（同一时间只跑一个，性能数据不受干扰） |
-| `merge-gate-01` | `merge-gate` | 只运行 main 的脚本 | `5 · Merge Gate`、撤销、main 健康检查、审查后的唤醒 |
-| `merge-01` | `merge` | 只运行 main 的脚本 | `5 · Merge` |
-| `gate-tick-01` | `gate-tick` | main | 每 15 分钟一次的调度节拍 |
-| `utility-01` | `utility` | 只运行 main 的脚本 | 套件报告与发布、看板、issue 与 PR 标签 |
+| `lint-01` | `lint` | PR code | `2 · Lint` |
+| `architecture-01` | `architecture` | PR code | `2 · Architecture` |
+| `type-check-01` | `type-check` | PR code | `2 · Type Check` |
+| `secrets-01` | `secrets` | PR code | `2 · Secrets` |
+| `workflow-lint-01` | `workflow-lint` | PR code | `2 · Workflow Lint` |
+| `dependencies-01` | `dependencies` | PR code | `2 · Dependencies` |
+| `linux-ut-01`–`03` | `linux-ut` | PR code | `3 · Linux UT` |
+| `linux-st-01`–`03` | `linux-st` | PR code | `3 · Linux ST` |
+| `linux-st-cross-01`–`03` | `linux-st-cross` | PR code | `3 · Linux ST · 跨组件` |
+| `contract-01` | `contract` | PR code | `3 · Contract` |
+| `install-01`–`03` | `install` | PR code | `3 · Install` |
+| `ai-review-01`–`03` | `ai-review` | Review tooling from `main` | `3 · AI Review` (also subject to the shared review concurrency limit) |
+| `e2e-01` | `e2e` | `main` | `4 · Nightly` and `4 · Weekly` (run one at a time to avoid skewing performance measurements) |
+| `merge-gate-01` | `merge-gate` | Scripts from `main` only | `5 · Merge Gate`, revocation, `main` health checks, and post-review wakeups |
+| `merge-01` | `merge` | Scripts from `main` only | `5 · Merge` |
+| `gate-tick-01` | `gate-tick` | `main` | Scheduler tick every 15 minutes |
+| `utility-01` | `utility` | Scripts from `main` only | Suite reporting, releases, dashboards, and issue and PR labeling |
 
-耗时的第 3 层各有三个并发名额。第 2 层静态检查用到的 gitleaks、actionlint、shellcheck、zizmor 和 pip-audit 由 [`scripts/ci/hp-laptop/install-tools.sh`](../../scripts/ci/hp-laptop/install-tools.sh) 装进对应实例的 home（二进制校验 sha256）。hp-laptop 本地的实例目录带 `teamup-` 前缀（如 `~/gh-runner/teamup-linux-ut-01`），与同机其他仓库的 runner 区分；在 GitHub 上注册的名字不带前缀。
+The long-running layer 3 jobs have three concurrent slots each. [`scripts/ci/hp-laptop/install-tools.sh`](../../scripts/ci/hp-laptop/install-tools.sh) installs gitleaks, actionlint, shellcheck, zizmor, and pip-audit in the home directories of the relevant layer 2 runners. It checks the SHA-256 hashes of the binaries. Runner directories on hp-laptop use the `teamup-` prefix (for example, `~/gh-runner/teamup-linux-ut-01`) to distinguish them from runners for other repositories on the same machine. The GitHub registration names omit the prefix.
 
-注意事项：
+- Runners that execute PR code receive no secrets.
+- Jobs triggered by `pull_request_target` fetch scripts from `main` via the contents API without checking out PR code.
+- The runners fetch source trees as API tarballs because hp-laptop frequently cannot reach GitHub's Git service.
+- PyPI requests go through the Tsinghua mirror. The runners rewrite the URLs in a temporary `uv.lock` before running `uv sync --frozen`.
+- Model requests go through a local proxy at `127.0.0.1:18081`. The gateway secret stays out of runner home directories.
 
-- 运行 PR 代码的实例拿不到任何密钥。
-- `pull_request_target` 触发的任务通过 contents API 读取 main 的脚本，从不检出 PR 代码。
-- hp-laptop 经常连不上 github.com 的 git 服务，所以代码树通过 API tarball 获取。
-- PyPI 走清华镜像：先改写一份临时 `uv.lock` 的 URL，再执行 `uv sync --frozen`。
-- 模型调用走本机中转 `127.0.0.1:18081`。网关密钥不进入任何运行器 home。
+## Scheduling
 
-## 调度
+GitHub cron runs often start 3–5 hours late. `gate-tick.yml` runs every 15 minutes to advance the merge queue and dispatch nightly, weekly, and dashboard jobs when they are due under the `cadence` settings in `policy.json`.
 
-GitHub 的 cron 常常推迟 3–5 小时，所以 `gate-tick.yml` 每 15 分钟运行一次，负责：
-
-- 推进合入队列；
-- 按 `policy.json` 的 `cadence` 判断 nightly、weekly 和看板是否到期，到期就派发。
-
-| 任务 | 时间（Asia/Shanghai） |
+| Job | Schedule (Asia/Shanghai) |
 | --- | --- |
-| nightly | 每天 02:00 |
-| weekly | 每周日 04:00 |
-| 看板统计 | 每天 09:30 |
+| nightly | Every day at 02:00 |
+| weekly | Every Sunday at 04:00 |
+| Dashboard statistics | Every day at 09:30 |
 
-三者都可以在 Actions 页面手动派发。
+You can also dispatch any of the three jobs from the Actions page.
 
-## 版本与发布
+## Versions and releases
 
-标签格式为 `vX.Y.Z`。基线标签是 `v0.1.0`。
+Release tags use the format `vX.Y.Z`. The baseline tag is `v0.1.0`.
 
-- **开发版本。** main 上的构建记为 `X.Y.(Z+1).devN`，N 是自最新标签以来 main 的第一父提交数。版本号由 `scripts/ci/version.py` 计算，写入结果文件的 `version` 字段。
-- **补丁版本。** nightly 全绿，且自上一个标签以来有新提交（N>0）时，打标签 `X.Y.(Z+1)`。
-- **次版本。** weekly 全绿，且自 `vX.Y.0` 以来有合入时，打标签 `X.(Y+1).0`。
-- **发布说明。** 由 `scripts/ci/release.py` 按确定规则生成，不调用模型。内容包括：
-  - 按类别分组的已合入 PR；
-  - 关闭的 issue；
-  - 贡献者；
-  - 本次套件的证据表（场景数、通过数、运行链接）。
-- 发布只会前进。目标提交不比最新标签新时，脚本拒绝发布。
+- **Development builds.** Builds on `main` use `X.Y.(Z+1).devN`, where N counts first-parent commits on `main` since the latest tag. `scripts/ci/version.py` computes the version and writes it to the results file's `version` field.
+- **Patch releases.** Tag the next patch release, `X.Y.(Z+1)`, when nightly passes and there are new commits since the last tag (N > 0).
+- **Minor releases.** Tag the next minor release, `X.(Y+1).0`, when weekly passes and a PR has been merged since `vX.Y.0`.
+- **Release notes.** `scripts/ci/release.py` generates the notes deterministically without calling a model. They include the merged PRs by category, the closed issues, the contributors, and a table of evidence for the suite with scenario counts, pass counts, and run links.
+- The release script requires a target commit newer than the latest tag.
 
-## 看板
+## Dashboards
 
-结果和统计写入 `ci-data` 分支，由 GitHub Pages 从该分支根目录发布。页面说明见 [dashboards/README.md](../../dashboards/README.md)。
+Results and statistics are published to the `ci-data` branch. GitHub Pages serves the site from the root of that branch. See the [dashboard README](../../dashboards/README.md) for a guide to the pages.
 
-| 页面 | 数据 |
+| Page | Data |
 | --- | --- |
-| 概览 | 最新 nightly/weekly 状态、版本、仓库摘要 |
-| CI | PR 与 main 上的 CI、AI Review 的每日通过率，nightly/weekly 通过率，合入吞吐，冻结状态，场景稳定性 |
-| 仓库 | Stars、Forks、Issue/PR、下载量、距上次发布时间 |
-| 性能 | nightly 性能：私聊延迟、5 Agent 房间三档负载、历史增长下的退化 |
-| Agent | weekly 真实 Agent 场景与指标 |
+| Overview | Latest nightly and weekly status, version, and repository summary |
+| CI | Daily pass rates for CI and AI Review on PRs and `main`, nightly and weekly pass rates, merge throughput, freeze status, and scenario stability |
+| Repository | Stars, forks, issues and PRs, downloads, and time since the last release |
+| Performance | Nightly performance, including DM latency, five-agent rooms at three load levels, and performance degradation as history grows |
+| Agents | Weekly scenarios and metrics from real agents |
 
-## 标签
+## Labels
 
-新 issue 由 `issues.yml` 依次处理：
+`issues.yml` processes new issues in this order.
 
-1. 人提交的 issue 标为 `agent/human-only` 和 `status/review-needed`，并指派给 owner；
-2. hp-laptop 上的模型按 [标签规范](labeling.md) 打上 `type`、`source`、`priority`、`area` 和 `size`；
-3. 检查必需的轴，缺少时加上 `status/triage`。
+1. Apply `agent/human-only` and `status/review-needed` to issues opened by people and assign them to the owner.
+2. Use the model on hp-laptop to apply `type`, `source`, `priority`, `area`, and `size` labels according to the [labeling standard](labeling.md).
+3. Check the required label categories and apply `status/triage` if any are missing.
 
-PR 上的 `gate/*-failed`、从 issue 镜像的 `type/*` 和 `pr/no-issue` 由 `gate-queue.yml` 的 `pr-labels` 维护。这些标签只用于提示，门禁不读取它们；没有关联 issue 的拦截由门禁自己判定（`1 · Linked Issue`），与 `pr/no-issue` 用同一条规则。发布说明按 `type/*` 分组。
+The `pr-labels` job in `gate-queue.yml` maintains `gate/*-failed` and `pr/no-issue` on PRs and mirrors `type/*` from linked issues. These are informational labels. The gate checks for linked issues independently via `1 · Linked Issue`, using the same rule as `pr/no-issue`. Release notes group PRs by `type/*`.
 
-## 维护者操作
+## Maintainer operations
 
-- **放行受保护的改动。** `require_ready` 打开时，审查 diff 后加 `ready`；关闭时不需要。
-- **暂停某个 PR。** 加 `pr/hold`。
-- **重新判定。** 在 Actions 手动运行 `Gate queue`，可以填写 PR 编号。
-- **轮换合入令牌。** 换掉密钥 `TEAMUP_MERGE_TOKEN`。它是 fine-grained 令牌，只授权本仓库，权限为：
-  - Contents、Pull requests、Issues、Workflows：读写；
-  - Metadata：只读；
-  - Administration：只读，用于读取访问统计，可选。
-- **添加运行器。** 按注册脚本的注释，通过 stdin 传入注册令牌，不要写在命令行上。
+- **Approve a protected change.** Review the diff and apply `ready`. This is needed only when `require_ready` is on.
+- **Hold a PR.** Apply `pr/hold`.
+- **Reevaluate the gate.** Run `Gate queue` from Actions. You can optionally provide a PR number.
+- **Rotate the merge token.** Replace the `TEAMUP_MERGE_TOKEN` secret with a fine-grained token scoped to this repository. Grant these permissions.
+  - Read and write for Contents, Pull requests, Issues, and Workflows.
+  - Read-only for Metadata.
+  - Optional read-only access to Administration for traffic statistics.
+- **Add a runner.** Follow the comments in the registration script and pass the registration token through stdin to keep it out of command-line arguments.

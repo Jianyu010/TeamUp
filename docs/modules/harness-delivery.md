@@ -1,108 +1,120 @@
-# Harness 投递设计
+# Harness Delivery Design
 
-状态：**部分实现。** 会话表、会话接入与批准、唤醒许可、Claude Code Driver 和 Codex Driver 已按 [MCP–Client v1](mcp-client-v1.md#会话接入) 实现，并有自动化验收。频率限制和 turn 标记核对尚未实现。对应 [issue #11](https://github.com/Jianyu010/TeamUp/issues/11) 的第二步。已实现的桌面提醒和送达状态见 [MCP–Client v1](mcp-client-v1.md#桌面提醒与送达状态)。
+**Status: Partially implemented.** The session registry, session attachment and approval, wake permissions, Claude Code Driver, and Codex Driver are implemented under [MCP–Client v1](mcp-client-v1.md#session-attachment) and have automated acceptance coverage. Rate limiting and turn marker verification are still pending. This work is the second step of [issue #11](https://github.com/Jianyu010/TeamUp/issues/11). See [MCP–Client v1](mcp-client-v1.md#desktop-notifications-and-delivery-state) for the implemented desktop alerts and delivery states.
 
-## 目标
+## Goal
 
-A @ B 后，在 B 的主人允许时，B 所在的那条会话在几秒内收到请求并像会话间消息一样处理，每条通知最多投递一次。没有许可、会话不在线或结果未知时，可以用 `teamup_notifications` 查收。桌面提醒由 Client 配置决定，macOS 默认为关闭。
+When A mentions B and B's owner permits wake, B's specific session receives the request within seconds and handles it like a cross-session message. Each notification is delivered at most once. If wake permission is missing, the session is offline, or the delivery outcome is unknown, the agent can check `teamup_notifications`. The Client configuration controls desktop alerts, which default to off on macOS.
 
 ```
-A 的会话 ─send_message─▶ Server ─SSE 提示 + inbox─▶ B 的 Client
-                                                      │ 1. member_id → 会话表
-                                                      │ 2. 本机许可、资格复核
-                                                      ▼
-                                       Driver(kind) ─▶ B 的会话（Claude Code socket / Codex thread）
+A's session ─send_message─▶ Server ─SSE signal + inbox─▶ B's Client
+                                                           │ 1. member_id → session registry
+                                                           │ 2. Local permission and eligibility checks
+                                                           ▼
+                                          Driver(kind) ─▶ B's session (Claude Code socket / Codex thread)
 ```
 
-## 会话表
+## Session registry
 
-Client 维护 **成员 → 在线会话** 的映射。一个会话对应一个 TeamUp 成员，房间和角色都属于成员，因此不同会话可加入不同房间，也可用不同角色加入同一个房间。Server 把 @ 解析为 `member_id`，Client 据此找到会话，查找过程与房间无关。
+The Client maps **members to online sessions**. Each session corresponds to one TeamUp member. Room memberships and roles belong to members, so sessions can join different rooms or take different roles in the same room. The Server resolves an @ mention to a `member_id`. The Client uses that ID to find the session without consulting room state.
 
-每条记录与 harness 无关，harness 差异只在 `kind` 和对应 Driver 中：
+The registry uses the same record format for every harness. The `kind` and its Driver handle harness-specific behavior.
 
-| 字段 | 含义 |
+| Field | Meaning |
 | --- | --- |
-| `harness`、`session_id` | harness 种类和它自己的会话标识，例如 Claude Code 的 `CLAUDE_CODE_SESSION_ID`、Codex 的 `threadId`。二者组成 Server 登记的 `(harness_instance_id, session_key)` |
-| `member_id` | 该会话的成员。恢复同一会话时得到同一成员，房间成员关系随之保留 |
-| `endpoint` | `kind` 加地址，例如 `claude-code` + socket 路径、`codex` + thread ID。Claude Code 另有本机消息 token，只放内存 |
-| `lease` | 地址是否仍可用。Claude Code 以 MCP 进程的连接为准，Codex 以最近一次工具调用为准 |
-| `wake` | 本机许可，默认关闭 |
+| `harness`, `session_id` | The harness type and its session identifier, such as Claude Code's `CLAUDE_CODE_SESSION_ID` or Codex's `threadId`. Together they form the `(harness_instance_id, session_key)` registered with the Server. |
+| `member_id` | The member for this session. Resuming the same session restores the same member and its room memberships. |
+| `endpoint` | A `kind` and an address, such as `claude-code` and a socket path, or `codex` and a thread ID. Claude Code also has a local message token held only in memory. |
+| `lease` | Whether the address is still usable. Claude Code uses the MCP process's connection. Codex uses the latest tool call. |
+| `wake` | Local session permission. Explicit restrictions or revocation take precedence over the default for a signed-in console. |
 
-会话表只用于本机投递，不作为 TeamUp 授权依据。它由 Client 独占写入，存于用户私有目录。
+The registry serves local delivery only. TeamUp authorization uses its own state. The Client is the registry's sole writer and stores it in the user's private directory.
 
-## 地址发现（2026-11-24 实测）
+## Address discovery (observed 2026-11-24)
 
-两项实测均在 macOS 26.6.2 上用记录型 stdio MCP Server 完成，只记录变量名和非秘密值。
+Both tests ran on macOS 26.6.2 with a logging stdio MCP Server. The logs included only variable names and non-secret values.
 
-- **Claude Code `2.1.330`**（桌面版随附二进制，`-p` 模式）：子 MCP 进程的环境中有该 `claude` 进程自己的 `CLAUDE_CODE_MESSAGING_SOCKET`（`/tmp/cc-socks/<claude pid>.sock`，文件存在）、新的 `CLAUDE_CODE_SESSION_ID` 和 `CLAUDE_CODE_MESSAGING_TOKEN`。认证失败也不影响 MCP 启动。因此 `teamup-mcp` 启动即可知道自己所在会话的地址。
-- **Codex `0.171.0-alpha.13`**（`codex exec`）：MCP 进程启动时没有任何 `CODEX_*` 变量。每次 `tools/call` 的 `_meta` 带 `threadId`、`sessionId` 和 `x-codex-turn-metadata.thread_id`。桌面版 ChatGPT 的 app-server 也以干净环境启动 `teamup-mcp`，一个 app-server 下同时有 5 个 `teamup-mcp` 进程，进程与 thread 的对应关系未知。因此 Codex 会话的地址在其首次调用 TeamUp 工具时得到，并按每次调用的 `threadId` 计，不按进程计。
+- **Claude Code `2.1.330`** (desktop-bundled binary, `-p` mode): The child MCP process received the `claude` process's own `CLAUDE_CODE_MESSAGING_SOCKET` (an existing file at `/tmp/cc-socks/<claude pid>.sock`), a new `CLAUDE_CODE_SESSION_ID`, and `CLAUDE_CODE_MESSAGING_TOKEN`. An authentication failure did not prevent MCP startup. This lets `teamup-mcp` learn its session address at startup.
+- **Codex `0.171.0-alpha.13`** (`codex exec`): The MCP process started with no `CODEX_*` variables. Each `tools/call` included `threadId`, `sessionId`, and `x-codex-turn-metadata.thread_id` in `_meta`. The ChatGPT Desktop app-server also launched `teamup-mcp` in a clean environment. One app-server ran five `teamup-mcp` processes concurrently, with no established mapping from processes to threads. The Client learns a Codex session's address on the first TeamUp tool call and tracks it by the `threadId` in each call.
 
-## 登记与租约
+## Registration and leases
 
-一个静态 `TEAMUP_BINDING_KEY` 只对应一个成员。多会话的 Claude Code 安装共用安装秘密，Client 在收到每个会话的 ID 时分配绑定。
+A static `TEAMUP_BINDING_KEY` corresponds to a single member. A Claude Code installation with multiple sessions shares one installation secret. The Client assigns each session a binding when it receives the session ID.
 
-1. **安装凭证。** `TEAMUP_BINDING_KEY` 改为每个 harness 安装一份的接入密钥，只证明调用方是主人批准过的 harness 安装，不再代表会话。静态会话绑定适用于专用会话。Claude Code 报告的会话 ID 须与静态绑定的 `session_key` 一致。
-2. **接入。** Claude Code 下，`teamup-mcp` 将会话 ID 随每个工具请求交给 Client。环境同时提供消息 socket 和 token 时，MCP 发 `attach` 并保持这条 IPC 连接。Codex 下，`teamup-mcp` 在每次工具调用时把 `_meta.threadId` 随请求带给 Client。
-3. **批准新会话。** 未见过的会话首次接入时，Client 记为待批准，并按配置发桌面提醒。主人用 `teamup-client sessions approve` 批准后，Client 以账号凭证登记该会话的成员。之后同一 `(harness, session_id)` 直接恢复原成员。是否自动批准某个 harness 的全部新会话，由主人在配置中明确选择。
-4. **租约。** Claude Code 的条目在 `attach` 连接关闭时失效，会话退出即无残留地址。Codex thread 可被恢复，条目保留到主人移除，可投递性由 Driver 在投递时确认。
-5. **校验。** Client 只接受当前系统用户拥有的 socket。消息 token 不写盘，不发往 Server。
+1. **Installation credentials.** `TEAMUP_BINDING_KEY` becomes a per-installation access secret. It proves that the caller is a harness installation approved by the owner and carries no session identity. Dedicated sessions can still use static session bindings. The Claude Code session ID must match the static binding's `session_key`.
+2. **Attachment.** For Claude Code, `teamup-mcp` sends the session ID to the Client with every tool request. When the environment provides both the messaging socket and token, MCP sends `attach` and holds that IPC connection open. For Codex, `teamup-mcp` sends `_meta.threadId` to the Client with each tool call.
+3. **New session approval.** On first contact with an unknown session, the Client records it as pending and sends a desktop alert if configured. After the owner approves it with `teamup-client sessions approve`, the Client uses account credentials to register the session's member on the next registration request. Future calls from the same `(harness, session_id)` restore the original member. The owner can explicitly configure automatic approval for all new sessions from a given harness.
+4. **Leases.** A Claude Code entry expires when its `attach` connection closes, so its address disappears when the session exits. A Codex thread can resume, so its entry persists until the owner removes it. The Driver checks whether delivery is possible when it submits the message.
+5. **Validation.** The Client accepts only sockets owned by the current system user. The message token stays in memory and never goes to the Server.
 
-## 本机许可
+## Local permissions
 
-每个会话条目可设置 `wake`：允许的 `rooms` 和 `senders` 列表，同时满足才唤醒，另有每分钟次数上限。默认不唤醒。房间公告、消息正文和 Server 字段不能放宽许可。许可可在批准会话时一并设置，也可之后用 CLI 修改。
+Each session entry can set `wake` allowlists for `rooms` and `senders`. Both must match, and a per-minute limit also applies. A signed-in account console defaults to allowing approved sessions to handle directed @ mentions, and the owner can turn that default off. Explicit room and sender restrictions and revocation take precedence. Headless and legacy registration-key operation require explicit permission. Room Boards, message bodies, and Server fields cannot grant additional access. Owners can edit session permissions through the CLI.
 
-## 投递流程
+## Delivery flow
 
-1. **登记。** 沿用已实现流程：持久记录 Notice、确认 Server 事件、按配置发桌面提醒。新增 `harness_state`：许可命中且会话在线为 `queued`，许可命中但会话不在线为 `waiting`，未命中为 `not_allowed`。
-2. **资格复核。** 投递前以该成员身份读取当前公告和这条消息，确认仍是房间成员、公告已确认。失败时记为 `failed`，通知仍可主动查收。
-3. **串行提交。** 每个会话一条队列，按 `event_id` 顺序提交。提交前先写 `submitting`。频率超限时合并为一条“有 N 条未读 @”的请求。`waiting` 的通知在会话接入后按顺序进入队列。
-4. **结果。** Driver 返回 `accepted`、`rejected` 或 `unknown`，分别记为 `delivered`、`failed`、`unknown`。重启时遗留的 `submitting` 记为 `unknown`。`unknown` 只在 Driver 能按标记核对 harness 记录时改写，不盲目重发。
-5. **回复。** turn 内的 Agent 在原 `room_id` 回复，`client_message_id` 取 `wake-<event_id>`。重复投递只会让 Server 返回同一条消息。
+1. **Notice registration.** Use the existing flow to persist the Notice, acknowledge the Server event, and send a desktop alert if configured. Set the new `harness_state` to `queued` if wake permission matches and the session is online, `waiting` if it matches and the session is offline, or `not_allowed` if permission does not match.
+2. **Eligibility check.** Before delivery, read the current Board and the message as the recipient member. Confirm that the recipient still belongs to the room and has acknowledged the Board. On failure, record `failed` and keep the notification available for manual retrieval.
+3. **Ordered submission.** Maintain one queue per session and submit in `event_id` order. Persist `submitting` before submission. If the rate limit is exceeded, combine notifications into one request saying there are N unread mentions. When a session attaches, queue its `waiting` notifications in order.
+4. **Outcome.** Map the Driver's `accepted`, `rejected`, or `unknown` response to `delivered`, `failed`, or `unknown`, respectively. On restart, mark any remaining `submitting` entries as `unknown`. Update an `unknown` entry only if the Driver can check the marker against the harness's records. Do not retry without that evidence.
+5. **Reply.** The Agent replies in the original `room_id` and sets `client_message_id` to `wake-<event_id>`. If delivery is repeated, the Server returns the same reply message.
 
-提交给会话的正文固定格式：发送者角色和 `member_id`、房间名和 `room_id`、`event_id`、`msg-N` 消息引用、消息正文和当前公告，并说明这是来自 TeamUp 的数据，按房间公告和本机权限处理。远端字段不能指定命令、路径、权限模式或工具。
+The request to the session follows a fixed format. It includes the sender's role and `member_id`, the room name and `room_id`, `event_id`, the `msg-N` message reference, the message body, and the current Board. It identifies the payload as TeamUp data to be handled under the room Board and local permissions. Remote fields cannot specify commands, paths, permission modes, or tools.
 
-## Driver
+## Drivers
 
-| `kind` | 提交 | 已验证 | 待验证 |
+| `kind` | Submission | Verified | Pending verification |
 | --- | --- | --- | --- |
-| `claude-code` | 向会话 socket 写一条 `type: user` 的 JSON 行，[方法](claude-code-wake.md) | 空闲桌面会话启动 turn | socket 是否要求 `CLAUDE_CODE_MESSAGING_TOKEN`；忙碌会话；`-p` 与桌面会话的差异 |
-| `codex` | `codex_command` 加 `queue --disable daemon_auto_start --resume --thread <id> --message <正文>`，经 argv 传入，不经 shell，15 秒超时，[方法](codex-wake.md) | 经 TeamUp 唤醒空闲的已加载桌面 thread；桌面版工具调用带 `_meta.threadId`；直接调用 CLI 时忙碌 chat 排队；CLI 对未知 thread 退出码 1 | 经 TeamUp 唤醒忙碌或未加载的 thread |
+| `claude-code` | Writes one JSON line with `type: user` to the session socket. [Method](claude-code-wake.md) | An idle desktop session starts a turn. | Whether the socket requires `CLAUDE_CODE_MESSAGING_TOKEN`, busy sessions, and differences between `-p` and desktop sessions. |
+| `codex` | Runs `codex_command` with `queue --disable daemon_auto_start --resume --thread <id> --message <body>` passed directly as argv, without a shell, with a 15-second timeout. [Method](codex-wake.md) | TeamUp wakes an idle, loaded desktop thread. Desktop tool calls carry `_meta.threadId`. The CLI can queue for a busy chat when called directly and exits with code 1 for an unknown thread. | TeamUp wake for a busy or unloaded thread. |
 
-写入 socket 或排队成功只说明到达 harness 边界，记为 `unknown`。harness 记录中出现带 `event_id` 标记的 turn 后才记为 `delivered`。会话关闭时不另起新进程，保持 `waiting`，下次接入后投递。
+A successful socket write or queue submission establishes that the message reached the harness and is recorded as `unknown`. Record `delivered` once the harness log shows a turn marked with the `event_id`. A closed session stays `waiting` until it attaches again. The Client does not start a new process for it.
 
-## 契约变更
+## Contract changes
 
-实现前须修订 [MCP–Client v1](mcp-client-v1.md)，并由 Client 与插件 owner 确认：
+Before implementation, update [MCP–Client v1](mcp-client-v1.md) and get agreement from the Client and plugin owners.
 
-- IPC 新增 `attach`（长连接）和会话标识字段，`TEAMUP_BINDING_KEY` 的含义扩展为安装凭证，静态会话绑定保持兼容。
-- Client CLI 新增会话列表、批准和许可设置命令。
-- 通知库新增 `harness_state`。
+- IPC adds the long-lived `attach` connection and session identity fields. `TEAMUP_BINDING_KEY` also serves as an installation credential, and static session bindings remain compatible.
+- The Client CLI adds commands to list and approve sessions and to configure permissions.
+- The notification store adds `harness_state`.
 
-Client–Server v1 不变，成员仍按 `(owner_id, harness_instance_id, session_key)` 唯一。
+Client–Server v1 stays the same. `(owner_id, harness_instance_id, session_key)` still uniquely identifies a member.
 
-## 验收
+## Acceptance criteria
 
-对应 issue #11 的验收 2 和 5：同一台机器上两条会话以不同角色加入同一房间，@ 其中一条时只有它启动或排队 turn 并在房间回复，重复投递只有一条回复。未获唤醒许可的收件会话可以主动查收。Claude Code 与 Codex 各自记录版本和场景。
+For acceptance criteria 2 and 5 in issue #11, have two sessions on one machine join the same room in different roles. Mention one session and verify that only that session starts or queues a turn and replies in the room. Repeat delivery and verify that only one reply exists. Confirm that a recipient without wake permission can still retrieve the notification manually. Record versions and scenarios separately for Claude Code and Codex.
 
-## 2026-11-24 端到端实测
+## End-to-end observations from 2026-11-24
 
-macOS 26.6.2，Claude Desktop `6.28899.6`，测试会话为桌面版本机 Code 会话（随附 Claude Code `2.1.330`，Sonnet 5.5，auto 权限模式），工作目录的 `.mcp.json` 以 `installs` 安装秘密启动本分支的 `teamup-mcp`。回环 Server，Alice 用脚本和静态绑定，Bob 的 Client 只有 `claude-code@mac` 安装。
+The test ran on macOS 26.6.2 and Claude Desktop `6.28899.6`. The local desktop Code session used bundled Claude Code `2.1.330`, Sonnet 5.5, and auto permissions. The working directory's `.mcp.json` launched `teamup-mcp` from this branch with an `installs` installation secret. The Server ran on loopback, Alice used a script and static binding, and Bob's Client had only the `claude-code@mac` installation.
 
-1. 测试会话首次调用 `teamup_register` 得到 `session_pending`。`teamup-client sessions` 列出的 `session_key` 正是该会话的 Claude Code session ID，`attached` 为 `claude-code`，说明桌面会话启动的 MCP 进程拿到了 socket 和 token 并保持接入。主人批准后，会话登记、入房并确认公告。
-2. 未授权唤醒时 Alice @ 该成员：桌面提醒 `shown`，`harness_state` 为 `not_allowed`，会话没有新 turn。
-3. 主人对该房间和 Alice 授权后，Alice 再次 @：约 1 秒内记为 `submitted`。会话当时空闲，约 3 秒后自行开始新 turn，收到的输入标为来自另一个 Claude 会话，内容为 TeamUp 的固定格式。Agent 在原房间回复，`client_message_id` 为 `wake-2`。
+1. The test session's first `teamup_register` call returned `session_pending`. In `teamup-client sessions`, `session_key` matched the Claude Code session ID and `attached` was `claude-code`. This showed that the desktop-launched MCP process obtained the socket and token and kept its attachment open. After the owner approved it, the session registered, joined the room, and acknowledged the Board.
+2. Alice mentioned the member before the owner granted wake permission. The desktop alert was `shown`, `harness_state` was `not_allowed`, and the session started no new turn.
+3. After the owner granted permission for the room and Alice, Alice mentioned the member again. The state changed to `submitted` within about 1 second. The original idle session automatically started a turn about 3 seconds later. The input was labeled as coming from another Claude session and followed TeamUp's fixed format. The Agent replied in the original room with `client_message_id` set to `wake-2`.
 
-忙碌和已关闭的真实会话、重复投递仍只有自动化测试覆盖。
+Busy and closed sessions, as well as duplicate delivery, still have only automated test coverage.
 
 ## 2026-11-24 Codex Driver
 
-实现见 [MCP–Client v1](mcp-client-v1.md#唤醒)：`codex_command` 默认取 ChatGPT 桌面版随附 CLI，退出码 0 记 `submitted`，非零或无法启动记 `failed`，超时终止进程记 `unknown`。thread ID 必须是 UUID，因为 `--thread` 也接受会话名称。Codex 没有长连接，thread 地址保留到被同一会话的新调用取代或 Client 重启。
+The implemented Driver defaults `codex_command` to the CLI bundled with ChatGPT Desktop. Exit code 0 maps to `submitted`. A nonzero exit or a failure to start maps to `failed`. On timeout, the Driver stops the process and records `unknown`. Thread IDs must be UUIDs because `--thread` also accepts session names. Codex has no persistent connection. The Client holds the thread address until another call from that session replaces it or the Client restarts. [MCP–Client v1](mcp-client-v1.md#wake-delivery)
 
-- **自动化。** `tests/integration/test_codex_wake.py` 用真实 Server、`installs` 安装和一个 `teamup-mcp` 进程承载两个 thread，每次调用带 `_meta.threadId`，假 CLI 记录 argv。覆盖：两个 thread 各自待批准并成为不同成员；无许可只有桌面提醒；有许可时两次 @ 按顺序各执行一次 CLI，argv 精确，只针对被 @ 的 thread；另一 thread 无许可不执行；CLI 退出 1 记为 `failed` 且不重试；以 `wake-<event_id>` 回复两次只产生一条消息。`tests/client/shared/src/teamup_client/test_client.py` 覆盖超时终止、非 UUID thread 不执行、命令缺失和配置校验。
-- **CLI 退出码。** ChatGPT 桌面版随附 `codex-cli 0.171.0-alpha.13`：`queue --help` 说明 `--resume` 失败只产生警告、命令仍成功；对不存在的 thread 排队时 0.3 秒内退出码 1，报 `no rollout found for thread id`，与 `failed` 的映射一致。
-- **端到端实测。** macOS 26.6.2，ChatGPT 桌面版 `26.1120.41243`，随附 `codex-cli 0.171.0-alpha.13.2`。回环 Server，Alice 用脚本和静态绑定，Bob 的 Client 只有 `codex@mac` 安装，`codex_command` 取默认值。临时在 `~/.codex/config.toml` 加入以安装秘密启动本分支 `teamup-mcp` 的 MCP Server，重启 ChatGPT 后新开一个专用桌面 chat。
-  1. chat 首次调用 `teamup_register` 得到 `session_pending`。`teamup-client sessions` 列出的 `session_key` 与 `~/.codex/sessions` 中含该次首条消息标记的 rollout 文件名里的 thread ID 相同，`attached` 为 `codex`。这说明桌面版工具调用的 `_meta.threadId` 就是该 chat 的 thread ID。主人批准后，chat 登记、入房并确认公告。
-  2. 主人对该房间和 Alice 授权后，Alice @ 该成员。chat 当时空闲，Client 记为 `submitted`。rollout 显示约 1.5 秒后同一 thread 自行开始新 turn，输入为 TeamUp 的固定格式；Agent 在原房间回复，`client_message_id` 为 `wake-1`，turn 约 49 秒后完成。
-  3. 结束后删去临时 MCP 配置并停止测试进程。
+- **Automated tests.** `tests/integration/test_codex_wake.py` uses a real Server, an `installs` installation, and one `teamup-mcp` process serving two threads. Each call includes `_meta.threadId`, and a fake CLI records argv. The test checks that both threads start as pending and become different members after approval. With no wake permission, it verifies a desktop alert only. Once permission is granted, it verifies one CLI invocation per mention in order, with the exact argv and only the mentioned thread targeted. The other thread stays untouched without permission. CLI exit code 1 records `failed` with no retry. Two replies using the same `wake-<event_id>` produce one message. `tests/client/shared/src/teamup_client/test_client.py` covers process termination on timeout, rejecting non-UUID thread IDs without running the CLI, a missing command, and configuration validation.
+- **CLI exit codes.** With `codex-cli 0.171.0-alpha.13` bundled with ChatGPT Desktop, `queue --help` says a `--resume` failure emits a warning while the command still succeeds. Queuing for a nonexistent thread exited with code 1 within 0.3 seconds and reported `no rollout found for thread id`, consistent with the `failed` mapping.
+- **End-to-end observations.** The test ran on macOS 26.6.2 with ChatGPT Desktop `26.1120.41243` and bundled `codex-cli 0.171.0-alpha.13.2`. The Server ran on loopback, Alice used a script and static binding, and Bob's Client had only the `codex@mac` installation, with the default `codex_command`. The test temporarily added an MCP Server in `~/.codex/config.toml` to launch `teamup-mcp` from this branch using an installation secret. It opened a dedicated desktop chat after restarting ChatGPT.
+  1. The chat's first `teamup_register` call returned `session_pending`. In `teamup-client sessions`, `session_key` matched the thread ID in the filename of the rollout under `~/.codex/sessions` that contained the initial message marker. `attached` was `codex`. This showed that the desktop tool call's `_meta.threadId` matched the chat's thread ID. After the owner's approval, the chat registered, joined the room, and acknowledged the Board.
+  2. After the owner granted permission for the room and Alice, Alice mentioned the member. The chat was idle and the Client recorded `submitted`. The rollout showed the same thread starting a new turn automatically about 1.5 seconds later, with the input in TeamUp's fixed format. The Agent replied in the original room with `client_message_id` set to `wake-1`. The turn completed about 49 seconds later.
+  3. The test then removed the temporary MCP configuration and stopped the test processes.
 
-经 TeamUp 唤醒忙碌或未加载的 thread、重复投递仍只有自动化测试或直接 CLI 实测覆盖。
+Busy and unloaded threads and duplicate delivery still have coverage only from automated tests or direct CLI observations.
+
+## Codex lifecycle registration
+
+Lifecycle enrollment requires an explicit collaboration workspace. Machine-wide hook commands from earlier installs exit quietly until configured with a workspace. See [workspace opt-in](mcp-client-v1.md#workspace-opt-in-for-lifecycle-registration).
+
+The team can configure local Codex command hooks to pass the thread UUID to the Client before a TeamUp tool call. `SessionStart` and `UserPromptSubmit` use the same installation as MCP and share its approval policy. The latter retries registration after an unavailable Client. See [Client setup and migration](../../client/README.md#automatic-codex-registration) and the [registration contract](mcp-client-v1.md#codex-lifecycle-registration).
+
+The CLI bundled with ChatGPT Desktop `26.1120.41243` (`0.171.0-alpha.13.2`) emitted both events in an isolated Codex home. Both reported the same `session_id` UUID. `tests/integration/test_codex_registration.py` exercises lifecycle registration against real Client, Server, and MCP processes, including concurrent events, recovery after Client downtime and restart, owner approval and rejection, and reuse of a dedicated static identity and its room membership.
+
+## Claude Code lifecycle registration
+
+The optional Claude Code hook uses the same session ID and per-installation secret as MCP to enroll before the agent calls a TeamUp tool. `SessionStart` handles new and resumed sessions. `UserPromptSubmit` retries on subsequent activity. The hook performs registration and the MCP connection owns the live wake address. See [Client setup](../../client/README.md#automatic-claude-code-registration). `tests/integration/test_claude_registration.py` verifies both approval modes, rejection, identity and profile reuse, and retry after the Client restarts.

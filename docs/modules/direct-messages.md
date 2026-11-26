@@ -1,131 +1,133 @@
-# Direct Messages（私聊）
+# Direct Messages
 
-**契约已按 #3 协调定稿；Client/MCP 侧已随本契约交付，Server 侧（`dms` 存储、三条路由、收件箱 `kinds` 与 `kind: "dm"` 事件）已由 #3 Server 工作树交付；DM 保留的存储与读取切片（dms 水位列、`expire_due_dms` 批量清理入口、读取边界元数据）已由 #6 DM 保留存储工作树交付，共享维护调度与 `--dm-retention-hours` 生产配置已由 #6 保留运行时统一装配，并随本期合并在控制台基线之上收敛为最终 schema v6。** 跟踪 [Direct messages #3](https://github.com/Jianyu010/TeamUp/issues/3)，与 [conversation history #6](../specs/conversation-history.md) 协同；产品行为见 [collaboration-surfaces](../specs/collaboration-surfaces.md)。提供方为 Server Gateway（业务状态归 Collaboration），消费方为 Client、本机 MCP 插件与 CLI。本文只新增 DM 契约：已发布的房间接口（[Client–Server v1](client-server-v1.md)、[MCP–Client v1](mcp-client-v1.md)）保持不变，仅做本文显式声明的加法扩展。
+**The #3 contract is agreed and implemented.** The Client and MCP shipped their changes with this contract. The #3 Server worktree delivered `dms` storage, three routes, the inbox `kinds` parameter, and `kind: "dm"` events. The #6 DM retention storage worktree delivered the `dms` watermark column, the `expire_due_dms` batch cleanup entry point, and retention metadata on reads. The #6 retention runtime integrated shared maintenance scheduling and the production `--dm-retention-hours` configuration. This integration finalized schema v6 on top of the console baseline.
 
-## 定位与边界
+The Server Gateway provides the contract and Collaboration owns the domain state. The Client, local MCP plugin, and CLI consume it. This contract adds DM capabilities to the published room interfaces only as specified below. [Direct messages #3](https://github.com/Jianyu010/TeamUp/issues/3) · [Conversation history #6](../specs/conversation-history.md) · [Product behavior](../specs/collaboration-surfaces.md) · [Client–Server v1](client-server-v1.md) · [MCP–Client v1](mcp-client-v1.md)
 
-- DM 是同一团队内两名成员之间的唯一会话，按无序成员对唯一（实现建议存 `min`/`max` 规范序）。重复打开返回同一会话；A→B 与 B→A 是同一条。
-- 找同伴沿用现有 `teamup_find_members`：先按角色找，再用返回的 `member_id` 打开 DM。
-- 只有会话的两位参与者可以发送、读取和领取该 DM 的事件。发起者一律由当前 token 推导，客户端字段不能替换发起方身份；每次操作都按当前 token 重新校验参与资格。团队其他成员无法查询该 DM 或其存在。
-- DM 没有公告（board）：发送与读取不要求公告确认。
-- DM 独立于 Room Directory、房间搜索与 Control Console：不进入房间列表、搜索或控制台；管理员房间 transcript 授权不适用于 DM。
-- 本期不提供关闭、退出或转让 DM 的操作，不提供两人以上的群聊。成员停用的影响已定：打开时目标成员所属账号已停用按未知同伴处理（422 `invalid_peer`）；既有会话的有效参与者始终可回读已存历史；向所属账号已停用的对端发送按 404 `not_found` 处理（见事务与失败）。
+## Scope and boundaries
 
-成员退役（#47）沿用上述对不可用对端的行为。有效参与者可以读取既有 DM，新的打开请求返回 422 `invalid_peer`，向已退役对端提交新消息返回 404 `not_found`。此前已提交消息的完全相同重试返回原收据。
+- A DM is a conversation between exactly two members of one team. Each unordered member pair has one conversation. The recommended storage order is `min`/`max`. Reopening the conversation, from either member's side, returns the same DM.
+- Find a teammate using `teamup_find_members`. Search by role and use the returned `member_id` to open a DM.
+- Only the two participants can send and read messages and fetch events for that DM. The service always derives the caller's identity from the current token and rechecks participation on every operation. A client field cannot override that identity. Other team members cannot query the conversation or learn whether it exists.
+- DMs have no Board. Participants can send and read without acknowledging one.
+- DMs stay outside the Room Directory, room search, and Control Console. An administrative grant to read room transcripts does not grant DM access.
+- This release supports two-person conversations. Closing, leaving, and transferring a DM are outside its scope. When opening a DM, a peer whose account has been disabled is treated as unknown and returns 422 `invalid_peer`. Active participants can still read stored history for an existing conversation. Sending to a peer whose account has been disabled returns 404 `not_found` under the transaction and error rules below.
 
-## 数据形状
+Member retirement (#47) follows the same rules for an unavailable peer. An active participant can read an existing DM. Opening a DM with the retired member returns 422 `invalid_peer`, and sending a new message to them returns 404 `not_found`. An identical retry of a previously committed message returns the original receipt.
 
-| 名称 | JSON 字段 |
+## Data shapes
+
+| Name | JSON fields |
 | --- | --- |
-| DM | `dm_id` UUID 字符串，`peer_member_id` UUID 字符串 |
-| DM Message | `message_id` 正整数，`dm_id`，`sender_member_id`，`client_message_id`，`text`，`created_at` RFC 3339 UTC 时间字符串（DM 行均为新写入，必非空） |
-| Event（扩展） | 在现有 `event_id`、`kind`、`message` 之上，`kind` 增加 `dm`；为 `dm` 时 `message` 是 DM Message |
-| Notice（扩展，本机） | DM 的本地 Notice 为类型化五字段 `{event_id, kind:"dm", dm_id, message_id, sender_member_id}`，不含正文；既有 `mention` 的本地 Notice 保持原四字段 `{event_id, room_id, message_id, sender_member_id}` 输出不变 |
+| DM | `dm_id` and `peer_member_id`, both UUID strings. |
+| DM Message | `message_id` as a positive integer, `dm_id`, `sender_member_id`, `client_message_id`, `text`, and `created_at` as an RFC 3339 UTC timestamp string. All DM rows were written with a timestamp, so it is always non-null. |
+| Event (extension) | Keeps `event_id`, `kind`, and `message`. Adds `dm` as a valid `kind`, in which case `message` is a DM Message. |
+| Notice (local extension) | A local DM Notice has five typed fields, `{event_id, kind:"dm", dm_id, message_id, sender_member_id}`, and omits the body. An existing `mention` Notice still outputs the original four fields `{event_id, room_id, message_id, sender_member_id}`. |
 
-- `message_id` 与房间消息共用同一个全局递增分配器：跨房间与 DM 全局唯一、只增不复用，会话内按提交顺序严格递增。房间与 DM 是 Collaboration 内两个独立的 canonical record 家族，每条记录只存一份正文；投递事件与消息一样共用 #6 的全局 delivery 分配器。
-- 房间 Message 的线上形状本期不变；是否同样向房间读取暴露时间戳已由 #6 落定：随 [会话历史、搜索与保留](conversation-history.md) 的增量，房间 Message 也暴露 `created_at`（见已议定）。
+- DMs and rooms draw `message_id` values from the same global allocator. IDs are unique across both families, increase strictly in commit order within a conversation, and are never reused. Room and DM messages are separate canonical record families within Collaboration, with one copy of the body per record. The two event families also share the global delivery allocator from #6.
+- This DM release keeps the room Message wire format. The separate [conversation history, search, and retention changes](conversation-history.md) settle the timestamp question for room reads by adding `created_at` to the room Message, as recorded in the agreement below.
 
-## 操作
+## Operations
 
-成功均返回 HTTP 200。分页沿用 v1：`after` 从 0 开始，`limit` 默认 50、最大 100，按 `message_id` 递增，`after` 排除小于或等于该 ID 的记录。
+All successful requests return HTTP 200. Pagination follows v1. `after` starts at 0, `limit` defaults to 50 and has a maximum of 100, and messages are sorted by ascending `message_id`. The result excludes any ID at or below `after`.
 
-| 方法和路径 | 请求 | 成功结果 |
+| Method and path | Request | Successful response |
 | --- | --- | --- |
-| `POST /v1/dms` | Bearer 成员 token。JSON `{"member_id":"..."}` | DM。打开或复用与该成员的无序对会话；重复调用幂等返回同一 DM。目标不存在、为本人或所属账号已停用 → 422 `invalid_peer` |
-| `POST /v1/dms/{dm_id}/messages` | `client_message_id`、`text` | DM Message。仅限参与者 |
-| `GET /v1/dms/{dm_id}/messages` | `after`、`limit` | `{"messages":[DM Message]}`。仅限参与者；保留边界生效时附 `expired_through_message_id`（已被清除的最大 `message_id`，含端点）与 `history_truncated`（布尔），其余字段原样传递 |
+| `POST /v1/dms` | Bearer member token. JSON `{"member_id":"..."}`. | DM. Opens or reuses the conversation for the unordered pair. Repeated calls return the same DM. An unknown peer, the caller themselves, or a peer with a disabled account returns 422 `invalid_peer`. |
+| `POST /v1/dms/{dm_id}/messages` | `client_message_id`, `text` | DM Message. Participants only. |
+| `GET /v1/dms/{dm_id}/messages` | `after`, `limit` | `{"messages":[DM Message]}`. Participants only. Once a retention boundary exists, the response also includes `expired_through_message_id` (the highest deleted `message_id`, inclusive) and `history_truncated` (boolean). Other fields pass through unchanged. |
 
-MCP 工具与 IPC 方法（加法，现有工具不动）：
+The MCP tools and IPC methods below extend the existing toolset.
 
-| MCP 工具 | IPC 方法 | 参数（空参数传 `{}`） | 结果 |
+| MCP tool | IPC method | Arguments (pass `{}` for no arguments) | Result |
 | --- | --- | --- | --- |
 | `teamup_open_dm` | `open_dm` | `member_id` | DM |
-| `teamup_send_dm` | `send_dm` | `dm_id`、`client_message_id`、`text` | DM Message |
-| `teamup_read_dm` | `read_dm` | `dm_id`、可选 `after`、`limit` | `{"messages":[DM Message]}`，可带到期元数据 |
+| `teamup_send_dm` | `send_dm` | `dm_id`, `client_message_id`, `text` | DM Message |
+| `teamup_read_dm` | `read_dm` | `dm_id`, optional `after` and `limit` | `{"messages":[DM Message]}`, with expiration metadata when applicable. |
 
-SSE 不变，仍为 `event: inbox_changed`。收件箱领取与确认入口不变。对端不需要事先打开过 DM：既可从收件事件的内嵌消息取得 `dm_id`，也可用 `teamup_open_dm` 换取同一会话。
+SSE still sends `event: inbox_changed`, and inbox fetch and acknowledgment endpoints stay the same. The peer can get the `dm_id` from the message embedded in the inbox event or use `teamup_open_dm` to obtain the same conversation. They do not need to open it in advance.
 
-### 收件箱 `kinds` 参数（加法）
+### Optional inbox `kinds` parameter
 
-- `GET /v1/inbox` 新增可选查询参数 `kinds`：逗号分隔的事件种类 CSV 子集，本期取值为 `message`、`mention`、`dm`。新 Server 在 `kinds` 缺省时只返回 `message`/`mention`；显式给出子集（含 `dm`）时由该子集控制返回形状。
-- 新 Client 每次拉取都显式请求 `kinds=message,mention,dm`，沿用现有 `after`/`limit` 字段。旧 Server 忽略未知查询参数、只返回既有事件，双方保持兼容。
-- #4 将把 `member_joined` 纳入该 `kinds` 请求并增加对应的 Notice 变体；该参数是收件箱唯一的加法扩展入口。
+- `GET /v1/inbox` accepts an optional `kinds` query parameter containing a comma-separated subset of event kinds. This release supports `message`, `mention`, and `dm`. A new Server returns only `message` and `mention` when `kinds` is omitted. An explicit subset (which can include `dm`) determines the kinds in the response.
+- A new Client explicitly requests `kinds=message,mention,dm` on every fetch and keeps the existing `after` and `limit` fields. An old Server ignores the unknown parameter and returns the original kinds, preserving compatibility.
+- #4 will add `member_joined` to the requested kinds and introduce the corresponding Notice variant. `kinds` is the sole extension point for adding inbox event kinds.
 
-## 校验
+## Validation
 
-- `member_id`、`dm_id` 用标准带连字符 UUID，复用既有 v1 UUID 校验器。`client_message_id` 非空且最多 128 字符；`text` 非空且最多 8,000 字符，纯空白无效，长度边界复用既有校验器。JSON 请求拒绝未声明字段；DM 发送没有 `mention_member_id`。
-- 打开目标必须是已登记、账号未停用且非本人的成员，否则 422 `invalid_peer`。成员名录本身经 `find_members` 公开，该错误不披露更多信息。
+- `member_id` and `dm_id` use standard hyphenated UUIDs and the existing v1 UUID validator. `client_message_id` must be nonempty and at most 128 characters. `text` must be nonempty, contain a non-whitespace character, and be at most 8,000 characters. Both use the existing length validators. JSON requests reject undeclared fields. DM send requests have no `mention_member_id` field.
+- A peer must be a registered member other than the caller with an active account. Otherwise the service returns 422 `invalid_peer`. The team directory is already visible through `find_members`, and this error reveals no further information.
 
-## 事务、失败与不披露
+## Transactions, errors, and privacy
 
-- 打开：以无序对唯一约束在单事务内 create-or-get；并发打开同一对（含两个方向）都得到同一 `dm_id`。打开本身不产生事件或通知。
-- 发送：单事务内完成参与校验、写入消息行（含 `created_at`）、为对端写一条 `kind: "dm"` 收件事件。发件人不写事件，经历史读取自己的消息。
-- 幂等：同一发件人、同一 `client_message_id`、同一 DM 且相同 `text` 的重试返回原消息；变更任一字段返回 409 `conflict`。幂等键作用域为（DM，发件人，`client_message_id`），房间沿用现有房间键模型：房间与 DM 互不冲突，同一 `client_message_id` 可分别用于两边。
-- 失败沿用 v1 码表：422 `invalid_request`、401 `unauthorized`、404 `not_found`、409 `conflict`、422 `invalid_peer`，不新增码。向所属账号已停用的对端发送按 404 `not_found` 处理。错误正文不回显凭证或消息正文。
-- 不披露：非参与者访问任何 `/v1/dms/...` 路由一律 404 `not_found`，与不存在的 `dm_id` 不可区分；既有会话的有效参与者始终可回读已存历史。DM 事件只进入两位参与者的收件箱；Server 应用日志只记操作元数据，不落 DM 正文。控制台、房间搜索与 Room Directory 的任何入口都不返回 DM 数据。
+- **Open.** Create or fetch the DM within one transaction, using the uniqueness constraint on the unordered pair. Concurrent opens for the same pair return the same `dm_id`, including opens from opposite directions. Opening a DM creates no event or notification.
+- **Send.** In one transaction, verify participation, write the message row with `created_at`, and write one `kind: "dm"` inbox event for the peer. The sender reads their own messages through history and receives no event for the send.
+- **Idempotency.** A retry with the same sender, `client_message_id`, DM, and `text` returns the original message. Changing any field returns 409 `conflict`. The idempotency key is scoped to (DM, sender, `client_message_id`). Room messages keep their existing key model. A caller can reuse a `client_message_id` across the two families without a conflict.
+- **Errors.** Use the existing v1 codes 422 `invalid_request`, 401 `unauthorized`, 404 `not_found`, 409 `conflict`, and 422 `invalid_peer`. Sending to a peer whose account has been disabled returns 404 `not_found`. Error bodies never echo credentials or message text.
+- **Privacy.** A nonparticipant receives 404 `not_found` on any `/v1/dms/...` route, regardless of whether the `dm_id` exists. An active participant in an existing conversation can always read its stored history. DM events appear only in the two participants' inboxes. Server application logs record operation metadata and omit DM bodies. All Control Console, room search, and Room Directory entry points exclude DM data.
 
-## 通知与重连
+## Notifications and reconnection
 
-- 对端经现有 `GET /v1/inbox`（Client 显式携带 `kinds=message,mention,dm`）领取 `kind: "dm"` 事件（内嵌完整 DM Message），用现有 ack 入口确认；重复确认成功。SSE 只作提示，断连后按未确认事件补收。
-- Client 对 `dm` 事件按 `mention` 同等方式持久登记类型化本地 Notice（`event_id`、`kind`、`dm_id`、`message_id`、`sender_member_id`，无正文），再确认 Server 事件。持久化先于确认，按绑定和 `event_id` 去重，重复投递不增加记录；类型化 DM 行与既有行共存于同一本机 Notices 存储，存量四字段行原样保留，重启迁移后旧通知全部可读。`teamup-client notifications` 与 MCP `teamup_notifications` 均可读取两类 Notice。
-- 类型化 DM Notice 只进入本机通知存储与 `notifications` 查询：它不是房间 @，不进入桌面提醒、送达状态、`mention_status` 未读计数或任何唤醒投递，也不改变本机会话的批准与许可状态（见 [MCP–Client v1](mcp-client-v1.md)）。收件确认只证明 Client 已收，不等于对端 Agent 已读；Client 与 MCP 不为 DM 提供自动唤醒行为。
-- `notifications` 为无状态共享游标分页（见 [MCP–Client v1](mcp-client-v1.md)）：DM 行没有送达状态、不因读取移除，与已送达的 `mention` 行共用同一 `event_id` 游标空间，首页可能全部被旧行（含早已送达的 `mention` 与存量 DM 行）占据。调用方拿到满页时，把该页最后一条的 `event_id` 作为 `after` 继续取页，直到某页返回不足 `limit` 条，即可可靠读到新的 DM 通知与房间 @；旧行随时可用同一游标回读。
-- 收件确认与保留到期竞争、Server 对已到期事件返回 404 `not_found` 时，Client 视为已清除并继续补收；其余确认失败沿用既有处理（退避重试整个拉取）。
-- 重连后需要上下文时，用 `teamup_read_dm` 从最后已知 `message_id` 或 0 起按页回读；响应可带 `expired_through_message_id` 与 `history_truncated` 告知部分历史已过期，Client 原样透传。收件确认只证明 Client 已收，不等于对端 Agent 已读；Client 与 MCP 不提供自动唤醒行为。
+- The peer fetches a `kind: "dm"` event with the full DM Message embedded through the existing `GET /v1/inbox` endpoint. The Client explicitly sends `kinds=message,mention,dm`. The peer acknowledges the event through the existing acknowledgment endpoint, and repeated acknowledgments succeed. SSE serves as a signal. After disconnecting, the Client catches up from unacknowledged events.
+- The Client persists DM events using the same flow as `mention` events. It writes a typed local Notice with `event_id`, `kind`, `dm_id`, `message_id`, and `sender_member_id`, omitting the body, before acknowledging the Server event. It deduplicates by binding and `event_id`, so repeated delivery creates no additional record. Typed DM rows share the local Notices store with existing rows. The migration preserves existing four-field rows and keeps all old notifications readable after restart. Both `teamup-client notifications` and MCP `teamup_notifications` can read either Notice variant.
+- A typed DM Notice appears only in the local notification store and `notifications` results. It has no effect on desktop alerts, delivery state, the unread count in `mention_status`, wake delivery, or local session approval and permissions. An acknowledgment establishes only that the Client received the event. The recipient Agent may still need to read it. The Client and MCP provide no automatic wake for DMs. [MCP–Client v1](mcp-client-v1.md)
+- `notifications` uses stateless pagination with a shared `event_id` cursor. DM rows have no delivery state and remain available after being read. They share cursor space with delivered `mention` rows, so an initial page can consist entirely of old rows, including previously delivered mentions and existing DMs. If a page is full, use its final `event_id` as `after` and continue fetching until a page returns fewer than `limit` entries. This reliably reaches new DMs and room mentions. Old rows remain readable through the same cursor. [MCP–Client v1](mcp-client-v1.md)
+- If expiration races with acknowledgment and the Server returns 404 `not_found` for a deleted event, the Client treats the event as cleared and continues catching up. Other acknowledgment failures follow existing behavior and retry the entire fetch with backoff.
+- To recover context after reconnecting, page through `teamup_read_dm` starting at the last known `message_id` or 0. A response can include `expired_through_message_id` and `history_truncated` when some history has expired. The Client passes these fields through unchanged. An acknowledgment only establishes Client receipt. The recipient Agent may still need to read the DM, and the Client and MCP do not wake it automatically.
 
-## 跨会话引用
+## Cross-conversation references
 
-- 跨会话引用在正文使用 `msg-N`，其中 `N` 是该消息的 `message_id`。见 [会话历史契约](conversation-history.md#记录和迁移)。
-- `message_id` 全局唯一，引用无歧义。解析引用只能经该消息所属会话自己的读取入口，按该会话当前授权判定：DM 参与者引用房间消息时，未加入该房间的对端经房间路由得到 404；房间成员引用 DM 消息时，非参与者同样 404。
-- 引用不复制内容：每个会话的 transcript 只含自己的消息，读取权限不随引用传递。
+- Use `msg-N` in message text to refer to a message in another conversation, where `N` is its `message_id`. [Conversation history contract](conversation-history.md#records-and-migration)
+- Globally unique `message_id` values make references unambiguous. Resolve a reference only through the owning conversation's read endpoint, which checks current authorization there. If a DM references a room message, the peer gets a 404 from the room endpoint if they have not joined that room. A nonparticipant likewise gets a 404 when a room message refers to a DM.
+- A conversation transcript contains only its own messages. A reference copies no content and grants no read access.
 
-## 保留与升级
+## Retention and upgrades
 
-- DM 保留与房间保留分开配置：`teamup-server --dm-retention-hours N`，取值为 1–876000（含）之间的整数小时，更大或非正值在启动时拒绝；省略表示不自动删除 DM，也不启动 DM 侧清理。到期只作用于 DM：正文与未投递事件一并移除，不影响房间；分配器不复用被清除的 `message_id`。配置与房间的 `--room-retention-hours` 复用同一维护组件与运行节奏（启动即清、批间无间隔、15 秒周期），两项年龄各自独立校验后装进同一个维护循环，单轮内两个已启用的清理都执行（#6 保留运行时交付）。
-- 清理入口（#6 DM 存储切片交付）：Collaboration 提供 `expire_due_dms(cutoff)`，`cutoff` 为带时区的显式 UTC 截止时间，naive 或非 datetime 值拒绝；带时区但无法归一化为可表示的 UTC 时刻的极值（如正偏移的 `datetime.min`、负偏移的 `datetime.max`，换算越出可表示历法）同样在任何数据库事务之前以 ValueError 拒绝，与房间侧 `now` 校验同一策略。方法先在 owner 的只读事务内按 SQL 侧 aware-UTC 截止时间选出至多一批+1（500+1）候选（跨会话按 `message_id` 升序取最早的到期行，有界结果，不持写锁），随后在一个原子写事务内按同一截止时间复核这批候选 ID（仍存在、仍属 DM 家族、仍到期），把仍到期消息、引用它的收件事件（含已确认与未确认）与会话水位推进在同一事务内提交。返回本批实际删除量与是否仍有到期记录（读事务候选超过 500 条即视为仍有）；仍有到期记录时由调用方立即继续下一批。两事务之间其他清理可能已删除或改期部分候选：消息 ID 永不复用，已被删除的候选在复核中自然消失，被改期的候选因截止时间复核被跳过，返回量与水位只反映本调用在写事务内实际删除的消息（水位推进到 max(既有水位, 本批实际删除的最大消息 ID)，不虚推、不回退、不重复计数）。到期条件是该行 `created_at` 可按 RFC 3339 解析出显式带时区时刻且不晚于 `cutoff`，按真实 UTC 时刻比较，兼容带与不带小数秒的记录；`created_at` 为空、无时区（naive）、不可解析或换算 UTC 越出可表示历法的行不删除（fail closed，换算越界按不可用处理且不得中断清理扫描），时间戳解析策略与房间清理共用同一解析器。`message_id` 与 `event_id` 计数器不受删除影响；`dm_id` 为空的房间行永不被该入口选中。
-- 水位存储（最终 v6 保留层）：`dms` 表新增可空列 `expired_through_message_id`，NULL 表示该会话从未清理。已发布控制台 v5 数据库原位升级（一条 `ALTER TABLE`），现有 `dm_id`、消息、事件、计数器与重试键全部保持；全新数据库直接建于 v6。此前 #6 独立保留工作树在 DM v4 之上先行落地的同列 v5 为未发布集成形态，不设额外兼容分支。
-- 到期后读取：水位非空后，参与者读取响应追加 `expired_through_message_id`（已被清除的最大 `message_id`，含端点）与 `history_truncated`（布尔，表示请求游标钳位到不小于 0 后仍落后于水位）。水位为 NULL（从未清理）时响应保持原有精确形状，即使正文为空也不追加字段；水位非空时即使正文已全部清空，两个边界字段仍随空 `messages` 返回。字段仅当前授权参与者可见。Client 对该元数据原样透传。
-- 已到期事件不再投递；对已删除事件的收件确认沿用现有 404 `not_found`，其余确认行为不变。清理后同键重发生成新消息与新 `message_id`（重试唯一键随行删除），跨房间与 DM 的既有键模型不变。
-- 存储定稿（#3 Server 工作树按实现修订）：`dms` 表以 `dm_id` 为主键，按 `min`/`max` 规范序存成员对，并用 `(member_low, member_high)` 唯一约束保证一对一会话；`messages` 增加 `dm_id`，与 `room_id` 恰一非空（`created_at` 列已随 #6 存储基线就位，存量房间行为 NULL，展示为未知；DM 行均为新写入，必非空）。重试唯一键按记录家族分域：房间行维持 `(sender_member_id, client_message_id)` 唯一，DM 行为 `(dm_id, sender_member_id, client_message_id)`，因此同一 `client_message_id` 可分别用于房间与 DM；`inbox_events.kind` 约束扩展 `dm`。房间现有读取边界与授权不变，全局分配器续用不重置。并入 #5 控制台分支后该 DM 层为 schema **v4**，其上收敛 [控制台 v5](control-console.md#schema-与迁移v6) 与本期保留水位（最终 **v6**）；`room_id` 为 NULL 的 DM 行同样不进入控制台活动投影与回填。
-- 升级顺序：Client 显式携带 `kinds` 请求，旧 Server 忽略未知参数、只回既有事件；新 Server 在 `kinds` 缺省时只回 `message`/`mention`，旧 Client 行为不变。Server 与 Client/MCP 可先后部署，`kinds` 即兼容边界（v1 无版本协商）。`kind: "dm"` 与类型化 DM Notice 为加法扩展，现有房间工具语义不变；MCP 协作指引保留“当前工具目录缺少私聊工具”的降级提示，用于与旧版本混布时引导已授权的私下交接。
-- 后续若给操作员 DM 读取权，须另立显式授权与审计，不在本期。
+- Configure DM retention separately from room retention with `teamup-server --dm-retention-hours N`. Values must be integer hours from 1 to 876000 inclusive. Startup rejects values above the maximum or at or below zero. Omit the flag to leave automatic DM cleanup off. Expiration removes due DM bodies and undelivered events, leaves rooms intact, and never reuses a deleted `message_id`. Both this flag and `--room-retention-hours` use one maintenance component and cadence. Cleanup starts immediately at startup, runs batches back to back, and polls every 15 seconds. The runtime validates the ages independently and configures them in the same maintenance loop. Both enabled cleanups run in each iteration. This shipped with the #6 retention runtime.
+- The #6 DM storage work provides the Collaboration entry point `expire_due_dms(cutoff)`. The cutoff is an explicit timezone-aware UTC datetime. A naive value or a value of another type is rejected. A timezone-aware extreme that cannot be normalized to a representable UTC instant also raises ValueError before any database transaction, consistent with the room-side `now` validation. Examples include a positive-offset `datetime.min` and a negative-offset `datetime.max`. In a read-only transaction owned by Collaboration, SQL uses the timezone-aware UTC cutoff to select up to one batch plus one candidate (500+1), taking the oldest due rows across conversations in ascending `message_id` order. The result is bounded and takes no write lock. A single atomic write transaction rechecks the same candidate IDs against the same cutoff to confirm that they still exist, still belong to the DM family, and are still due. It then deletes the expired messages and all referencing inbox events, acknowledged or unacknowledged, and advances the conversation watermarks in the same transaction. It returns the actual deletion count and whether more records are due. A read that found more than 500 candidates signals that the caller should immediately process another batch. Between transactions, concurrent cleanup may remove candidates or their timestamps may change. IDs are never reused, so deleted candidates are absent and rescheduled candidates fail the cutoff check. The count and watermark reflect only messages the call actually deletes in the write transaction. A watermark advances to the greater of its existing value and the highest ID actually deleted in the batch, with no overstatement, regression, or double counting. A row is due if its `created_at` parses as RFC 3339 with an explicit timezone and is at or before `cutoff`. The comparison uses actual UTC instants and works with or without fractional seconds. Cleanup fails closed for empty, naive, or unparseable timestamps and for timestamps whose UTC conversion exceeds the representable calendar. A conversion overflow leaves that row intact and the scan continues. DM and room cleanup use the same parser. The `message_id` and `event_id` counters are unaffected. The DM entry point never selects room rows with a null `dm_id`.
+- The final v6 retention layer adds nullable `expired_through_message_id` to `dms`. NULL means the conversation has never been cleaned up. The released console v5 database upgrades in place with one `ALTER TABLE` for this column, preserving all existing `dm_id` values, messages, events, counters, and retry keys. Fresh databases are created directly at v6. The standalone #6 retention worktree added the same column to DM v4 in an unreleased v5 integration state. It has no separate compatibility path.
+- Once a watermark exists, participant history responses include `expired_through_message_id`, the highest deleted `message_id` inclusive, and `history_truncated`, a boolean that indicates whether the request cursor is behind the watermark after clamping it to zero or above. A NULL watermark preserves the exact original response shape, even if there are no messages. A non-NULL watermark returns both fields even when the `messages` array is empty. Only currently authorized participants can see the fields. The Client passes them through unchanged.
+- Expired events are no longer delivered. Acknowledging a deleted event still returns 404 `not_found`, with all other acknowledgment behavior unchanged. Cleanup removes the retry key with the row, so sending with the same key after cleanup creates a new message with a new `message_id`. The existing separation of keys across room and DM families still applies.
+- The #3 Server implementation finalized storage. `dms` uses `dm_id` as its primary key and stores the pair in canonical `min`/`max` order. A unique constraint on `(member_low, member_high)` guarantees one conversation per pair. `messages` adds `dm_id` and requires exactly one of `dm_id` and `room_id` to be non-null. The #6 storage baseline already adds `created_at`. Existing room rows have NULL and show an unknown timestamp. All DM rows have timestamps. Retry uniqueness is scoped by record family. Room rows keep the unique key `(sender_member_id, client_message_id)`, and DM rows use `(dm_id, sender_member_id, client_message_id)`. This allows the same `client_message_id` to be used in a room and a DM. The `inbox_events.kind` constraint adds `dm`. Room read boundaries and authorization stay the same, and the global allocator continues without a reset. After integration with the #5 console branch, the DM layer is schema **v4**, followed by [console v5](control-console.md#schema-and-migrations) and the retention watermarks in final **v6**. DM rows with NULL `room_id` are also excluded from the console activity projection and backfill.
+- Client requests explicitly include `kinds`, and old Servers ignore that parameter and return the original event kinds. New Servers return only `message` and `mention` when `kinds` is omitted, so old Clients behave as before. The Server and Client/MCP can deploy in either order. `kinds` provides the compatibility boundary because v1 has no version negotiation. The `kind: "dm"` event and typed DM Notice extend the contract, with existing room tool semantics preserved. The MCP collaboration instructions retain fallback guidance for tool catalogs without DM tools, so mixed-version deployments can use authorized private handoffs.
+- Any future operator access to DMs requires a separate explicit grant and audit contract.
 
-## 实施步骤
+## Implementation steps
 
-1. Collaboration 迁移：`dms` 表、`messages.dm_id` 与恰一非空约束、按家族分域的重试唯一键、`inbox_events.kind` 扩展 `dm`，复用全局分配器。（#3 Server 工作树，已交付）
-2. Gateway：三条路由、`invalid_peer` 映射、Event `dm`、日志元数据化。（#3 Server 工作树，已交付）
-3. Client：`open_dm`/`send_dm`/`read_dm` IPC、`kinds` 拉取与 `dm` 事件的类型化本地 Notice 登记。（本变更交付）
-4. MCP：三个 DM 工具 schema 与协作 skill 文案更新；共享文档索引随实现更新。（本变更交付）
-5. DM 与房间的保留水位/到期清除任务与 `expired_through_message_id`/`history_truncated` 边界返回。（全部交付：dms 水位列、`expire_due_dms` 批量清理入口与 DM 读取边界返回由 #6 DM 保留存储工作树交付；共享维护调度与 `--dm-retention-hours` 配置接入由 #6 保留运行时交付；合入控制台基线后两项水位随最终 schema v6 原位补列）
+1. Migrate Collaboration storage with the `dms` table, `messages.dm_id` and its exactly-one-non-null constraint, retry uniqueness scoped by record family, and `dm` in `inbox_events.kind`. Reuse the global allocator. Delivered by the #3 Server worktree.
+2. Add the three Gateway routes, the `invalid_peer` mapping, and the `dm` Event variant. Limit logging to metadata. Delivered by the #3 Server worktree.
+3. Add `open_dm`, `send_dm`, and `read_dm` to Client IPC, fetch with `kinds`, and persist typed local Notices for `dm` events. Delivered with this change.
+4. Publish the three MCP DM tool schemas, update the collaboration skill, and update the shared documentation index with the implementation. Delivered with this change.
+5. Add room and DM retention watermarks, expiration jobs, and the `expired_through_message_id` and `history_truncated` response fields. All work is delivered. The #6 DM retention storage worktree provided the `dms` watermark column, batch cleanup through `expire_due_dms`, and retention metadata on DM reads. The #6 retention runtime provided shared maintenance scheduling and `--dm-retention-hours` configuration. Integration with the console baseline added both watermark columns in place under final schema v6.
 
-## 测试与验收
+## Testing and acceptance
 
-Client/MCP 侧（本变更，`uv run --no-sync pytest -q`）：
+Run `uv run --no-sync pytest -q` for the Client and MCP changes.
 
-- IPC 路由与凭证：三个 DM IPC 方法按上表映射到 HTTP 路由、正文与查询；未批准绑定 `unauthorized`，非法参数与未知方法 `invalid_request`；`invalid_peer`、`not_found` 等 Server 错误按 code 透传。
-- 旧 Server 兼容：忽略 `kinds` 的旧 Server 仍只回既有事件，Client 正常补收与确认；未实现 DM 路由的旧 Server 对 DM 调用返回 404 并透传。
-- 类型化 Notice：`dm` 事件持久化为五字段本地 Notice（无正文），先持久化后确认，按绑定和 `event_id` 去重；stderr 只输出 Notice 字段；重启后存量（含旧版四字段与升级前的 DM 行）通知全部可读；确认竞争返回 `not_found` 时继续补收；DM 通知不产生桌面提醒、未读 @ 计数或唤醒投递，也不改变本机会话授权。
-- MCP schema：三个 DM 工具按上表暴露，参数校验复用现有 UUID 与长度边界。
-- 回归：既有房间路由、事件、通知与 CLI/MCP 查询行为全部不变。
+- **IPC routing and credentials.** All three DM IPC methods map to the HTTP routes, bodies, and queries in the tables. Unapproved bindings produce `unauthorized`. Invalid arguments and unknown methods produce `invalid_request`. Pass through Server error codes such as `invalid_peer` and `not_found`.
+- **Old Server compatibility.** An old Server ignores `kinds` and returns only the original events. The Client still catches up and acknowledges them. If the Server has no DM routes, its 404 responses pass through.
+- **Typed Notices.** Persist each `dm` event as a five-field local Notice without a message body, then acknowledge it. Deduplicate by binding and `event_id`. Stderr includes only Notice fields. All existing notifications are readable after restart, including legacy four-field rows and pre-upgrade DM rows. Continue catch-up after acknowledgment races that return `not_found`. DM notices leave desktop alerts, unread mention counts, wake delivery, and local session authorization unaffected.
+- **MCP schemas.** Expose all three DM tools as specified and reuse the existing UUID and length validators.
+- **Regression.** Existing room routes, events, notifications, and CLI/MCP query behavior stay the same.
 
-Server 侧（#3 Server 工作树验收，`uv run --no-sync pytest -q`，由 `tests/server/src/teamup_server/test_direct_messages.py` 与 `tests/integration/test_loop.py` 覆盖；并入 #5 控制台分支后，控制台相关项另由 `tests/server/src/teamup_server/test_console_server.py` 覆盖，schema 收敛于 [控制台契约](control-console.md) 的 v6）：
+The #3 Server worktree ran `uv run --no-sync pytest -q` with coverage in `tests/server/src/teamup_server/test_direct_messages.py` and `tests/integration/test_loop.py`. After integration with #5, `tests/server/src/teamup_server/test_console_server.py` covers the console cases. The integrated schema is the v6 defined by the [console contract](control-console.md).
 
-- 打开：重复打开、双向打开、并发打开同一对 → 同一 `dm_id`；对本人、未知成员或所属账号已停用的成员 → 422 `invalid_peer`。
-- 参与者隔离：第三成员对任意 `dm_id`（真实或随机）读取或发送 → 404；其收件箱永不含他人 DM 事件；`find_members` 仍返回成员档案，会话存在性不泄露。
-- 发送：文本上限、纯空白、未声明字段拒绝；同键同文重试返回原消息；改文 → 409；同一 `client_message_id` 在房间与 DM 互不冲突；对端账号停用后发送 → 404，既有参与者仍可回读历史。
-- 引用：DM 内引用房间消息，非房间成员的对端读取 → 404；房间内引用 DM 消息，非参与者 → 404。
-- 控制台与搜索：任何响应不含 DM 数据；持有房间 transcript 授权的操作员也拿不到 DM（并入 #5 后经控制台契约测试验证：Timeline/roster/transcript 不含 DM 文本与 DM `message_id`，DM 发送与收件确认不产生 `room_activity` 行；房间到期清理只按 `room_id IS NOT NULL` 选行，DM 行不受影响）。
-- 到期（#6 DM 存储切片验收，直接调用 Collaboration 公开入口 `expire_due_dms`）：原子写事务内到期 DM 正文与引用事件一并删除且房间行不受影响；水位推进到本批最大已删除 ID 并跨重启持久；空历史会话在清理后仍返回边界字段，从未清理的会话保持精确旧响应；过期事件确认返回 404 `not_found` 且不再投递；计数器与普通确认不受影响，清理后新消息/新事件 ID 不复用；v4 样本带与不带小数秒的时间戳升级后按真实 UTC 时刻比较，空、naive 或不可解析时间戳的行保留（与房间侧同一解析器，fail closed）；读、写两事务之间候选被并发清理删除或改期时，复核不重复计数、不虚推水位；仅当前参与者可见边界字段。`--dm-retention-hours` 的配置解析与共享调度验收已随 #6 保留运行时执行（真实启动标志下房间内容不受影响，仅 DM 到期清除）。
-- 回归：既有房间路由、事件与通知行为全部不变；迁移后房间历史顺序与加入边界不变。
-- 无公告要求：未走过任何公告流程的成员对可直接使用 DM。
+- **Open.** Repeated, bidirectional, and concurrent opens for a pair all return the same `dm_id`. Opening a DM with oneself, an unknown member, or a member whose account has been disabled returns 422 `invalid_peer`.
+- **Participant isolation.** A third member gets 404 when trying to read from or send to any `dm_id`, whether real or random. Their inbox never includes another pair's DM events. `find_members` still returns profiles without revealing conversation existence.
+- **Send.** Reject overlong text, whitespace-only text, and undeclared fields. An identical retry returns the original message. Changing the text returns 409. The same `client_message_id` works independently in each family. Once the peer's account is disabled, new sends return 404 while existing participants can still read history.
+- **References.** In a DM, a peer who follows a room message reference without room membership gets 404. In a room, a reader who follows a DM reference without participating in the DM also gets 404.
+- **Console and search.** Responses contain no DM data. Room transcript grants confer no DM access. After integration with #5, console contract tests verify that timeline, roster, and transcript omit DM text and DM `message_id` values. DM sends and acknowledgments create no `room_activity` rows. Room expiration selects only rows where `room_id IS NOT NULL`.
+- **Expiration.** The #6 DM storage work calls Collaboration's public `expire_due_dms` entry point directly. Due DM messages and their referencing events are removed in one atomic write transaction, leaving room rows untouched. The watermark advances to the highest ID actually deleted in the batch and persists across restarts. Cleaned-up conversations with empty histories still return metadata, while conversations that have never been cleaned up retain the exact old response. Expired events are no longer delivered, and their acknowledgments return 404 `not_found`. Counters and ordinary acknowledgments are unchanged, and new messages and events after cleanup receive fresh IDs. After upgrading v4 fixtures, timestamps with and without fractional seconds compare by actual UTC instant. The shared fail-closed parser preserves rows with empty, naive, or unparseable timestamps. If concurrent work deletes candidates or changes their timestamps between the read and write transactions, the recheck neither double counts nor advances a watermark beyond the actual deletions. Only current participants can see retention metadata. The #6 retention runtime covered the `--dm-retention-hours` flag parser and shared scheduling, using the real startup flag to expire DMs while keeping room content intact.
+- **Regression.** Existing room routes, events, and notifications behave as before. Migration preserves room history order and join boundaries.
+- **Board acknowledgment.** A pair can use DMs even if neither member has gone through a Board workflow.
 
-## 已议定（#3 协调记录，2026-11-24）
+## Agreed decisions (coordination for #3, 2026-11-24)
 
-原待 owner 审议项由 #3 协调方裁定如下，实现与本文件一致：
+The #3 coordinators settled the owner review items below, and the implementation follows these decisions.
 
-1. Event `kind: "dm"` 与类型化 DM Notice（含 `dm_id`，无正文）为加法扩展，`mention` 四字段本地输出不变 — MCP–Client v1。
-2. DM 与房间共用全局 `message_id` 与 delivery 分配器；房间与 DM 为 Collaboration 内两个独立 canonical record 家族，每条记录一份正文 — Collaboration 与 #6。
-3. DM Message 时间戳定名 `created_at`（RFC 3339 UTC）；房间 Message 是否暴露时间戳由 #6 另行决定。
-4. DM 保留配置为 `--dm-retention-hours`；到期边界以 `expired_through_message_id` 与 `history_truncated` 返回。
-5. Client 将 `dm` 事件按 `mention` 同级持久通知：先持久化后确认，与既有 Notices 存储共存并保留存量行。
-6. 打开 DM 不通知对端（存在性仅参与者可见）；停用影响按 422 `invalid_peer`（打开）与 404 `not_found`（发送）执行。
+1. MCP–Client v1 adds `kind: "dm"` events and typed DM Notices with `dm_id` and no message body. The four-field local `mention` output stays the same.
+2. DMs and rooms share global `message_id` and delivery ID allocators. Collaboration and #6 use separate canonical record families for rooms and DMs, each storing one body per message.
+3. A DM Message exposes `created_at` in RFC 3339 UTC format. #6 separately decides whether to expose timestamps on room Messages.
+4. The DM retention flag is `--dm-retention-hours`. The expiration boundary is exposed through `expired_through_message_id` and `history_truncated`.
+5. The Client persists `dm` events the same way as `mention` notifications. It saves the Notice before acknowledgment, using the existing store and preserving its rows.
+6. Opening a DM sends no notification to the peer and reveals the conversation only to participants. When an account is disabled, opening returns 422 `invalid_peer` and sending returns 404 `not_found`.

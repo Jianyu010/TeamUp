@@ -155,6 +155,8 @@ class Request(Protocol):
 
 
 class SessionLifecycle(Protocol):
+    async def console_wake_settings(self, enabled: bool | None = None) -> dict: ...
+
     def console_retired_sessions(self) -> list[dict]: ...
 
     async def console_session_action(
@@ -190,6 +192,11 @@ class ConsoleReader:
         self._version = (
             None if installed_version == "0.0.0+unknown" else installed_version
         )
+
+    async def wake_settings(self, enabled: bool | None = None) -> dict:
+        if self._lifecycle is None:
+            return {"state": "unavailable"}
+        return await self._lifecycle.console_wake_settings(enabled)
 
     async def versions(self) -> dict:
         server_version = None
@@ -490,7 +497,7 @@ class ConsoleReader:
         session = self._current(identity)
         if session is None:
             return {"state": "not_found", "members": []}
-        as_of, presence = await self._presence(session)
+        as_of, presence = await self._presence(session, include_uptime=True)
         try:
             result = await self._read(session, "/members")
         except ClientError as exc:
@@ -503,7 +510,9 @@ class ConsoleReader:
             ],
         }
 
-    async def _presence(self, session: ConsoleSession) -> tuple[str | None, dict]:
+    async def _presence(
+        self, session: ConsoleSession, *, include_uptime: bool = False
+    ) -> tuple[str | None, dict]:
         try:
             async with asyncio.timeout(PRESENCE_OBSERVATION_SECONDS):
                 result = await self._read(session, "/presence")
@@ -519,11 +528,17 @@ class ConsoleReader:
                 and is_integer(age, 0)
                 and is_string(observed_at)
             ):
-                presence[member["member_id"]] = {
+                observation = {
                     "state": state,
                     "observed_at": observed_at,
                     "age_ms": age,
                 }
+                if include_uptime and state == "online":
+                    since = member.get("online_since")
+                    duration = member.get("online_for_ms")
+                    if is_string(since) and is_integer(duration, 0):
+                        observation.update(online_since=since, online_for_ms=duration)
+                presence[member["member_id"]] = observation
         return result["as_of"], presence
 
     async def _roster_tasks(

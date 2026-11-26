@@ -638,6 +638,36 @@ def test_team_uses_same_scoped_presence_for_local_remote_and_other_members():
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("online_for_ms", [0, 75_000, -1, True, None])
+def test_team_projects_optional_uptime_from_authorized_presence(online_for_ms):
+    async def scenario():
+        upstream = RosterUpstream()
+        uptime = {"online_since": upstream.observed_at, "online_for_ms": online_for_ms}
+
+        async def request(method, path, token, *, query=None):
+            if path.endswith("/tasks"):
+                return {"tasks": [], "next_after": None}
+            result = await upstream(method, path, token, query=query)
+            if path == "/presence":
+                for member in result["members"]:
+                    member.update(uptime)
+            return result
+
+        reader = ConsoleReader(sessions, request)
+        team = await reader.team("primary")
+        observations = {item["id"]: item["presence"] for item in team["members"]}
+        assert not uptime.keys() & observations[REMOTE].keys()
+        assert not uptime.keys() & observations[OUTSIDER].keys()
+        if type(online_for_ms) is int and online_for_ms >= 0:
+            assert {field: observations[BACKEND][field] for field in uptime} == uptime
+        else:
+            assert not uptime.keys() & observations[BACKEND].keys()
+        roster = await reader.room_members("primary", ROOM)
+        assert all(not uptime.keys() & row["presence"].keys() for row in roster["members"])
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize(
     "metadata",
     [

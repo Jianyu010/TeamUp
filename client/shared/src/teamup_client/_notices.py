@@ -105,6 +105,12 @@ class NoticeStore:
                 ) WITHOUT ROWID
             """)
             db.execute("""
+                CREATE TABLE IF NOT EXISTS console_wake_settings (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    enabled INTEGER NOT NULL CHECK (enabled IN (0, 1))
+                )
+            """)
+            db.execute("""
                 CREATE TABLE IF NOT EXISTS member_roles (
                     binding_scope TEXT NOT NULL,
                     member_id TEXT NOT NULL,
@@ -364,24 +370,32 @@ class NoticeStore:
         fields = ("harness_instance_id", "session_key", "member_token", "state")
         return [dict(zip(fields, row, strict=True)) for row in cursor]
 
-    def set_wake(self, harness_instance_id, session_key, rooms, senders):
+    def console_wake_enabled(self) -> bool:
+        row = self._db.execute(
+            "SELECT enabled FROM console_wake_settings WHERE id = 1"
+        ).fetchone()
+        return row is None or bool(row[0])
+
+    def set_console_wake_enabled(self, enabled: bool) -> None:
         with self._db:
-            if rooms:
-                self._db.execute(
-                    "INSERT OR REPLACE INTO wake_permissions VALUES (?, ?, ?, ?)",
-                    (
-                        harness_instance_id,
-                        session_key,
-                        json.dumps(sorted(rooms)),
-                        json.dumps(sorted(senders)),
-                    ),
-                )
-            else:
-                self._db.execute(
-                    "DELETE FROM wake_permissions "
-                    "WHERE harness_instance_id = ? AND session_key = ?",
-                    (harness_instance_id, session_key),
-                )
+            self._db.execute(
+                "INSERT INTO console_wake_settings (id, enabled) VALUES (1, ?) "
+                "ON CONFLICT(id) DO UPDATE SET enabled = excluded.enabled",
+                (enabled,),
+            )
+
+    def set_wake(self, harness_instance_id, session_key, rooms, senders):
+        # Empty rooms explicitly revoke wake, while no row uses the console default.
+        with self._db:
+            self._db.execute(
+                "INSERT OR REPLACE INTO wake_permissions VALUES (?, ?, ?, ?)",
+                (
+                    harness_instance_id,
+                    session_key,
+                    json.dumps(sorted(rooms)),
+                    json.dumps(sorted(senders)),
+                ),
+            )
 
     def wake(self, harness_instance_id, session_key):
         row = self._db.execute(

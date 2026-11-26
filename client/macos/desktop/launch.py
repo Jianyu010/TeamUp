@@ -16,6 +16,7 @@ from contextlib import contextmanager, suppress
 from pathlib import Path
 
 LOCAL_URL = re.compile(r"http://127\.0\.0\.1:([0-9]{1,5})/#([A-Za-z0-9_-]{43})")
+LOGIN_SOCKET = re.compile(r"/tmp/teamup-console-[a-z0-9_]+/login\.sock")
 
 
 class LaunchError(Exception):
@@ -99,28 +100,57 @@ def live_socket(path):
     return info.st_dev, info.st_ino
 
 
-def server_url(path):
+def server_endpoint(path):
     with suppress(FileNotFoundError, UnicodeError):
         value = read_private(path, 256).decode().strip()
-        match = LOCAL_URL.fullmatch(value)
-        if match and 0 < int(match[1]) <= 65535:
-            return value
+        lines = value.splitlines()
+        if not 1 <= len(lines) <= 2:
+            return None
+        match = LOCAL_URL.fullmatch(lines[0])
+        if not match or not 0 < int(match[1]) <= 65535:
+            return None
+        if len(lines) == 2:
+            if not LOGIN_SOCKET.fullmatch(lines[1]):
+                return None
+            login = Path(lines[1])
+            directory = login.parent.lstat()
+            entry = login.lstat()
+            if (
+                not stat.S_ISDIR(directory.st_mode)
+                or not stat.S_ISSOCK(entry.st_mode)
+                or any(
+                    info.st_uid != os.getuid() or info.st_mode & 0o077
+                    for info in (directory, entry)
+                )
+            ):
+                return None
+        return value
     return None
 
 
-def accepts_http(value):
+def console_state(endpoint):
+    value, *private = endpoint.splitlines()
     match = LOCAL_URL.fullmatch(value)
-    connection = http.client.HTTPConnection("127.0.0.1", int(match[1]), timeout=1)
+    connection = http.client.HTTPConnection("127.0.0.1", int(match[1]), timeout=3)
+    headers = {"Authorization": f"Bearer {match[2]}"}
     try:
-        connection.request("GET", "/")
+        path = "/api/login" if private else "/api/versions"
+        connection.request("GET", path, headers=headers)
         response = connection.getresponse()
-        return response.status == 200 and response.getheader(
-            "Content-Type", ""
-        ).startswith("text/html")
-    except (OSError, http.client.HTTPException):
-        return False
+        content_type = response.getheader("Content-Type", "")
+        if response.status == 200 and content_type.startswith("application/json"):
+            data = json.loads(response.read(4096))
+            if not isinstance(data, dict):
+                return None
+            if private and data.get("state") in ("sign_in_required", "ready"):
+                return data["state"]
+            if not private and set(data) == {"client_version", "server_version", "server_state"}:
+                return "legacy"
+    except (OSError, http.client.HTTPException, ValueError):
+        pass
     finally:
         connection.close()
+    return None
 
 
 def saved_launch(path):
@@ -154,18 +184,41 @@ def ensure_console(config, client, state_dir):
 
     with private_file(profile_dir / "launch.lock", writable=True) as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
+        def record_endpoint(running, pid):
+            write_private(
+                metadata,
+                json.dumps({
+                    "config": str(config),
+                    "socket": list(running) if running else None,
+                    "pid": pid,
+                }).encode(),
+            )
+
+        record = saved_launch(metadata)
+        value = server_endpoint(url_file)
         running = live_socket(socket_path)
-        if running:
-            record = saved_launch(metadata)
-            value = server_url(url_file)
-            if (
-                record.get("config") == str(config)
-                and record.get("socket") == list(running)
-                and running_pid(record.get("pid"))
-                and value
-                and accepts_http(value)
-            ):
-                return value
+        if (
+            value
+            and record.get("config") == str(config)
+            and running_pid(record.get("pid"))
+            and (record.get("socket") is None or record["socket"] == list(running or ()))
+        ):
+            status = console_state(value)
+            running = live_socket(socket_path)
+            if record.get("socket") is None and running is None:
+                if status == "sign_in_required":
+                    return value
+                raise LaunchError(
+                    "TeamUp Client is still waiting for sign-in but its Console did not respond. "
+                    "Try opening TeamUp again."
+                )
+            if running and status in {"ready", "legacy"}:
+                if record.get("socket") == list(running):
+                    return value
+                if status == "ready" and record.get("socket") is None:
+                    record_endpoint(running, record["pid"])
+                    return value
+        if live_socket(socket_path):
             raise LaunchError(
                 "This TeamUp Client is already running outside the launcher or its Console is unavailable."
             )
@@ -174,49 +227,54 @@ def ensure_console(config, client, state_dir):
             raise LaunchError(
                 "The TeamUp Client runtime is missing from clients/current."
             )
+        def start_client(flag):
+            with (
+                private_file(url_file, writable=True) as output,
+                private_file(log_file, writable=True) as log,
+            ):
+                output.truncate(0)
+                log.truncate(0)
+                return subprocess.Popen(
+                    [str(client), "serve", "--config", str(config), flag],
+                    stdin=subprocess.DEVNULL,
+                    stdout=output,
+                    stderr=log,
+                    start_new_session=True,
+                    cwd=config.parent,
+                )
+
         write_private(metadata, b"")
-        with (
-            private_file(url_file, writable=True) as output,
-            private_file(log_file, writable=True) as log,
-        ):
-            output.truncate(0)
-            log.truncate(0)
-            process = subprocess.Popen(
-                [str(client), "serve", "--config", str(config), "--console"],
-                stdin=subprocess.DEVNULL,
-                stdout=output,
-                stderr=log,
-                start_new_session=True,
-                cwd=config.parent,
-            )
-        try:
-            write_private(pidfile, str(process.pid).encode())
-            deadline = time.monotonic() + 12
-            while time.monotonic() < deadline and process.poll() is None:
-                running = live_socket(socket_path)
-                value = server_url(url_file)
-                if running and value and accepts_http(value):
-                    write_private(
-                        metadata,
-                        json.dumps(
-                            {
-                                "config": str(config),
-                                "socket": list(running),
-                                "pid": process.pid,
-                            }
-                        ).encode(),
-                    )
-                    return value
-                time.sleep(0.05)
-        except BaseException:
+        for flag in ("--desktop-console", "--console"):
+            process = start_client(flag)
+            try:
+                write_private(pidfile, str(process.pid).encode())
+                deadline = time.monotonic() + 12
+                while time.monotonic() < deadline and process.poll() is None:
+                    value = server_endpoint(url_file)
+                    if value:
+                        status = console_state(value)
+                        running = live_socket(socket_path)
+                        if status == "sign_in_required":
+                            record_endpoint(None, process.pid)
+                            return value
+                        if running and status in {"ready", "legacy"}:
+                            record_endpoint(running, process.pid)
+                            return value
+                    time.sleep(0.05)
+            except BaseException:
+                if process.poll() is None:
+                    process.terminate()
+                    process.wait(timeout=5)
+                raise
             if process.poll() is None:
                 process.terminate()
-                process.wait(timeout=5)
-            raise
-        if process.poll() is None:
-            process.terminate()
-            with suppress(subprocess.TimeoutExpired):
-                process.wait(timeout=5)
+                with suppress(subprocess.TimeoutExpired):
+                    process.wait(timeout=5)
+            if not (
+                flag == "--desktop-console" and process.returncode == 2
+                and b"unrecognized arguments: --desktop-console" in read_private(log_file, 4096)
+            ):
+                break
         raise LaunchError(f"The TeamUp Client could not start. See {log_file}.")
 
 

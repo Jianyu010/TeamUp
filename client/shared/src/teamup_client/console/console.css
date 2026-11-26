@@ -46,6 +46,23 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
 .chrome nav { display: flex; gap: 4px; }
 #connection { margin-left: auto; color: var(--muted); font-size: 12px; }
 #connection[data-live="true"] { color: var(--active); }
+.sign-in { display: grid; align-items: safe center; justify-items: center; padding: 24px; overflow: auto; }
+.sign-in form {
+  display: grid; gap: 16px; width: min(100%, 340px);
+  padding: clamp(16px, 4vw, 28px); border: 1px solid var(--edge);
+  border-radius: 10px; background: var(--panel);
+}
+.sign-in h2 { font-size: 20px; }
+.sign-in label:not(.checkbox-label) { display: grid; gap: 5px; }
+.checkbox-label { display: flex; align-items: center; gap: 6px; }
+.checkbox-label input { accent-color: var(--accent); }
+.sign-in input:not([type="checkbox"]) {
+  width: 100%; padding: 8px 10px; border: 1px solid var(--edge);
+  border-radius: 6px; background: var(--shell);
+}
+.sign-in button { border-color: var(--edge); background: #293b38; color: var(--accent); }
+.sign-in button:disabled { opacity: .6; cursor: wait; }
+#sign-in-status { min-height: 1.45em; color: var(--muted); }
 .stage {
   --rail: 22%; position: relative; isolation: isolate;
   overflow: hidden;
@@ -257,17 +274,21 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
 .mention-disclosure:hover:not([data-dismiss-hover]) .mention-recipients,
 .mention-disclosure:focus-within:not([data-dismiss-focus]) .mention-recipients,
 .mention-overflow[open] + .mention-recipients { display: block; }
-.team-panel { left: 0; right: 0; padding: 16px; }
-.team-directory { width: 100%; margin-top: 10px; table-layout: fixed; border-collapse: collapse; }
+.team-panel { left: 0; right: 0; padding: 16px; overflow-x: auto; }
+.team-directory { width: 100%; min-width: 560px; margin-top: 10px; table-layout: fixed; border-collapse: collapse; }
 .team-directory:not(:has(tbody tr)) { display: none; }
 .team-directory thead th { padding: 4px 8px 7px; color: var(--muted); font-size: 11px; font-weight: 550; }
 .team-directory thead th:first-child { width: 28%; }
-.team-directory thead th:nth-child(2) { width: 20%; }
+.team-directory thead th:nth-child(2) { width: 15%; }
+.team-directory thead th:nth-child(4) { width: 17ch; }
+.team-directory thead th:nth-child(5) { width: 10ch; }
 .team-directory :is(th, td) { text-align: left; vertical-align: top; }
 .team-directory tbody :is(th, td) { padding: 8px; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
 .team-directory tbody th { font-weight: 600; }
 .team-directory .presence { font-weight: 400; }
 .team-directory .team-user { color: var(--muted); }
+.team-directory :is(.team-since, .team-uptime) { font-variant-numeric: tabular-nums; }
+.team-directory .team-uptime { white-space: nowrap; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 @media (max-width: 650px) {
   .stage { --rail: 0%; }
@@ -277,8 +298,6 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
   .stage[data-page="room"] .room-panel .scroll-frame { display: none; }
   .stage[data-page="room"] .detail { top: 43px; grid-template-columns: minmax(0,1fr) minmax(75px, 23%); gap: 5px; }
   #roster .member-details { padding-inline: 4px; }
-  .team-directory thead th:first-child { width: 34%; }
-  .team-directory thead th:nth-child(2) { width: 23%; }
   .team-directory :is(th, td) { padding-inline: 4px; }
   :is(.team-directory, #sessions) .member-name,
   :is(.team-directory, #sessions) .member-name > * { display: block; }
@@ -336,7 +355,7 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
   .task-lane[data-selected="false"] { display: none; }
 }
 
-.session-panel { grid-template-rows: 30px minmax(0, 1fr) auto auto; }
+.session-panel { grid-template-rows: 30px minmax(0, 1fr) auto auto auto; }
 .retire-action {
   justify-self: end; color: #efb095; border-color: #80584d;
   background: #332825; white-space: normal;

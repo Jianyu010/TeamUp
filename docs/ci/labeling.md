@@ -1,242 +1,242 @@
-# 标签规范
+# Labeling standard
 
-标签驱动 TeamUp 的自动化，人和 agent 都按本页打标签。本规范沿用 Linkie（PPMA 仓库）的标签体系，`area/*` 按 TeamUp 的组件划分。除本页列出的值外，不得新建标签。需要新的 `area/*` 或 `gate/*` 值时，在同一个 PR 里把它加进本页的清单。
+Labels drive TeamUp's automation. Everyone who applies labels, including agents, follows this standard. It uses Linkie's scheme from the PPMA repository, with `area/*` values that match TeamUp's components. Create labels only from the inventory below. If you need a new `area/*` or `gate/*` value, add it to the inventory in the same PR.
 
-## 约定
+## Conventions
 
-- 格式为 `轴/值`，小写，单词之间用连字符。
-- 每个轴一种颜色，见下面的清单。
-- 每个 issue 至少要有一个 `type/*`、一个 `source/*` 和一个 `priority/*`。缺少任何一项时，自动化加上 `status/triage`，并留一条说明缺什么的评论。带 `status/triage` 的 issue 不能开工。
-- 各轴的数量由 `scripts/ci/labels.py lint` 检查：
+- Use lowercase `category/value` labels with hyphens between words.
+- Each category has its own color, listed in the inventory.
+- Every issue needs at least one `type/*`, one `source/*`, and one `priority/*` label. If any required category is missing, automation applies `status/triage` and posts a comment identifying what is missing. Wait until `status/triage` is cleared before starting work.
+- The `scripts/ci/labels.py lint` command checks the number of labels in each category.
 
-| 轴 | 数量 |
+| Category | Number of labels |
 | --- | --- |
-| `type/*`、`source/*` | 一个或多个 |
-| `priority/*` | 正好一个 |
-| `size/*`、`agent/*` | 零个或一个 |
-| `area/*`、`status/*`、`gate/*` | 任意个 |
+| `type/*`, `source/*` | One or more |
+| `priority/*` | Exactly one |
+| `size/*`, `agent/*` | Zero or one |
+| `area/*`, `status/*`, `gate/*` | Any number |
 
-## Issue 标签
+## Issue labels
 
-### `type/*`：问题的性质（一个或多个）
+### `type/*` for the kind of work (one or more)
 
-需求混合时可以带多个，例如 `type/feature` 加 `type/docs`。
+Apply multiple labels when the work spans categories, such as `type/feature` and `type/docs`.
 
-| 标签 | 含义 |
+| Label | Meaning |
 | --- | --- |
-| `type/bug` | 行为与预期或文档不符 |
-| `type/perf` | 行为不变，更快或更省（延迟、内存、吞吐、成本） |
-| `type/feature` | 尚不存在的新能力 |
-| `type/enhancement` | 改进已有能力，与性能无关 |
-| `type/refactor` | 内部重构，行为不变 |
-| `type/test` | 测试覆盖、不稳定测试、测试基础设施 |
-| `type/ci` | 构建、CI、门禁、工具和开发环境 |
-| `type/docs` | 只改文档 |
-| `type/security` | 漏洞或加固 |
-| `type/chore` | 依赖升级、日常整理 |
+| `type/bug` | Behavior differs from expectations or documentation |
+| `type/perf` | Improved latency, memory use, throughput, or cost while preserving behavior |
+| `type/feature` | New capability |
+| `type/enhancement` | A non-performance improvement to an existing capability |
+| `type/refactor` | Internal restructuring that preserves behavior |
+| `type/test` | Test coverage, flaky tests, or test infrastructure |
+| `type/ci` | Build, CI, merge gates, tooling, or the development environment |
+| `type/docs` | Documentation-only change |
+| `type/security` | Vulnerability or hardening |
+| `type/chore` | Dependency updates or routine maintenance |
 
-### `source/*`：在哪里发现（一个或多个）
+### `source/*` for where the issue surfaced (one or more)
 
-同一个问题被多次独立发现时，带上每个来源。来源越多，越说明问题重要，应重新评估优先级。
+If the same issue surfaces independently in several places, apply a label for every source. Reassess the priority when multiple sources point to a wider impact.
 
-| 标签 | 含义 |
+| Label | Meaning |
 | --- | --- |
-| `source/incidental` | 做别的事情时顺带发现 |
-| `source/planned` | 路线图或有计划的工作 |
-| `source/review` | PR 审查中提出，但超出该 PR 的范围 |
-| `source/ci` | main 分支上的 CI 失败 |
-| `source/user` | 人报告的问题，包括维护者和团队成员 |
-| `source/nightly` | nightly 发现 |
-| `source/weekly` | weekly 发现 |
-| `source/routine` | 其他定期检查发现（依赖、安全扫描） |
+| `source/incidental` | Found while working on something else |
+| `source/planned` | Roadmap item or planned work |
+| `source/review` | Raised during a PR review and outside that PR's scope |
+| `source/ci` | CI failure on `main` |
+| `source/user` | Reported by a person, including maintainers and team members |
+| `source/nightly` | Found by nightly |
+| `source/weekly` | Found by weekly |
+| `source/routine` | Found by other scheduled checks, such as dependency checks or security scans |
 
-### `priority/*`：紧急程度（正好一个）
+### `priority/*` for urgency (exactly one)
 
-| 标签 | 含义 | 处理 |
+| Label | Meaning | Action |
 | --- | --- | --- |
-| `priority/critical` | main 损坏、数据丢失、安全漏洞、工作被阻塞 | 放下手头的事，通知人 |
-| `priority/high` | 影响大 | 下一个处理 |
-| `priority/medium` | 普通待办 | 拿不准时用这个 |
-| `priority/low` | 有更好 | 没有更高优先级时才做 |
+| `priority/critical` | Broken `main`, data loss, a security vulnerability, or work at a standstill | Drop current work and notify a person |
+| `priority/high` | High impact | Handle next |
+| `priority/medium` | Normal backlog item | Use when unsure |
+| `priority/low` | Nice to have | Handle when higher-priority work is clear |
 
-### `blocker`：发布门槛（可与任何优先级同时使用）
+### `blocker` for release requirements (any priority)
 
-下一次发布或里程碑之前必须关闭。它与优先级相互独立：优先级回答"什么时候做"，`blocker` 回答"不做能不能发布"。
+Close the issue before the next release or milestone. Priority indicates how soon to work on the issue. The `blocker` label indicates whether the release can ship while the issue is open.
 
-### 可选轴
+### Optional categories
 
-| 标签 | 含义 |
+| Label | Meaning |
 | --- | --- |
-| `area/<组件>` | 组件或子系统，取值见下文 |
-| `size/s` | 大约一小时以内 |
-| `size/m` | 大约半天 |
-| `size/l` | 实施前需要设计或计划 |
-| `agent/ok` | 维护者同意 agent 无人值守地处理 |
-| `agent/human-only` | 需要人来决定，agent 不得实现 |
+| `area/<component>` | Component or subsystem, using the values below |
+| `size/s` | About an hour or less |
+| `size/m` | About half a day |
+| `size/l` | Needs a design or plan before implementation |
+| `agent/ok` | A maintainer has authorized an agent to work unattended |
+| `agent/human-only` | A person must make the decision. Agents must leave implementation to people |
 
-**分类不等于授权。** 自动打标签只会建议 `type`、`source`、`priority`、`area` 和 `size`。只有维护者能加或撤销 `agent/ok`。`agent/human-only` 是否决，优先于 `agent/ok`。
+Automatic labeling can suggest only `type`, `source`, `priority`, `area`, and `size`. Only a maintainer can grant or revoke permission for unattended agent work via `agent/ok`. The `agent/human-only` label overrides `agent/ok`.
 
-### `status/*`：issue 的生命周期
+### `status/*` for issue lifecycle
 
-| 标签 | 由谁设置 | 含义 |
+| Label | Applied by | Meaning |
 | --- | --- | --- |
-| `status/triage` | 自动化 | 缺少必需的轴 |
-| `status/claimed` | 开工的人或 agent | 防止两边同时做同一个 issue |
-| `status/blocked` | 人或 agent | 在等另一个 issue 或 PR（在评论里给出链接） |
-| `status/needs-info` | 人或 agent | 需要澄清才能继续 |
-| `status/review-needed` | 自动化 | 人提交的 issue，等维护者看过；总是和 `agent/human-only` 一起设置 |
+| `status/triage` | Automation | A required label category is missing |
+| `status/claimed` | The person or agent starting work | Prevents duplicate work on the same issue |
+| `status/blocked` | A person or agent | Waiting on another issue or PR. Link to it in a comment |
+| `status/needs-info` | A person or agent | Needs clarification before work can continue |
+| `status/review-needed` | Automation | Issue opened by a person and awaiting maintainer review. Always paired with `agent/human-only` |
 
-重复和不修复用 GitHub 的关闭原因表示，不用标签。
+Use GitHub's close reasons for duplicates and issues that will not be fixed.
 
-**人提交的 issue。** 作者不是机器人的新 issue 同时加上 `agent/human-only` 和 `status/review-needed`。如果还没有负责人，就指派给仓库 owner，并留一条提到 owner 的评论。重复运行结果相同。维护者主动移除的标签不会被加回去，除非再次手动运行。机器人提交的 issue（冻结、weekly 失败、依赖升级）不做这一步。已经带 `agent/ok` 的 issue 也不做。
+**Issues opened by people.** New issues whose authors are not bots get both `agent/human-only` and `status/review-needed`. If the issue is unassigned, automation assigns it to the repository owner and mentions the owner in a comment. Reruns are idempotent. Labels removed by a maintainer are restored only on a manual rerun. Skip this step for bot-created issues (such as CI freezes, weekly failures, and dependency updates) and issues already labeled `agent/ok`.
 
-## 自动打标签
+## Automatic labeling
 
-新 issue 打开后，hp-laptop 上的模型从本页清单中选择 `type`、`source`、`priority`、`area` 和 `size`。`scripts/ci/autolabel.py` 负责校验：
+When a new issue opens, the model on hp-laptop chooses `type`, `source`, `priority`, `area`, and `size` labels from the inventory. The `scripts/ci/autolabel.py` script validates the selections.
 
-- 只保留清单中这五个轴的标签；
-- 不会设置 `agent/*`、`blocker` 或 `priority/critical`；
-- 没有给出优先级时用 `priority/medium`，没有给出来源时用 `source/user`；
-- issue 已经由人打过 `type`、`source`、`priority`、`agent` 或 `blocker` 时跳过。
+- Keep only listed labels from those five categories.
+- Exclude `agent/*`, `blocker`, and `priority/critical`.
+- Default to `priority/medium` and `source/user` if the model leaves out a priority or source.
+- Skip issues a person has already labeled with a `type`, `source`, `priority`, `agent`, or `blocker` label.
 
-issue 正文是不可信数据，只作为模型的输入，不会进入 shell。仓库变量 `AUTOLABEL_MODE` 可以取以下值：
+The issue body is untrusted and goes only to the model. It never enters a shell. The `AUTOLABEL_MODE` repository variable accepts these values.
 
-- `apply`：默认，直接加标签；
-- `suggest`：只评论建议；
-- `off`：关闭。
+- `apply` applies the labels directly. This is the default.
+- `suggest` posts the suggested labels in a comment.
+- `off` disables automatic labeling.
 
-`AUTOLABEL_MODEL` 可以覆盖默认模型。
+Set `AUTOLABEL_MODEL` to override the default model.
 
-## PR 标签
+## PR labels
 
-PR 的标签描述状态，`type/*` 从关联的 issue 继承。
+PR labels describe PR status. The `type/*` labels come from associated issues.
 
-| 标签 | 由谁设置 | 含义 |
+| Label | Applied by | Meaning |
 | --- | --- | --- |
-| `ready` | 仅维护者 | 维护者审过：放行第 1 层的拦截，放行 AI 审查，或在冻结期间放行合入。`require_ready` 关闭时（当前）只作可选放行。推送新提交后自动移除 |
-| `pr/hold` | 仅人 | 门禁绿了也不合入 |
-| `pr/no-issue` | 自动化 | 标题和正文都没有引用本仓库的 issue（`#N`、`Closes #N`、`Refs #N` 等，引用 PR 不算）。门禁同时拦截合入（`1 · Linked Issue`），owner 加 `ready` 可放行 |
-| `gate/<检查>-failed` | 自动化 | 该检查失败；重新通过后移除 |
-| `type/*`（镜像） | 自动化 | 从关联 issue 复制，用于发布说明分组 |
+| `ready` | Maintainer only | A maintainer reviewed the PR and approved bypassing a layer 1 block or AI review, or merging during a freeze. While `require_ready` is off, only untrusted authors and unfixed P0 or P1 findings need it. Removed automatically on a new push |
+| `pr/hold` | Person only | Block merging even when the gate passes |
+| `pr/no-issue` | Automation | The title and body contain no references to an issue in this repository (`#N`, `Closes #N`, `Refs #N`, and similar forms). References to PRs do not count. The `1 · Linked Issue` gate check also blocks merging. The owner can allow the merge with `ready` |
+| `gate/<check>-failed` | Automation | The check failed. The label clears when the check passes again |
+| `type/*` (mirrored) | Automation | Copied from linked issues to group PRs in release notes |
 
-仓库级的运行状态标签：
+Repository-wide status labels
 
-| 标签 | 由谁设置 | 含义 |
+| Label | Applied by | Meaning |
 | --- | --- | --- |
-| `ci/freeze` | 自动化 | main 或 nightly 失败。`require_ready` 打开时只有带 `ready` 或引用该 issue 的 PR 能合入；关闭时（当前）只作提醒，不拦截合入 |
-| `weekly-failure` | 自动化 | weekly 真实 Agent 端到端失败 |
-| `opencode-review` | 维护者 | 请求对 PR 进行一次 OpenCode 审查 |
+| `ci/freeze` | Automation | A failure on `main` or in nightly. When `require_ready` is on, it restricts merges to PRs with `ready` or a freeze reference. When it is off, it is only a signal |
+| `weekly-failure` | Automation | Weekly end-to-end tests with real agents failed |
+| `opencode-review` | Maintainer | Request one OpenCode review of a PR |
 
-## Agent 规则
+## Rules for agents
 
-1. 提交 issue 时总要设置 `type/*`、`source/*` 和 `priority/*`。适用的 `type/*` 全部加上，不要为了只留一个而删掉。拿不准优先级时用 `priority/medium`，并在正文里说明。能判断时再加 `area/*` 和 `size/*`。
-2. 做别的事情时发现的问题标为 `source/incidental`，另开 issue，不要塞进当前 PR。
-   - 先搜索已有 issue，不要重复提交。
-   - 问题已存在时，补上自己的 `source/*` 和缺少的 `type/*`，并评论说明在哪里遇到、为什么对当前工作重要。
-   - 影响因此变大时，在评论里建议调整优先级。自己最多只能把优先级调到 `priority/high`。
-3. 开工前重新读取 issue。已经指派给别人时不要开工，留言给对方。否则指派给你代表的开发者，加上 `status/claimed`，再读取一次，确认只有你一个负责人。放弃时移除这两项。
-4. 不要凭自己的判断加或移除 `pr/hold`、`ready`、`agent/ok`、`agent/human-only` 和 `blocker`。只有拿得出具体证据时才提交 `priority/critical`，并通知人。
-5. 不要手动设置 `pr/*` 和 `gate/*` 标签，它们由自动化管理。
-6. 不要新建本规范以外的标签。
+1. Always set `type/*`, `source/*`, and `priority/*` when filing an issue. Include every applicable `type/*` label. If you are unsure about urgency, use `priority/medium` and explain why in the issue body. Add `area/*` and `size/*` when you can determine them.
+2. File a separate issue with `source/incidental` for problems you discover while working on something else. Keep them out of the current PR.
+   - Search for an existing issue before filing a new one.
+   - If there is already an issue, add your `source/*` and any missing `type/*` labels. Comment on where you encountered the problem and why it matters to your current work.
+   - If the new evidence shows greater impact, suggest a priority change in a comment. The highest priority an agent can raise an issue to on its own is `priority/high`.
+3. Reread the issue before starting work. If someone else is assigned, leave them a comment and wait. Otherwise, assign the issue to the developer you represent, apply `status/claimed`, and reread the issue to verify that the developer is the sole assignee. Remove the assignment and label if you give up the issue.
+4. Do not add or remove `pr/hold`, `ready`, `agent/ok`, `agent/human-only`, or `blocker` at your own discretion. File an issue with `priority/critical` only when you have concrete evidence, and notify a person.
+5. Leave `pr/*` and `gate/*` labels to automation.
+6. Use only the labels in this standard.
 
-## 组件取值
+## Component labels
 
-`area/*` 按 [架构](../architecture/README.md) 的组件图和仓库结构划分。标为"敏感"的区域总是需要人审查，不交给 agent 无人值守处理。
+The `area/*` labels follow the component diagram in the [architecture docs](../architecture/README.md) and the repository layout. Sensitive areas always need human review and are ineligible for unattended agent work.
 
-| 标签 | 覆盖范围 | 敏感 |
+| Label | Scope | Sensitive |
 | --- | --- | --- |
-| `area/collaboration` | `server/src/teamup_server/collaboration.py`：成员、房间、私聊、公告、消息、收件箱、停用；业务 SQLite 的唯一 owner | 是 |
-| `area/gateway` | `server/src/teamup_server/{gateway,main}.py`：HTTPS API、SSE、协议编解码、服务端配置 | |
-| `area/presence` | Presence：心跳、健康查询、harness 观测 | |
-| `area/accounts` | 登录、账号与凭证：`account_cli.py`、Client 的 `_login.py` | 是 |
-| `area/client` | `client/`：会话协调器、守护进程、IPC、本机配置、与 Server 的连接 | |
-| `area/harness` | Harness Driver 与唤醒：桌面提醒、Claude Code 与 Codex 唤醒 | |
-| `area/mcp` | `plugin/mcp`：MCP 工具适配器（`teamup_*` 工具） | |
-| `area/plugin` | `plugin/` 的打包与技能（`plugin/skills`） | |
-| `area/contracts` | `docs/modules/`、`docs/protocols/`、`docs/architecture/`、`docs/specs/`：公开契约 | 是 |
-| `area/ci` | `.github/`、`scripts/ci/`、`tests/scenarios/`、`dashboards/` | 是 |
+| `area/collaboration` | `server/src/teamup_server/collaboration.py` handles members, rooms, DMs, announcements, messages, inboxes, and deactivation, and is the sole owner of the collaboration SQLite database | Yes |
+| `area/gateway` | `server/src/teamup_server/{gateway,main}.py` covers the HTTPS API, SSE, protocol encoding and decoding, and Server configuration | |
+| `area/presence` | Presence covers heartbeats, health queries, and harness observations | |
+| `area/accounts` | Login, accounts, and credentials in `account_cli.py` and the Client's `_login.py` | Yes |
+| `area/client` | `client/` covers the session coordinator, daemon, IPC, local configuration, and connectivity to the Server | |
+| `area/harness` | Harness Driver and wakeups, including desktop notifications and wakeups for Claude Code and Codex | |
+| `area/mcp` | MCP tool adapter in `plugin/mcp` for the `teamup_*` tools | |
+| `area/plugin` | Packaging in `plugin/` and skills in `plugin/skills` | |
+| `area/contracts` | Public contracts in `docs/modules/`, `docs/protocols/`, `docs/architecture/`, and `docs/specs/` | Yes |
+| `area/ci` | `.github/`, `scripts/ci/`, `tests/scenarios/`, and `dashboards/` | Yes |
 
-`gate/*` 对应第 2–3 层的检查，每种失败一个标签，名称取自 job 名的短横线形式：
+The `gate/*` labels correspond to layer 2 and 3 checks. Each failure has one label based on the hyphenated job name.
 
-| 标签 | 失败的检查 |
+| Label | Failed check |
 | --- | --- |
-| `gate/lint-failed` | `2 · Lint`（ruff） |
-| `gate/architecture-failed` | `2 · Architecture`（依赖方向） |
+| `gate/lint-failed` | `2 · Lint` (ruff) |
+| `gate/architecture-failed` | `2 · Architecture` (dependency direction) |
 | `gate/linux-ut-failed` | `3 · Linux UT` |
 | `gate/linux-st-failed` | `3 · Linux ST` |
-| `gate/ai-review-failed` | `3 · AI Review` 运行失败 |
-| `gate/type-check-failed` | `2 · Type Check`（mypy） |
-| `gate/secrets-failed` | `2 · Secrets`（gitleaks） |
-| `gate/workflow-lint-failed` | `2 · Workflow Lint`（actionlint、zizmor） |
-| `gate/dependencies-failed` | `2 · Dependencies`（锁文件一致性） |
+| `gate/ai-review-failed` | `3 · AI Review` run failed |
+| `gate/type-check-failed` | `2 · Type Check` (mypy) |
+| `gate/secrets-failed` | `2 · Secrets` (gitleaks) |
+| `gate/workflow-lint-failed` | `2 · Workflow Lint` (actionlint and zizmor) |
+| `gate/dependencies-failed` | `2 · Dependencies` (lockfile consistency) |
 | `gate/contract-failed` | `3 · Contract` |
 | `gate/install-failed` | `3 · Install` |
 | `gate/linux-st-cross-failed` | `3 · Linux ST · 跨组件` |
 
-## 清单
+## Label inventory
 
-标签名、颜色和描述以本表为准。运行 `python3 -m scripts.ci.labels sync` 创建或更新标签，不会删除表外的标签。
+Use the label names, colors, and descriptions in this table. Run `python3 -m scripts.ci.labels sync` to create or update labels. The command leaves labels outside the inventory in place.
 
-| 标签 | 颜色 | 描述 |
+| Label | Color | Description |
 | --- | --- | --- |
-| type/bug | 1D76DB | 行为与预期不符 |
-| type/perf | 1D76DB | 行为不变，更快或更省 |
-| type/feature | 1D76DB | 新能力 |
-| type/enhancement | 1D76DB | 改进已有能力 |
-| type/refactor | 1D76DB | 重构，行为不变 |
-| type/test | 1D76DB | 测试与测试基础设施 |
-| type/ci | 1D76DB | 构建、CI、门禁、工具 |
-| type/docs | 1D76DB | 只改文档 |
-| type/security | 1D76DB | 漏洞或加固 |
-| type/chore | 1D76DB | 依赖与日常整理 |
-| source/incidental | 5319E7 | 做别的事情时发现 |
-| source/planned | 5319E7 | 路线图或计划内工作 |
-| source/review | 5319E7 | PR 审查中提出，超出该 PR 范围 |
-| source/ci | 5319E7 | main 上的 CI 失败 |
-| source/user | 5319E7 | 人报告 |
-| source/nightly | 5319E7 | nightly 发现 |
-| source/weekly | 5319E7 | weekly 发现 |
-| source/routine | 5319E7 | 其他定期检查发现 |
-| priority/critical | B60205 | 放下手头的事，通知人 |
-| priority/high | D93F0B | 下一个处理 |
-| priority/medium | FBCA04 | 普通待办 |
-| priority/low | 0E8A16 | 有更好 |
-| blocker | 000000 | 下一次发布前必须关闭 |
-| size/s | BFD4F2 | 约一小时以内 |
-| size/m | BFD4F2 | 约半天 |
-| size/l | BFD4F2 | 需要先设计 |
-| agent/ok | 0E8A16 | agent 可以无人值守处理 |
-| agent/human-only | D876E3 | 需要人来决定 |
-| status/triage | EDEDED | 缺少必需的标签 |
-| status/claimed | EDEDED | 已有人在做 |
-| status/blocked | EDEDED | 在等另一个 issue 或 PR |
-| status/needs-info | EDEDED | 需要澄清 |
-| status/review-needed | EDEDED | 人提交的 issue，等维护者查看 |
-| ready | 0E8A16 | 维护者放行：受保护改动、AI 审查或冻结期合入 |
-| pr/hold | B60205 | 不要合入 |
-| pr/no-issue | FBCA04 | 没有关联 issue |
-| ci/freeze | D93F0B | main 或 nightly 失败（是否拦截合入见 require_ready） |
-| weekly-failure | FBCA04 | weekly 真实 Agent 端到端失败 |
-| opencode-review | 5319E7 | 请求 OpenCode 审查 |
-| area/collaboration | C5DEF5 | 成员、房间、私聊、公告、消息、收件箱 |
-| area/gateway | C5DEF5 | HTTPS API、SSE、协议 |
-| area/presence | C5DEF5 | 心跳与健康 |
-| area/accounts | C5DEF5 | 登录、账号与凭证 |
-| area/client | C5DEF5 | Client 会话协调器与守护进程 |
-| area/harness | C5DEF5 | Harness Driver、桌面提醒与唤醒 |
-| area/mcp | C5DEF5 | MCP 工具适配器 |
-| area/plugin | C5DEF5 | 插件打包与技能 |
-| area/contracts | C5DEF5 | 公开契约、协议与架构文档 |
-| area/ci | C5DEF5 | CI、场景套件与看板 |
-| gate/lint-failed | E99695 | lint 检查失败 |
-| gate/architecture-failed | E99695 | 依赖方向检查失败 |
-| gate/linux-ut-failed | E99695 | Linux 单元测试失败 |
-| gate/linux-st-failed | E99695 | Linux 系统测试失败 |
-| gate/ai-review-failed | E99695 | AI 审查失败 |
-| gate/type-check-failed | E99695 | 类型检查失败 |
-| gate/secrets-failed | E99695 | 密钥扫描发现问题 |
-| gate/workflow-lint-failed | E99695 | 工作流检查失败 |
-| gate/dependencies-failed | E99695 | 锁文件与依赖声明不一致 |
-| gate/contract-failed | E99695 | 契约测试失败 |
-| gate/install-failed | E99695 | 安装冒烟测试失败 |
-| gate/linux-st-cross-failed | E99695 | 跨组件系统测试失败 |
+| type/bug | 1D76DB | Behavior differs from expectations |
+| type/perf | 1D76DB | Faster or more efficient without changing behavior |
+| type/feature | 1D76DB | New capability |
+| type/enhancement | 1D76DB | Improve an existing capability |
+| type/refactor | 1D76DB | Restructure code while preserving behavior |
+| type/test | 1D76DB | Tests and test infrastructure |
+| type/ci | 1D76DB | Build, CI, merge gates, and tools |
+| type/docs | 1D76DB | Documentation-only change |
+| type/security | 1D76DB | Vulnerability or hardening |
+| type/chore | 1D76DB | Dependencies and routine maintenance |
+| source/incidental | 5319E7 | Found while working on something else |
+| source/planned | 5319E7 | Roadmap item or planned work |
+| source/review | 5319E7 | Raised during a PR review and outside that PR's scope |
+| source/ci | 5319E7 | CI failure on main |
+| source/user | 5319E7 | Reported by a person |
+| source/nightly | 5319E7 | Found by nightly |
+| source/weekly | 5319E7 | Found by weekly |
+| source/routine | 5319E7 | Found by another scheduled check |
+| priority/critical | B60205 | Drop current work and notify a person |
+| priority/high | D93F0B | Handle next |
+| priority/medium | FBCA04 | Normal backlog item |
+| priority/low | 0E8A16 | Nice to have |
+| blocker | 000000 | Must be closed before the next release |
+| size/s | BFD4F2 | About an hour or less |
+| size/m | BFD4F2 | About half a day |
+| size/l | BFD4F2 | Needs a design first |
+| agent/ok | 0E8A16 | Agent can work unattended |
+| agent/human-only | D876E3 | Needs a human decision |
+| status/triage | EDEDED | Missing required labels |
+| status/claimed | EDEDED | Someone is already working on this |
+| status/blocked | EDEDED | Waiting on another issue or PR |
+| status/needs-info | EDEDED | Needs clarification |
+| status/review-needed | EDEDED | Issue opened by a person and awaiting maintainer review |
+| ready | 0E8A16 | Maintainer approval for a protected change, AI review bypass, or merge during a freeze |
+| pr/hold | B60205 | Block merging |
+| pr/no-issue | FBCA04 | No linked issue |
+| ci/freeze | D93F0B | main or nightly failed; with require_ready on, merge only PRs labeled ready |
+| weekly-failure | FBCA04 | Weekly end-to-end tests with real agents failed |
+| opencode-review | 5319E7 | Request an OpenCode review |
+| area/collaboration | C5DEF5 | Members, rooms, DMs, announcements, messages, and inboxes |
+| area/gateway | C5DEF5 | HTTPS API, SSE, and protocol |
+| area/presence | C5DEF5 | Heartbeats and health |
+| area/accounts | C5DEF5 | Login, accounts, and credentials |
+| area/client | C5DEF5 | Client session coordinator and daemon |
+| area/harness | C5DEF5 | Harness Driver, desktop notifications, and wakeups |
+| area/mcp | C5DEF5 | MCP tool adapter |
+| area/plugin | C5DEF5 | Plugin packaging and skills |
+| area/contracts | C5DEF5 | Public contracts, protocols, and architecture docs |
+| area/ci | C5DEF5 | CI, scenario suites, and dashboards |
+| gate/lint-failed | E99695 | Lint check failed |
+| gate/architecture-failed | E99695 | Dependency direction check failed |
+| gate/linux-ut-failed | E99695 | Linux unit tests failed |
+| gate/linux-st-failed | E99695 | Linux system tests failed |
+| gate/ai-review-failed | E99695 | AI review failed |
+| gate/type-check-failed | E99695 | Type check failed |
+| gate/secrets-failed | E99695 | Secret scan found a problem |
+| gate/workflow-lint-failed | E99695 | Workflow check failed |
+| gate/dependencies-failed | E99695 | Lockfile disagrees with dependency declarations |
+| gate/contract-failed | E99695 | Contract tests failed |
+| gate/install-failed | E99695 | Install smoke tests failed |
+| gate/linux-st-cross-failed | E99695 | Cross-component system tests failed |
