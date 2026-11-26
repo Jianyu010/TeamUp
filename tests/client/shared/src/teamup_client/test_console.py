@@ -1093,3 +1093,39 @@ def test_incomplete_task_observation_bounds_upstream_pages():
         )
 
     asyncio.run(scenario())
+
+
+def test_desktop_admin_session_requires_private_socket_and_launcher_authorization():
+    class Reader:
+        async def admin_session(self):
+            return {"state": "ready", "session": {"access_token": "scoped-console"}}
+
+    async def scenario():
+        async with serve_console(Reader(), desktop=True) as endpoints:
+            url, socket = endpoints.splitlines()
+            base, secret = url.split("/#")
+            headers = {"Authorization": "Bearer " + secret, "Origin": base}
+            path = "/api/admin/session"
+            async with httpx.AsyncClient(base_url=base, trust_env=False) as local:
+                assert (await local.post(path, headers=headers)).status_code == 404
+            transport = httpx.AsyncHTTPTransport(uds=socket)
+            async with httpx.AsyncClient(base_url=base, transport=transport) as desktop:
+                assert (
+                    await desktop.post(path, headers={"Origin": base})
+                ).status_code == 401
+                assert (
+                    await desktop.post(
+                        path, headers={**headers, "Origin": "https://example.com"}
+                    )
+                ).status_code == 403
+                assert (
+                    await desktop.post(
+                        path, headers=headers, json={"username": "other"}
+                    )
+                ).status_code == 400
+                response = await desktop.post(path, headers=headers)
+                assert response.status_code == 200
+                assert response.headers["Cache-Control"] == "no-store"
+                assert response.json()["session"] == {"access_token": "scoped-console"}
+
+    asyncio.run(scenario())

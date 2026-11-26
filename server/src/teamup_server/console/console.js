@@ -1,6 +1,7 @@
 "use strict";
 
 const LOGIN_PATH = "/v1/auth/login";
+const desktopSignIn = globalThis.teamupAdmin?.signIn;
 const CONSOLE_BASE = "/v1/console";
 const PAGE_LIMIT = 50;
 const CI_DASHBOARDS_URL = "https://jianyu010.github.io/TeamUp/";
@@ -43,6 +44,7 @@ const state = {
 const els = {
   loginView: document.getElementById("loginView"),
   loginForm: document.getElementById("loginForm"),
+  loginCredentials: document.getElementById("loginCredentials"),
   username: document.getElementById("username"),
   password: document.getElementById("password"),
   loginStatus: document.getElementById("loginStatus"),
@@ -295,7 +297,7 @@ function showLogin(message) {
   els.password.value = "";
   setLoginStatus(message);
   setTopStatus("Signed out");
-  els.username.focus();
+  (desktopSignIn ? els.loginSubmit : els.username).focus();
 }
 
 function showConsole(capabilities) {
@@ -358,18 +360,27 @@ function loadCiDashboard() {
   els.ciView.replaceChildren(frame);
 }
 
+async function requestDesktopSignIn() {
+  try {
+    return await desktopSignIn();
+  } catch {
+    return {status: 0, payload: null};
+  }
+}
+
 async function submitLogin(event) {
-  event.preventDefault();
+  event?.preventDefault();
+  if (state.session || els.loginSubmit.disabled) return;
   const username = els.username.value.trim();
   const password = els.password.value;
-  if (!username || !password) {
+  if (!desktopSignIn && (!username || !password)) {
     setLoginStatus("Enter both a username and a password.");
     return;
   }
   setLoginStatus("Signing in…");
   els.loginSubmit.disabled = true;
   const epoch = newEpoch();
-  const result = await api(LOGIN_PATH, {
+  const result = desktopSignIn ? await requestDesktopSignIn() : await api(LOGIN_PATH, {
     method: "POST",
     body: { username, password, "purpose": "console" },
   });
@@ -385,7 +396,7 @@ async function submitLogin(event) {
   if (result.status === 200 && token) {
     state.session = {
       token,
-      username,
+      username: desktopSignIn ? payload.username : username,
       expiresAt: Number(payload["expires_at"]) || 0,
     };
     els.password.value = "";
@@ -402,7 +413,11 @@ async function submitLogin(event) {
     showConsole(capabilities.payload);
     return;
   }
-  if (result.status === 401) {
+  if (desktopSignIn && [401, 403, 409].includes(result.status)) {
+    setLoginStatus("Sign in to the Client Console with an operator account, then try again.");
+  } else if (desktopSignIn && result.status === 404) {
+    setLoginStatus("Update the TeamUp Server to use automatic Admin sign-in.");
+  } else if (result.status === 401) {
     setLoginStatus("Sign-in failed. Check your username and password.");
   } else if (result.status === 429) {
     setLoginStatus("Too many attempts. Wait a moment and try again.");
@@ -1021,3 +1036,8 @@ els.chatsMore.addEventListener("click", () => {
 });
 
 setTab("timeline");
+
+if (desktopSignIn) {
+  els.loginCredentials.hidden = true;
+  void submitLogin();
+}

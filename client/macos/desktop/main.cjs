@@ -1,10 +1,11 @@
-const { app, BrowserWindow, Menu, dialog, protocol, safeStorage, session, shell } = require("electron");
+const { app, BrowserWindow, Menu, dialog, ipcMain, protocol, safeStorage, session } = require("electron");
 const { execFile } = require("node:child_process");
 const { userInfo } = require("node:os");
 const { join, resolve } = require("node:path");
 const { promisify } = require("node:util");
-const { CONSOLE_URL, createConsoleHandler, parseConsoleEndpoint, readAdminUrl } = require("./console-protocol.cjs");
+const { CONSOLE_URL, createConsoleHandler, parseConsoleEndpoint, readAdminAccess, requestAdminSession } = require("./console-protocol.cjs");
 
+const {createAdminWindow} = require("./admin-window.cjs");
 const {createDesktopLogin} = require("./console-login.cjs");
 const {createKeychain} = require("./keychain.cjs");
 
@@ -33,6 +34,7 @@ let endpointPromise;
 let window;
 let opening;
 let consoleSession;
+let adminWindow;
 
 async function prepareConsole() {
   let stdout;
@@ -123,16 +125,26 @@ function showAdminMenu(visible) {
   if (item) item.visible = visible;
 }
 
-async function openAdminFromMenu() {
+async function openAdmin(access) {
   try {
-    const url = await readAdminUrl(await getEndpoint());
-    if (url) {
-      await shell.openExternal(url);
-      return;
-    }
+    await adminWindow.open(access);
+  } catch (error) {
+    dialog.showErrorBox("Could not open Admin", "Check the configured Server and its connection, then try again.");
+    throw error;
+  }
+}
+
+async function openAdminFromMenu() {
+  let access;
+  try {
+    access = await readAdminAccess(await getEndpoint());
   } catch {}
-  showAdminMenu(false);
-  dialog.showErrorBox("Could not open Admin", "Check your Server connection and TeamUp sign-in.");
+  if (access) {
+    await openAdmin(access).catch(() => {});
+  } else {
+    showAdminMenu(false);
+    dialog.showErrorBox("Could not open Admin", "Check your Server connection and TeamUp sign-in.");
+  }
 }
 
 if (!app.requestSingleInstanceLock()) {
@@ -143,12 +155,17 @@ if (!app.requestSingleInstanceLock()) {
   });
   app.whenReady().then(() => {
     consoleSession = session.fromPartition("teamup-console");
+    adminWindow = createAdminWindow(
+      BrowserWindow, session.fromPartition("teamup-admin", {cache: false}),
+      async (access) => requestAdminSession(await getEndpoint(), access),
+    );
+    ipcMain.handle("teamup:admin-sign-in", (event) => adminWindow.signIn(event));
     consoleSession.setPermissionCheckHandler(() => false);
     consoleSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
     consoleSession.protocol.handle(
       "teamup", createConsoleHandler(assetDirectory, getEndpoint, resetEndpoint, desktopLogin, {
         show: showAdminMenu,
-        open: (url) => shell.openExternal(url),
+        open: openAdmin,
       }),
     );
     if (process.platform === "darwin") {

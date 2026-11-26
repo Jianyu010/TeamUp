@@ -31,11 +31,13 @@
     <section class="login-view" id="loginView" aria-labelledby="loginTitle">
       <form class="login-card" id="loginForm" novalidate>
         <h2 id="loginTitle">Sign in</h2>
-        <p class="login-note">Use your TeamUp username and password.</p>
-        <label class="field-label" for="username">Username</label>
-        <input class="field" id="username" name="username" autocomplete="username" spellcheck="false" required>
-        <label class="field-label" for="password">Password</label>
-        <input class="field" id="password" name="password" type="password" autocomplete="current-password" required>
+        <div class="login-credentials" id="loginCredentials">
+          <p class="login-note">Use your TeamUp username and password.</p>
+          <label class="field-label" for="username">Username</label>
+          <input class="field" id="username" name="username" autocomplete="username" spellcheck="false" required>
+          <label class="field-label" for="password">Password</label>
+          <input class="field" id="password" name="password" type="password" autocomplete="current-password" required>
+        </div>
         <button class="primary wide" type="submit" id="loginSubmit">Sign in</button>
         <p class="status" id="loginStatus" role="status" aria-live="polite"></p>
       </form>

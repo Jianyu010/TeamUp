@@ -1889,28 +1889,53 @@ class Collaboration:
                 (owner_id, password_digest),
             ).fetchone():
                 raise CollaborationError("unauthorized")
-            expires_at = int(time()) + _SESSION_SECONDS
-            while True:
-                raw = token_bytes(32)
-                digest = sha256(raw).digest()
-                if self._legacy_owner(digest) is not None:
-                    continue
-                collision = connection.execute(
-                    """
-                    SELECT 1 FROM members WHERE token_digest = ?
-                    UNION ALL SELECT 1 FROM account_sessions WHERE token_digest = ?
-                    """,
-                    (digest, digest),
-                ).fetchone()
-                if collision is None:
-                    break
-            connection.execute(
-                """
-                INSERT INTO account_sessions (token_digest, owner_id, expires_at, purpose)
-                VALUES (?, ?, ?, ?)
-                """,
-                (digest, owner_id, expires_at, purpose),
+            return self._insert_account_session(
+                connection, owner_id, purpose, int(time()) + _SESSION_SECONDS
             )
+
+    def issue_console_session(self, token: str) -> dict:
+        with self._transaction(write=True) as connection:
+            session = self._enrollment_session(connection, _credential_digest(token))
+            if session is None:
+                raise CollaborationError("unauthorized")
+            owner_id = session["owner_id"]
+            self._require_grant(connection, owner_id, "console_read")
+            issued = self._insert_account_session(
+                connection,
+                owner_id,
+                "console",
+                min(session["expires_at"], int(time()) + 3600),
+            )
+            return {**issued, "username": session["username"]}
+
+    def _insert_account_session(
+        self,
+        connection: sqlite3.Connection,
+        owner_id: str,
+        purpose: str,
+        expires_at: int,
+    ) -> dict:
+        while True:
+            raw = token_bytes(32)
+            digest = sha256(raw).digest()
+            if self._legacy_owner(digest) is not None:
+                continue
+            collision = connection.execute(
+                """
+                SELECT 1 FROM members WHERE token_digest = ?
+                UNION ALL SELECT 1 FROM account_sessions WHERE token_digest = ?
+                """,
+                (digest, digest),
+            ).fetchone()
+            if collision is None:
+                break
+        connection.execute(
+            """
+            INSERT INTO account_sessions (token_digest, owner_id, expires_at, purpose)
+            VALUES (?, ?, ?, ?)
+            """,
+            (digest, owner_id, expires_at, purpose),
+        )
         return {
             "access_token": urlsafe_b64encode(raw).decode("ascii").rstrip("="),
             "expires_at": expires_at,
@@ -1924,25 +1949,32 @@ class Collaboration:
                     owner = candidate
         return owner
 
-    def _enrollment_owner(
-        self, connection: sqlite3.Connection, token: str, *, allow_legacy: bool = True
-    ) -> str:
-        digest = _credential_digest(token)
+    @staticmethod
+    def _enrollment_session(
+        connection: sqlite3.Connection, digest: bytes | None
+    ) -> sqlite3.Row | None:
         session = connection.execute(
             """
-            SELECT a.owner_id, a.disabled, s.expires_at, s.purpose
+            SELECT a.owner_id, a.username, a.disabled, s.expires_at, s.purpose
             FROM account_sessions AS s JOIN accounts AS a USING (owner_id)
             WHERE s.token_digest = ?
             """,
             (digest,),
         ).fetchone()
+        if session is not None and (
+            session["disabled"]
+            or session["expires_at"] <= int(time())
+            or session["purpose"] != "enrollment"
+        ):
+            raise CollaborationError("unauthorized")
+        return session
+
+    def _enrollment_owner(
+        self, connection: sqlite3.Connection, token: str, *, allow_legacy: bool = True
+    ) -> str:
+        digest = _credential_digest(token)
+        session = self._enrollment_session(connection, digest)
         if session is not None:
-            if (
-                session["disabled"]
-                or session["expires_at"] <= int(time())
-                or session["purpose"] != "enrollment"
-            ):
-                raise CollaborationError("unauthorized")
             return session["owner_id"]
         if not allow_legacy:
             raise CollaborationError("unauthorized")

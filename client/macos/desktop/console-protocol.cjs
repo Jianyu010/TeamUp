@@ -48,8 +48,8 @@ function parseConsoleEndpoint(value) {
   return { port, token: match[2], ...(loginSocket ? { loginSocket } : {}) };
 }
 
-async function forward(request, target, { port, token, loginSocket }, privateLogin = false) {
-  const usesLoginSocket = privateLogin || (request.method === "POST" && target.pathname === "/api/login");
+async function forward(request, target, { port, token, loginSocket }, privateSocket = false) {
+  const usesLoginSocket = privateSocket || (request.method === "POST" && target.pathname === "/api/login");
   if (usesLoginSocket && !loginSocket) return failure(503, "unavailable");
   const clientHeaders = {
     Host: `127.0.0.1:${port}`,
@@ -125,18 +125,47 @@ async function signIn(request, endpoint, desktopLogin) {
   return Response.json(result, {status, headers});
 }
 
-async function readAdminUrl(endpoint, signal) {
-  if (!endpoint) return null;
-  const target = new URL("/api/access", CONSOLE_URL);
-  const response = await forward(new Request(target, {signal}), target, endpoint);
-  const data = await response.json();
-  if (!response.ok || typeof data.admin_url !== "string") return null;
-  const url = URL.parse(data.admin_url);
+function adminUrl(value) {
+  if (typeof value !== "string") return null;
+  const url = URL.parse(value);
   if (!url || url.pathname !== "/console/" || url.username || url.password ||
       url.search || url.hash) return null;
   const loopback = ["localhost", "[::1]"].includes(url.hostname) ||
     /^127(?:\.\d{1,3}){3}$/.test(url.hostname);
   return url.protocol === "https:" || (url.protocol === "http:" && loopback) ? url.href : null;
+}
+
+async function readAdminAccess(endpoint, signal) {
+  if (!endpoint) return null;
+  const target = new URL("/api/access", CONSOLE_URL);
+  const response = await forward(new Request(target, {signal}), target, endpoint, Boolean(endpoint.loginSocket));
+  const data = await response.json();
+  const url = response.ok && adminUrl(data.admin_url);
+  if (!url) return null;
+  const socket = data.server_socket;
+  if (socket !== undefined && (typeof socket !== "string" || !socket.startsWith("/") ||
+      socket.includes("\0") || !url.startsWith("http://"))) return null;
+  return {url, serverSocket: socket};
+}
+
+async function requestAdminSession(endpoint, {url, serverSocket}) {
+  if (!endpoint?.loginSocket) return {status: 503, payload: null};
+  const target = new URL("/api/admin/session", CONSOLE_URL);
+  try {
+    const response = await forward(new Request(target, {method: "POST"}), target, endpoint, true);
+    const data = await response.json();
+    if (!response.ok) return {status: response.status, payload: null};
+    if (adminUrl(data.admin_url) !== url || (data.server_socket ?? undefined) !== serverSocket) {
+      return {status: 403, payload: null};
+    }
+    const {access_token, username, expires_at} = data.session;
+    if (typeof access_token !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(access_token) ||
+        typeof username !== "string" || !/^[a-z][a-z0-9_-]{2,63}$/.test(username) ||
+        !Number.isSafeInteger(expires_at)) return {status: 503, payload: null};
+    return {status: 200, payload: {access_token, username, expires_at}};
+  } catch {
+    return {status: 503, payload: null};
+  }
 }
 
 function createConsoleHandler(directory, getEndpoint, resetEndpoint = () => {}, desktopLogin, admin) {
@@ -166,14 +195,18 @@ function createConsoleHandler(directory, getEndpoint, resetEndpoint = () => {}, 
       if (!endpoint) return failure(503, "unavailable");
       if (admin && (target.pathname === "/api/access" || opensAdmin)) {
         if (target.search || (opensAdmin && request.body)) return failure(400, "invalid_request");
-        const url = await readAdminUrl(endpoint, request.signal);
-        admin.show(Boolean(url));
+        const access = await readAdminAccess(endpoint, request.signal);
+        admin.show(Boolean(access));
         if (opensAdmin) {
-          if (!url) return failure(403, "forbidden");
-          await admin.open(url);
+          if (!access) return failure(403, "forbidden");
+          try {
+            await admin.open(access);
+          } catch {
+            return failure(503, "unavailable");
+          }
           return Response.json({state: "opened"}, {headers});
         }
-        return Response.json(url ? {admin_url: url} : {}, {headers});
+        return Response.json(access ? {admin_url: access.url} : {}, {headers});
       }
       if (desktopLogin && target.pathname === "/api/login" && !target.search) {
         if (isAction) return await signIn(request, endpoint, desktopLogin);
@@ -197,4 +230,4 @@ function createConsoleHandler(directory, getEndpoint, resetEndpoint = () => {}, 
   };
 }
 
-module.exports = { CONSOLE_URL, createConsoleHandler, parseConsoleEndpoint, readAdminUrl, requestPrivateLogin };
+module.exports = { CONSOLE_URL, createConsoleHandler, parseConsoleEndpoint, readAdminAccess, requestAdminSession, requestPrivateLogin };

@@ -132,3 +132,55 @@ def test_password_reset_rechecks_target_grants_after_hashing(tmp_path, monkeypat
         owner.reset_account_password("bob", NEW_PASSWORD, operator_token=token)
     assert result.value.code == "forbidden"
     assert owner.login("bob", PASSWORD, "console")["access_token"]
+
+
+def test_admin_session_uses_current_enrollment_account_and_expires_with_it(
+    tmp_path, monkeypatch
+):
+    db = tmp_path / "teamup.db"
+    clock = 1_800_000_000
+    monkeypatch.setattr("teamup_server.collaboration.time", lambda: clock)
+    owner = Collaboration(db, {})
+    owner.create_account("alice", PASSWORD)
+    with TestClient(create_app(db)) as client:
+        source = login(client, "alice", PASSWORD).json()
+        enrollment = auth(source["access_token"])
+        path = "/v1/auth/console-session"
+        assert client.post(path, headers=enrollment).status_code == 403
+        assert client.post(path, headers=auth(credential("agent"))).status_code == 401
+
+        owner.grant_console_read("alice")
+        early = client.post(path, headers=enrollment)
+        assert early.status_code == 200
+        assert early.json()["expires_at"] == clock + 3600
+        owner.reset_account_password("alice", NEW_PASSWORD)
+        assert (
+            client.get(
+                "/v1/console/rooms", headers=auth(early.json()["access_token"])
+            ).status_code
+            == 401
+        )
+        assert client.post(path, headers=enrollment).status_code == 401
+        source = login(client, "alice", NEW_PASSWORD).json()
+        enrollment = auth(source["access_token"])
+        clock = source["expires_at"] - 5
+        response = client.post(path, headers=enrollment)
+        assert response.status_code == 200
+        assert response.headers["cache-control"] == "no-store"
+        issued = response.json()
+        assert set(issued) == {"username", "access_token", "expires_at"}
+        assert issued["username"] == "alice"
+        assert issued["expires_at"] == source["expires_at"]
+        assert issued["access_token"] != source["access_token"]
+        console = auth(issued["access_token"])
+        assert client.get("/v1/console/rooms", headers=console).status_code == 200
+        assert client.get("/v1/auth/capabilities", headers=console).status_code == 401
+        assert client.post(path, headers=console).status_code == 401
+        assert client.post(path, headers=enrollment, json={}).status_code == 422
+
+        owner.revoke_console_read("alice")
+        assert client.get("/v1/console/rooms", headers=console).status_code == 403
+        assert client.post(path, headers=enrollment).status_code == 403
+        clock = source["expires_at"]
+        assert client.post(path, headers=enrollment).status_code == 401
+        assert client.get("/v1/console/rooms", headers=console).status_code == 401

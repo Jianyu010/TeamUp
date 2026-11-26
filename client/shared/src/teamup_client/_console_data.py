@@ -155,7 +155,9 @@ class Request(Protocol):
 
 
 class SessionLifecycle(Protocol):
-    async def console_access(self) -> dict: ...
+    async def console_admin_session(self) -> dict: ...
+
+    async def console_access(self, *, private: bool = False) -> dict: ...
 
     async def console_wake_settings(self, enabled: bool | None = None) -> dict: ...
 
@@ -195,10 +197,15 @@ class ConsoleReader:
             None if installed_version == "0.0.0+unknown" else installed_version
         )
 
-    async def access(self) -> dict:
+    async def access(self, *, private: bool = False) -> dict:
         if self._lifecycle is None:
             return {}
-        return await self._lifecycle.console_access()
+        return await self._lifecycle.console_access(private=private)
+
+    async def admin_session(self) -> dict:
+        if self._lifecycle is None:
+            return {"state": "unavailable"}
+        return await self._lifecycle.console_admin_session()
 
     async def wake_settings(self, enabled: bool | None = None) -> dict:
         if self._lifecycle is None:
