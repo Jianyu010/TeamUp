@@ -2431,13 +2431,15 @@ class Collaboration:
                 counts = connection.execute(
                     """
                     SELECT
-                        (SELECT COUNT(*) FROM room_members WHERE room_id = :room_id)
-                            AS member_count,
+                        COALESCE(json_array_length(r.archive_roster),
+                            (SELECT COUNT(*) FROM room_members WHERE room_id = r.room_id)
+                        ) AS member_count,
                         (SELECT COUNT(*) FROM messages WHERE room_id = :room_id)
                             AS messages_stored,
                         (SELECT teamup_expiry_micros(at) FROM room_activity
                             WHERE room_id = :room_id AND teamup_expiry_micros(at) IS NOT NULL
                             ORDER BY activity_id DESC LIMIT 1) AS last_activity_micros
+                    FROM rooms AS r WHERE r.room_id = :room_id
                     """,
                     {"room_id": room_id},
                 ).fetchone()
@@ -2465,14 +2467,15 @@ class Collaboration:
         connection: sqlite3.Connection, sampled_at: datetime, room_id: str | None = None
     ) -> dict:
         _register_expiry_clock(connection)
-        condition = "m.room_id IS NOT NULL" if room_id is None else "m.room_id = ?"
+        room_filter = "" if room_id is None else "AND r.room_id = ?"
         parameters = () if room_id is None else (room_id,)
         pending = connection.execute(
             f"""
             SELECT COUNT(*) AS pending_inbox_events,
                 MIN(teamup_expiry_micros(m.created_at)) AS oldest_micros
             FROM inbox_events AS e JOIN messages AS m USING (message_id)
-            WHERE e.acknowledged = 0 AND {condition}
+            JOIN rooms AS r ON r.room_id = m.room_id
+            WHERE e.acknowledged = 0 AND r.archived_at IS NULL {room_filter}
             """,
             parameters,
         ).fetchone()

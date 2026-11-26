@@ -344,3 +344,29 @@ def test_owner_counters_include_login_grant_and_sqlite_lock_failures(db_path):
         "inactive_session": 0,
         "missing_grant": 1,
     }
+
+
+def test_archived_room_load_keeps_roster_and_excludes_pending_delivery(owner):
+    sender, recipient = members(owner)
+    room_id = owner.create_room(sender[0], "Archived load", None, None)["room_id"]
+    owner.join_room(recipient[0], room_id)
+    board = owner.read_board(sender[0], room_id)
+    owner.confirm_board(sender[0], room_id, board["version"])
+    owner.send_message(sender[0], room_id, "pending-before-archive", "Still in history")
+    token = console_token(owner)
+    owner.grant_console_read(USERNAME)
+    owner.set_maintenance_grant(USERNAME, "maintenance_read", True)
+    assert owner.console_room_load(token, room_id)["room"]["pending_inbox_events"] == 1
+    owner.archive_room(sender[0], room_id)
+
+    snapshot = owner.console_maintenance_snapshot(token)["values"]
+    assert snapshot["pending_inbox_events"] == 0
+    assert snapshot["oldest_pending_age_seconds"] is None
+    assert snapshot["messages_stored"] == 1
+
+    owner.retire_self(recipient[0])
+    load = owner.console_room_load(token, room_id)["room"]
+    assert load["pending_inbox_events"] == 0
+    assert load["oldest_pending_age_seconds"] is None
+    assert load["member_count"] == 2
+    assert load["messages_stored"] == 1
