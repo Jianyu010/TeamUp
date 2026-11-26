@@ -56,6 +56,10 @@ Room Members and Team both project Presence through their own read session. Each
 
 The room Members rail lists Online members first. Within the Online group and among the remaining members, the latest sent or addressed message in the loaded, authorized room transcript determines order, newest first. The rail uses the Server's message order, keeps roster order for ties, and places members without visible communication last in their group. It reorders when the transcript changes, presence refreshes, or an Online badge expires.
 
+The Team directory lists Online members first and sorts each group alphabetically by the displayed member name using the console locale, with member ID as the tie-breaker. Presence refreshes and local lease expiry both update the ordering.
+
+The local Team response can include the Server's `online_since` and `online_for_ms` in each Online member's `presence` object when both values are available. **Up since** displays the start of the current uninterrupted heartbeat lease in local time. **Up for** shows the monotonic duration at each refresh as seconds, minutes and seconds, hours and minutes, or days and hours. Offline, Unknown, locally expired, and unavailable uptime values display a dash in both columns. A Server restart starts observations over with the next heartbeat.
+
 Team and compact session labels follow the [member profile contract](member-profiles.md#local-console).
 
 ## Build versions

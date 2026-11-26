@@ -78,7 +78,13 @@ def test_presence_uses_current_shared_rooms_and_self_only(tmp_path):
         outsider = enroll(client, "outsider", owner="bob").json()["member_id"]
         for _ in range(2):
             join(client, "peer", room(client))
-        unknown = {"state": "unknown", "observed_at": None, "age_ms": None}
+        unknown = {
+            "state": "unknown",
+            "observed_at": None,
+            "age_ms": None,
+            "online_since": None,
+            "online_for_ms": None,
+        }
         response = get(client, "sender", "/presence")
         assert response.status_code == 200, response.text
         snapshot = response.json()
@@ -112,7 +118,12 @@ def test_presence_uses_current_shared_rooms_and_self_only(tmp_path):
             key=datetime.fromisoformat,
         )
         members = get(client, "sender", "/presence").json()["members"]
-        peer_age = next(row["age_ms"] for row in members if row["member_id"] == peer)
+        peer_presence = next(row for row in members if row["member_id"] == peer)
+        peer_age = peer_presence["age_ms"]
+        assert peer_presence["online_since"] in {
+            receipt.json()["observed_at"] for receipt in receipts
+        }
+        assert peer_presence["online_for_ms"] >= peer_age - 1
         assert isinstance(peer_age, int) and 0 <= peer_age <= 45_000
         assert members == sorted(
             [
@@ -122,6 +133,8 @@ def test_presence_uses_current_shared_rooms_and_self_only(tmp_path):
                     "state": "online",
                     "observed_at": latest,
                     "age_ms": peer_age,
+                    "online_since": peer_presence["online_since"],
+                    "online_for_ms": peer_presence["online_for_ms"],
                 },
             ],
             key=lambda row: row["member_id"],
@@ -162,6 +175,8 @@ def test_disabled_account_immediately_loses_room_reads_and_presence(tmp_path):
                 "state": "unknown",
                 "observed_at": None,
                 "age_ms": None,
+                "online_since": None,
+                "online_for_ms": None,
             }
         ]
 
@@ -183,7 +198,7 @@ def test_presence_expiry_and_renewal_use_monotonic_time(tmp_path, monkeypatch):
     monkeypatch.setattr(presence, "monotonic_ns", lambda: tick_ns)
     monkeypatch.setattr(presence, "_utc_now", lambda: utc)
 
-    def check(state, observed_at, age_ms):
+    def check(state, observed_at, age_ms, online_since=None, online_for_ms=None):
         assert observed.snapshot(token) == {
             "as_of": utc,
             "members": [
@@ -192,6 +207,8 @@ def test_presence_expiry_and_renewal_use_monotonic_time(tmp_path, monkeypatch):
                     "state": state,
                     "observed_at": observed_at,
                     "age_ms": age_ms,
+                    "online_since": online_since,
+                    "online_for_ms": online_for_ms,
                 }
             ],
         }
@@ -199,15 +216,20 @@ def test_presence_expiry_and_renewal_use_monotonic_time(tmp_path, monkeypatch):
     old_receipt = observed.heartbeat(token)["observed_at"]
     assert old_receipt == utc
     # A wall-clock correction must not shorten or extend the lease.
-    check("online", old_receipt, 0)
+    check("online", old_receipt, 0, old_receipt, 0)
     tick_ns += 44_998_125_000
     utc = "2026-04-01T11:58:00Z"
-    check("online", old_receipt, 44_999)
-    tick_ns = 55_000_000_000
-    check("offline", old_receipt, 45_000)
+    check("online", old_receipt, 44_999, old_receipt, 44_998)
+    renewed_at = utc
+    assert observed.heartbeat(token) == {"observed_at": renewed_at}
+    tick_ns += 1_875_000
+    check("online", renewed_at, 2, old_receipt, 45_000)
+    tick_ns = 54_998_125_000 + 45_000_000_000
+    utc = "2026-04-01T11:59:00Z"
+    check("offline", renewed_at, 45_000)
     assert observed.heartbeat(token) == {"observed_at": utc}
     tick_ns += 44_000_000_000
-    check("online", utc, 44_000)
+    check("online", utc, 44_000, utc, 44_000)
     tick_ns += 1_000_000_000
     check("offline", utc, 45_000)
 
@@ -251,4 +273,7 @@ def test_slow_authorization_cannot_reorder_concurrent_heartbeat_receipts(
         finally:
             resume.set()
         assert first.result(timeout=5) == {"observed_at": initial}
-    assert observed.snapshot(token)["members"][0]["observed_at"] == utc
+    member = observed.snapshot(token)["members"][0]
+    assert member["observed_at"] == utc
+    assert member["online_since"] == utc
+    assert member["online_for_ms"] == 0
