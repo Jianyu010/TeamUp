@@ -88,6 +88,8 @@ Team and compact session labels follow the [member profile contract](member-prof
 
 ## Build versions
 
+**About TeamUp** on macOS shows the desktop bundle’s build version, including the development suffix. The desktop bundle and Client package use the same build version source. Builds from the same revision and release tags agree, and independently installed builds report their own versions.
+
 The main window shows **Client** and **Server** at the bottom left. Client identifies the running `teamup-client` process. Server identifies the build reported by the Server configured for that Client. The window refreshes both values when it opens and every five seconds after each read completes, including with no registered sessions.
 
 `GET /api/versions` uses the local console launch credential. It returns `client_version`, `server_version`, and `server_state`. The Client reads the configured Server's [version endpoint](client-server-v1.md#构建版本54) on each request with a two-second deadline. The version fields are strings or null. `server_state` is `ready` when the Server reports its version, `unknown` when the Server returns 404 or has no build version, and `unavailable` when the read fails. The console displays **Unknown** for an unknown build and **Unavailable** on a failed Server read. Each observation replaces the previous one.
