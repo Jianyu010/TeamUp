@@ -59,9 +59,14 @@ async function read(path, params, action) {
     },
     body: action?.body ? JSON.stringify(action.body) : undefined,
     cache: "no-store",
-    signal: AbortSignal.timeout(21000),
+    signal: AbortSignal.timeout(action?.timeout ?? 21000),
   });
-  if (!response.ok && !action) throw new Error(response.status === 401 ? "access" : "connection");
+  if (!response.ok && !action) {
+    if (response.status === 409 && (await response.json()).state === "sign_in_required") {
+      throw new Error("sign_in_required");
+    }
+    throw new Error(response.status === 401 ? "access" : "connection");
+  }
   return await response.json();
 }
 
@@ -184,6 +189,121 @@ async function removeRoomMember(room, session, member) {
     status.textContent = "TeamUp could not confirm the removal.";
   }
   await refresh();
+}
+
+const archiveDialog = get("room-archive-dialog");
+const archiveSession = get("room-archive-session");
+const archiveRoom = get("room-archive-room");
+let archiveListRequest = 0;
+let archiveDetailRequest = 0;
+let archiveAfter = null;
+let archiveBefore = null;
+
+async function markGoalReached() {
+  const room = activeRoom();
+  const creator = room && readyMemberships(room).find((item) => item.can_remove_members);
+  if (!creator || !window.confirm("Mark the goal reached and archive this room?")) return;
+  const button = get("archive-room");
+  const status = get("session-action-status");
+  button.disabled = true;
+  try {
+    const receipt = await read("/api/room-archive", {session: creator.session, room: room.id}, {});
+    if (receipt.state === "ready") {
+      status.textContent = room.name + " was archived.";
+      show("workspace");
+      await refresh();
+    } else {
+      status.textContent = "TeamUp could not archive this room.";
+    }
+  } catch {
+    status.textContent = "TeamUp could not confirm that the room was archived.";
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function openRoomArchive() {
+  const sessions = state.workspace.sessions.filter((session) => session.state === "ready");
+  const session = sessions.find((candidate) => candidate.id === state.focused) ?? sessions[0];
+  renderSessionChoices(archiveSession, sessions, session?.id, "No available sessions");
+  archiveDialog.showModal();
+  loadArchiveRooms();
+}
+
+async function loadArchiveRooms(after = null) {
+  const request = ++archiveListRequest;
+  const status = get("room-archive-status");
+  const more = get("room-archive-more");
+  if (!after) {
+    archiveDetailRequest += 1;
+    archiveRoom.replaceChildren();
+    get("room-archive-details").hidden = true;
+  }
+  more.hidden = true;
+  if (!archiveSession.value) {
+    status.textContent = "Select an available session to read its archived rooms.";
+    return;
+  }
+  status.textContent = "Reading archived rooms…";
+  try {
+    const result = await read("/api/room-archive", {session: archiveSession.value, after});
+    if (request !== archiveListRequest || !archiveDialog.open) return;
+    if (result.state !== "ready") throw new Error();
+    for (const room of result.rooms) {
+      const reason = room.archive_reason === "goal_reached" ? "Goal reached" : "Inactive";
+      const date = new Date(room.archived_at).toLocaleString();
+      const option = node("option", room.name + " · " + reason + " · " + date);
+      option.value = room.room_id;
+      archiveRoom.append(option);
+    }
+    archiveAfter = result.next_after;
+    more.hidden = !archiveAfter;
+    status.textContent = archiveRoom.options.length ? "" : "No archived rooms for this session.";
+    if (!after && archiveRoom.value) await loadArchivedRoom();
+  } catch {
+    if (request !== archiveListRequest || !archiveDialog.open) return;
+    status.textContent = "TeamUp could not load archived rooms.";
+    more.hidden = !after;
+  }
+}
+
+async function loadArchivedRoom(before = null) {
+  const request = ++archiveDetailRequest;
+  const status = get("room-archive-status");
+  const details = get("room-archive-details");
+  const older = get("room-archive-older");
+  if (!before) details.hidden = true;
+  older.hidden = true;
+  if (!archiveRoom.value) return;
+  status.textContent = "Reading archived room…";
+  try {
+    const result = await read("/api/room-archive", {
+      session: archiveSession.value, room: archiveRoom.value, before,
+    });
+    if (request !== archiveDetailRequest || !archiveDialog.open) return;
+    if (result.state !== "ready") throw new Error();
+    get("room-archive-members").replaceChildren(...result.members.map((member) => {
+      const name = member.name ?? member.role_description ?? member.member_id;
+      const description = member.description ? " — " + member.description : "";
+      return node("li", name + description + " (" + member.member_id + ")");
+    }));
+    const history = get("room-archive-messages");
+    const rows = result.messages.map((message) => messageRow(node, message));
+    if (before) history.prepend(...rows);
+    else history.replaceChildren(...rows);
+    get("room-archive-history-status").textContent = result.history_state === "board_ack_required"
+      ? "This session did not acknowledge the final Board version."
+      : result.history_truncated ? "Some earlier messages expired before archiving."
+        : !before && !rows.length ? "No messages in this session’s history." : "";
+    archiveBefore = result.older;
+    older.hidden = !archiveBefore;
+    details.hidden = false;
+    status.textContent = "";
+  } catch {
+    if (request !== archiveDetailRequest || !archiveDialog.open) return;
+    status.textContent = "TeamUp could not load this archived room.";
+    older.hidden = !before;
+  }
 }
 
 function renderRoomView() {
@@ -393,6 +513,7 @@ function renderRoomHeader() {
   const membership = room.memberships.find((item) => item.session === state.reader);
   get("room-heading").textContent = room.name;
   get("room-heading").hidden = Boolean(membership);
+  get("archive-room").hidden = !readyMemberships(room).some((item) => item.can_remove_members);
   const boardSessions = readyMemberships(room).map((entry) => ({
     ...sessionFor(entry.session),
     current: entry.current,
@@ -549,7 +670,10 @@ function setConnection(message, live) {
   get("connection").dataset.live = String(live);
 }
 
+let versionsTimer;
+
 async function refreshVersions() {
+  clearTimeout(versionsTimer);
   try {
     const result = await read("/api/versions");
     get("client-version").textContent = result.client_version ?? "Unknown";
@@ -561,7 +685,7 @@ async function refreshVersions() {
     get("server-version").textContent = "Unavailable";
     if (error.message === "access") return;
   }
-  setTimeout(refreshVersions, refreshInterval);
+  if (!stage.hidden) versionsTimer = setTimeout(refreshVersions, refreshInterval);
 }
 
 function applyWorkspace(snapshot) {
@@ -607,8 +731,158 @@ function applyWorkspace(snapshot) {
   }
 }
 
+const signIn = get("sign-in");
+const signInPassword = get("sign-in-password");
+const rememberLogin = get("remember-login");
+const wakeSettings = get("wake-settings");
+const wakeOnMention = get("wake-on-mention");
+const preferenceStatus = get("login-preference-status");
+const rememberLoginLabel = get("remember-login-label");
+
+async function loadRememberOption() {
+  rememberLogin.checked = false;
+  rememberLoginLabel.hidden = true;
+  if (!desktop) return;
+  try {
+    const result = await read("/api/login");
+    rememberLoginLabel.hidden = signIn.hidden || result.remember_available !== true;
+  } catch {
+    // Interactive sign-in is available while the preference check is retried.
+  }
+}
+
+function showPreferenceStatus(text) {
+  preferenceStatus.textContent = text;
+  preferenceStatus.hidden = !text;
+}
+
+async function loadWakeSettings() {
+  wakeSettings.hidden = true;
+  try {
+    const result = await read("/api/wake-settings");
+    if (result.state === "ready" && !stage.hidden) {
+      wakeOnMention.checked = result.enabled;
+      wakeSettings.hidden = false;
+    }
+  } catch {
+    // The Workspace can open with an older or temporarily disconnected Client.
+  }
+}
+
+wakeOnMention.addEventListener("change", async () => {
+  const enabled = wakeOnMention.checked;
+  wakeOnMention.disabled = true;
+  showPreferenceStatus("");
+  try {
+    const result = await read("/api/wake-settings", null, {body: {enabled}});
+    if (result.state !== "ready") throw new Error("wake_settings");
+    wakeOnMention.checked = result.enabled;
+  } catch {
+    wakeOnMention.checked = !enabled;
+    showPreferenceStatus("TeamUp could not save the wake setting.");
+  } finally {
+    wakeOnMention.disabled = false;
+  }
+});
+const loginMessages = {
+  wrong_credentials: "Wrong username or password.",
+  rate_limited: "Too many sign-in attempts. Try again later.",
+  profile_unavailable: "TeamUp could not save the Client profile. Check the profile and try again.",
+  unavailable: "TeamUp could not complete sign-in. Check the Server connection and try again.",
+};
+
+function displaySignIn() {
+  const opening = signIn.hidden;
+  signIn.hidden = false;
+  stage.hidden = true;
+  get("client-nav").hidden = true;
+  get("versions").hidden = true;
+  clearTimeout(versionsTimer);
+  setConnection("Sign-in required", false);
+  if (opening) {
+    loadRememberOption();
+    get("retire-dialog").close();
+    get("sign-in-username").focus();
+  }
+}
+
+function displayWorkspace() {
+  if (!stage.hidden) return;
+  signIn.hidden = true;
+  signInPassword.value = "";
+  get("sign-in-status").textContent = "";
+  stage.hidden = false;
+  get("client-nav").hidden = false;
+  get("versions").hidden = false;
+  loadWakeSettings();
+  refreshVersions();
+}
+
+get("sign-in-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const submit = get("sign-in-submit");
+  const status = get("sign-in-status");
+  if (submit.disabled) return;
+  submit.disabled = true;
+  status.textContent = "Signing in…";
+  const pending = read("/api/login", null, {
+    body: {
+      username: get("sign-in-username").value,
+      password: signInPassword.value,
+      ...(desktop ? {remember: rememberLogin.checked} : {}),
+    },
+    timeout: 35000,
+  });
+  signInPassword.value = "";
+  try {
+    const result = await pending;
+    if (result.state === "ready") {
+      const keychainMessage = {
+        save_failed: "TeamUp could not save credentials in Keychain.",
+        forget_failed: "TeamUp could not remove saved credentials from Keychain.",
+      };
+      showPreferenceStatus(keychainMessage[result.keychain] ?? "");
+      rememberLogin.checked = false;
+      await refresh();
+    } else if (Object.hasOwn(loginMessages, result.state)) {
+      status.textContent = loginMessages[result.state];
+    } else {
+      status.textContent = loginMessages.unavailable;
+    }
+  } catch {
+    status.textContent = loginMessages.unavailable;
+  } finally {
+    submit.disabled = false;
+    if (!signIn.hidden) signInPassword.focus();
+  }
+});
+
 let workspaceRequest = 0;
 let workspaceTimer;
+
+const adminEntry = get("admin-entry");
+
+function showAdminEntry(url) {
+  adminEntry.hidden = !url;
+  if (url) adminEntry.href = url;
+  else adminEntry.removeAttribute("href");
+}
+
+async function refreshAdminEntry(request) {
+  let url;
+  try {
+    ({admin_url: url} = await read("/api/access"));
+  } catch {}
+  if (request === workspaceRequest) showAdminEntry(url);
+}
+
+adminEntry.addEventListener("click", async (event) => {
+  if (!desktop) return;
+  event.preventDefault();
+  try {
+    if ((await read("/api/open-admin", null, {})).state === "forbidden") showAdminEntry();
+  } catch {}
+});
 
 async function refresh() {
   clearTimeout(workspaceTimer);
@@ -616,9 +890,24 @@ async function refresh() {
   let expire = false;
   try {
     const snapshot = await read("/api/workspace");
-    if (request === workspaceRequest) applyWorkspace(snapshot);
+    if (request === workspaceRequest) {
+      displayWorkspace();
+      applyWorkspace(snapshot);
+      void refreshAdminEntry(request);
+    }
   } catch (error) {
     if (request !== workspaceRequest) return;
+    showAdminEntry();
+    if (desktop) void refreshAdminEntry(request);
+    if (error.message === "sign_in_required") {
+      state.workspace = {sessions: [], rooms: []};
+      state.chat = null;
+      state.room = null;
+      state.focused = null;
+      show("workspace");
+      displaySignIn();
+      return;
+    }
     expire = error.message === "access";
     setConnection(expire ? "Open a fresh console link" : "Reconnecting…", false);
     state.workspace = {sessions:[], rooms:[]};
@@ -657,6 +946,16 @@ async function copyId() {
 
 get("workspace-nav").addEventListener("click", () => show("workspace"));
 get("team-nav").addEventListener("click", () => show("team"));
+get("archive-room").addEventListener("click", markGoalReached);
+get("open-room-archive").addEventListener("click", openRoomArchive);
+archiveSession.addEventListener("change", () => loadArchiveRooms());
+archiveRoom.addEventListener("change", () => loadArchivedRoom());
+get("room-archive-more").addEventListener("click", () => loadArchiveRooms(archiveAfter));
+get("room-archive-older").addEventListener("click", () => loadArchivedRoom(archiveBefore));
+archiveDialog.addEventListener("close", () => {
+  archiveListRequest += 1;
+  archiveDetailRequest += 1;
+});
 get("back").addEventListener("click", () => show("workspace"));
 function changeSessionView(update) {
   Object.assign(state.sessionView, update);
@@ -706,7 +1005,6 @@ window.addEventListener("keydown", (event) => {
 });
 if (desktop || key) {
   refresh();
-  refreshVersions();
 } else {
   setConnection("Open the URL printed by TeamUp Client", false);
   renderWorkspace();

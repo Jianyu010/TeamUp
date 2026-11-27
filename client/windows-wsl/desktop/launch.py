@@ -108,19 +108,43 @@ def server_url(path):
     return None
 
 
-def accepts_http(value):
+def console_state(value):
     match = LOCAL_URL.fullmatch(value)
     connection = http.client.HTTPConnection("127.0.0.1", int(match[1]), timeout=1)
     try:
-        connection.request("GET", "/")
+        headers = {"Authorization": f"Bearer {match[2]}"}
+        connection.request("GET", "/api/login", headers=headers)
         response = connection.getresponse()
-        return response.status == 200 and response.getheader(
-            "Content-Type", ""
-        ).startswith("text/html")
-    except (OSError, http.client.HTTPException):
-        return False
+        if response.status == 404:
+            # Older Clients predate interactive sign-in.
+            response.read()
+            connection.request("GET", "/api/versions", headers=headers)
+            response = connection.getresponse()
+            if response.status == 200 and response.getheader(
+                "Content-Type", ""
+            ).startswith("application/json"):
+                data = json.loads(response.read(4096))
+                if isinstance(data, dict) and set(data) == {
+                    "client_version",
+                    "server_version",
+                    "server_state",
+                }:
+                    return "legacy"
+            return None
+        if response.status == 200 and response.getheader("Content-Type", "").startswith(
+            "application/json"
+        ):
+            data = json.loads(response.read(4096))
+            if isinstance(data, dict) and data.get("state") in {
+                "sign_in_required",
+                "ready",
+            }:
+                return data["state"]
+    except (OSError, http.client.HTTPException, ValueError):
+        pass
     finally:
         connection.close()
+    return None
 
 
 def saved_launch(path):
@@ -154,18 +178,46 @@ def ensure_console(config, client, state_dir):
 
     with private_file(profile_dir / "launch.lock", writable=True) as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
+
+        def record_endpoint(running, pid):
+            write_private(
+                metadata,
+                json.dumps(
+                    {
+                        "config": str(config),
+                        "socket": list(running) if running else None,
+                        "pid": pid,
+                    }
+                ).encode(),
+            )
+
+        record = saved_launch(metadata)
+        value = server_url(url_file)
         running = live_socket(socket_path)
-        if running:
-            record = saved_launch(metadata)
-            value = server_url(url_file)
-            if (
-                record.get("config") == str(config)
-                and record.get("socket") == list(running)
-                and running_pid(record.get("pid"))
-                and value
-                and accepts_http(value)
-            ):
-                return value
+        if (
+            value
+            and record.get("config") == str(config)
+            and running_pid(record.get("pid"))
+            and (
+                record.get("socket") is None or record["socket"] == list(running or ())
+            )
+        ):
+            status = console_state(value)
+            running = live_socket(socket_path)
+            if record.get("socket") is None and running is None:
+                if status == "sign_in_required":
+                    return value
+                raise LaunchError(
+                    "TeamUp Client is still waiting for sign-in but its Console did not respond. "
+                    "Try opening TeamUp again."
+                )
+            if running and status in {"ready", "legacy"}:
+                if record.get("socket") == list(running):
+                    return value
+                if status == "ready" and record.get("socket") is None:
+                    record_endpoint(running, record["pid"])
+                    return value
+        if live_socket(socket_path):
             raise LaunchError(
                 "This TeamUp Client is already running outside the launcher or its Console is unavailable."
             )
@@ -193,20 +245,16 @@ def ensure_console(config, client, state_dir):
             write_private(pidfile, str(process.pid).encode())
             deadline = time.monotonic() + 12
             while time.monotonic() < deadline and process.poll() is None:
-                running = live_socket(socket_path)
                 value = server_url(url_file)
-                if running and value and accepts_http(value):
-                    write_private(
-                        metadata,
-                        json.dumps(
-                            {
-                                "config": str(config),
-                                "socket": list(running),
-                                "pid": process.pid,
-                            }
-                        ).encode(),
-                    )
-                    return value
+                if value:
+                    status = console_state(value)
+                    running = live_socket(socket_path)
+                    if status == "sign_in_required":
+                        record_endpoint(None, process.pid)
+                        return value
+                    if running and status in {"ready", "legacy"}:
+                        record_endpoint(running, process.pid)
+                        return value
                 time.sleep(0.05)
         except BaseException:
             if process.poll() is None:

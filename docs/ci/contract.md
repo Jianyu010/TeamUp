@@ -1,42 +1,44 @@
-# CI 套件共享契约
+# Shared CI suite contract
 
-本页是 nightly 场景、性能基准、weekly Agent E2E、看板和发布脚本之间的接口。任何一方修改字段、路径或命令，先改本页。
+This page defines the interface shared by the nightly scenarios, performance benchmarks, weekly agent end-to-end tests, dashboards, and release scripts. Update this contract before changing a field, path, or command used by any of them.
 
-## 目录
+## Directory layout
 
 ```text
 tests/scenarios/
-  README.md               # 场景目录：ID、标题、覆盖的能力、所属套件
-  conftest.py             # 仅当 TEAMUP_SCENARIOS 包含本套件时才收集；写 summary.json
-  _stack.py               # 共享夹具：启动 Server、Client 守护进程、MCP stdio 会话
-  nightly/test_*.py       # 免模型的功能场景（NS-xx）
-  perf/                   # 免模型的性能基准（NP-xx），python -m tests.scenarios.perf
-  weekly/                 # 真实 Agent 场景（WE-xx），python -m tests.scenarios.weekly
-scripts/ci/               # 门禁、合入、发布、发布结果、仓库统计；仅标准库
-dashboards/site/          # 静态看板页面，发布到 ci-data 分支根目录
+  README.md               # Scenario catalog with IDs, titles, coverage, and suite membership
+  conftest.py             # Collects tests only for suites selected by TEAMUP_SCENARIOS and writes summary.json
+  _stack.py               # Shared fixture that starts the Server, Client daemon, and MCP stdio session
+  nightly/test_*.py       # Model-free functional scenarios (NS-xx)
+  perf/                   # Model-free performance benchmarks (NP-xx), python -m tests.scenarios.perf
+  weekly/                 # Scenarios with real agents (WE-xx), python -m tests.scenarios.weekly
+scripts/ci/               # Gate, merge, release, results publishing, and repo statistics (standard library only)
+dashboards/site/          # Static dashboard pages, published to the root of the ci-data branch
 ```
 
-PR 门禁运行的 `pytest`（根 `pyproject.toml` 的 testpaths）**不得**收集 `tests/scenarios/`。`tests/scenarios/conftest.py` 在环境变量 `TEAMUP_SCENARIOS` 未包含对应套件名时通过 `collect_ignore_glob` 忽略全部场景。
+The PR gate's `pytest` invocation uses the `testpaths` from the root `pyproject.toml` and **must exclude** `tests/scenarios/`. The `tests/scenarios/conftest.py` file uses `collect_ignore_glob` to skip all scenarios unless the `TEAMUP_SCENARIOS` environment variable includes the corresponding suite name.
 
-## 调用方式
+## Running the suites
 
-所有命令在仓库根目录执行，Python 环境由 `uv sync --frozen --all-packages` 准备，`--no-sync` 运行。
+Run all commands from the repository root. Set up the Python environment with `uv sync --frozen --all-packages` and run each suite with `--no-sync`.
 
-| 套件 | 命令 | 时长上限 | 是否调用模型 |
+| Suite | Command | Time limit | Model calls |
 | --- | --- | --- | --- |
-| nightly 场景 | `TEAMUP_SCENARIOS=nightly uv run --no-sync pytest tests/scenarios/nightly -q` | 15 分钟 | 否 |
-| nightly 性能 | `uv run --no-sync python -m tests.scenarios.perf --out results/nightly/perf.json` | 25 分钟 | 否 |
-| weekly Agent E2E | `uv run --no-sync python -m tests.scenarios.weekly --out results/weekly/summary.json` | 90 分钟 | 是（opencode，csi 网关） |
+| Nightly scenarios | `TEAMUP_SCENARIOS=nightly uv run --no-sync pytest tests/scenarios/nightly -q` | 15 minutes | No |
+| Nightly performance | `uv run --no-sync python -m tests.scenarios.perf --out results/nightly/perf.json` | 25 minutes | No |
+| Weekly agent end-to-end tests | `uv run --no-sync python -m tests.scenarios.weekly --out results/weekly/summary.json` | 90 minutes | Yes, via opencode and the csi gateway |
 
-环境变量 `TEAMUP_RESULTS_DIR`（默认 `results`）决定 summary 落点。`conftest.py` 写 `results/nightly/scenarios.json`。工作流随后用 `scripts/ci/results.py merge` 合成 `results/nightly/summary.json`。
+The `TEAMUP_RESULTS_DIR` environment variable controls where the summary goes and defaults to `results`. The `conftest.py` file writes `results/nightly/scenarios.json`. The workflow then runs `scripts/ci/results.py merge` to produce `results/nightly/summary.json`.
 
-## 结果文件（schema 1）
+The nightly report attempts to publish the summary and sets the merge freeze when the verdict is red. The report then fails the GitHub Actions run so its conclusion reflects the suite verdict.
+
+## Results file (schema 1)
 
 ```json
 {
   "schema": 1,
   "suite": "nightly",
-  "sha": "<40 位提交>",
+  "sha": "<40-character commit SHA>",
   "version": "0.1.1.dev3",
   "started_at": "2026-11-25T02:00:00Z",
   "finished_at": "2026-11-25T02:21:13Z",
@@ -57,25 +59,25 @@ PR 门禁运行的 `pytest`（根 `pyproject.toml` 的 testpaths）**不得**收
 }
 ```
 
-- `status` 取 `pass`、`fail`、`error`、`skip`。`detail` 为失败原因摘要，不超过 2000 字符，不含密钥。
-- `scenarios` 中任何 `fail` 或 `error` 都让该套件判红。性能基准只记录指标；基准自身无法完成时登记一条 `NP-xx` 场景为 `error`。
-- `labels` 只用标量，看板用 `name` + `labels` 区分序列。数值统一保留 1 位小数。
-- `sha`、`version`、`host` 由工作流经环境变量 `TEAMUP_SHA`、`TEAMUP_VERSION`、`TEAMUP_HOST` 传入，缺省时写 `null`。
+- Valid values for `status` are `pass`, `fail`, `error`, and `skip`. The `detail` field summarizes the failure in 2,000 characters or fewer and must be free of secrets.
+- The suite fails if any entry in `scenarios` has status `fail` or `error`. Performance benchmarks record metrics only. If a benchmark cannot complete, record an `NP-xx` scenario with status `error`.
+- Label values must be scalars. The dashboard distinguishes series by `name` and `labels` together. Round numeric values to one decimal place.
+- The workflow supplies `sha`, `version`, and `host` through `TEAMUP_SHA`, `TEAMUP_VERSION`, and `TEAMUP_HOST` respectively. Write `null` for any missing values.
 
-## 数据分支 `ci-data`
+## The `ci-data` branch
 
-`scripts/ci/results.py publish` 通过 GitHub contents API 写入，不使用 git push。
+The `scripts/ci/results.py publish` command writes to the branch through the GitHub Contents API, without using `git push`.
 
 ```text
-data/nightly.jsonl     # 每次 nightly 一行（完整 summary）
-data/weekly.jsonl      # 每次 weekly 一行
-data/repo.jsonl        # 每天一行仓库统计（见下）
-data/releases.jsonl    # 每次发布一行 {"tag","version","kind","sha","published_at","prs":[...]}
-data/ci.jsonl          # 每天一行 CI 健康统计（见下）
-index.html  repo.html  performance.html  agents.html  assets/*   # 从 dashboards/site/ 同步
+data/nightly.jsonl     # One complete summary per nightly run
+data/weekly.jsonl      # One line per weekly run
+data/repo.jsonl        # One line of repository statistics per day (see below)
+data/releases.jsonl    # One line per release {"tag","version","kind","sha","published_at","prs":[...]}
+data/ci.jsonl          # One line of CI health statistics per day (see below)
+index.html  repo.html  performance.html  agents.html  assets/*   # Synced from dashboards/site/
 ```
 
-仓库统计行：
+Example repository statistics record
 
 ```json
 {"date": "2026-11-25", "collected_at": "...", "stars": 3, "watchers": 2, "forks": 0,
@@ -85,7 +87,7 @@ index.html  repo.html  performance.html  agents.html  assets/*   # 从 dashboard
  "latest_release": "v0.1.1", "latest_release_at": "...", "days_since_release": 0.4}
 ```
 
-CI 健康统计行（`scripts/ci/ci_stats.py`）。`pr_checks`、`main_checks`、`gate`、`review`、`nightly`、`weekly` 各为一组计数，取当天创建的 workflow run：
+The CI health record comes from `scripts/ci/ci_stats.py`. Each of `pr_checks`, `main_checks`, `gate`, `review`, `nightly`, and `weekly` contains a set of counts for workflow runs created that day.
 
 ```json
 {"date": "2026-11-25", "collected_at": "...",
@@ -94,12 +96,12 @@ CI 健康统计行（`scripts/ci/ci_stats.py`）。`pr_checks`、`main_checks`�
  "prs_merged": 3, "median_hours_to_merge": 5.2, "freeze_open": 0}
 ```
 
-`success` 计通过，`failure` 含 `failure`、`timed_out`、`startup_failure`。`cancelled`、`skipped` 计入 `no_verdict`，不进通过率。没有判定的那天 `pass_rate` 为 `null`。
+The `success` count includes passing runs. The `failure` count includes the `failure`, `timed_out`, and `startup_failure` conclusions. The `no_verdict` count includes `cancelled` and `skipped`, which are excluded from the pass rate. If no run has a verdict that day, `pass_rate` is `null`.
 
-不可读取的字段（例如 traffic 接口无权限）写 `null`，看板显示为空，不当作 0。
+Write `null` for fields that cannot be read, for example when the token lacks access to the traffic endpoint. The dashboard leaves those values blank.
 
-## 版本
+## Versioning
 
-`scripts/ci/version.py` 负责计算构建版本。在 `vX.Y.Z` 标签上版本为 `X.Y.Z`。标签之后每个首父提交计一次，开发版本为 `X.Y.(Z+1).devN`。例如按 PEP 440 排序，`0.0.1 < 0.0.2.dev1 < 0.0.2`。nightly 绿且 N > 0 时发布 `vX.Y.(Z+1)`。weekly 绿且自上一个 `vX.Y.0` 以来有合入时发布 `vX.(Y+1).0`。
+The `scripts/ci/version.py` script computes the build version. At a `vX.Y.Z` tag the version is `X.Y.Z`. After the tag, the development version is `X.Y.(Z+1).devN`, where N counts the commits along the first-parent chain. For example, the PEP 440 ordering is `0.0.1 < 0.0.2.dev1 < 0.0.2`. Publish `vX.Y.(Z+1)` when nightly passes and N > 0. Publish `vX.(Y+1).0` when weekly passes and there has been a merge since the last `vX.Y.0` tag.
 
-Client 和 Server 在构建时将版本写入各自的 Python 包元数据。从 Git checkout 构建时，使用构建修订的首父链上最近的稳定标签。`python3 -m scripts.ci.version --local --sha <revision>` 可为固定修订计算同一版本。无 Git 记录的源码可携带根目录下的 `TEAMUP-VERSION` 文件。缺少该文件时，CI 可在构建时通过 `TEAMUP_VERSION` 传入已计算的版本。未获得版本的构建在包元数据中标为 `0.0.0+unknown`，运行时报告未知。已生成的源码发行包和 wheel 保留其构建版本。
+The Client and Server write their versions to their respective Python package metadata at build time. A build from a Git checkout uses the closest stable tag on the build revision's first-parent chain. Use `python3 -m scripts.ci.version --local --sha <revision>` to compute the same version for a specific revision. Source trees without Git history can carry a `TEAMUP-VERSION` file at the repository root. If that file is absent, CI can supply the computed version via `TEAMUP_VERSION` at build time. Builds with no version have `0.0.0+unknown` in package metadata and report an unknown version at runtime. Source distributions and wheels retain their build versions.

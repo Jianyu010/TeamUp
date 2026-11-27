@@ -164,6 +164,51 @@ test("relays named reads and writes with the main process credential", async (t)
   })));
 });
 
+test("forwards login, wake settings and archives through the authenticated loopback contract", async (t) => {
+  const received = [];
+  const server = http.createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    received.push({ path: request.url, method: request.method,
+      auth: request.headers.authorization, origin: request.headers.origin,
+      body: Buffer.concat(chunks).toString() });
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({ state: "ready" }));
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => server.close());
+  const { port } = server.address();
+  const handle = createConsoleHandler(assets, () => ({ port, token }));
+  const login = { username: "alice", password: "local test password", remember: false };
+  const routes = [
+    ["/api/login", "GET", undefined],
+    ["/api/login", "POST", login],
+    ["/api/wake-settings", "GET", undefined],
+    ["/api/wake-settings", "POST", { enabled: false }],
+    ["/api/room-archive?session=creator&after=room", "GET", undefined],
+    ["/api/room-archive?session=creator&room=room", "POST", {}],
+  ];
+  for (const [path, method, payload] of routes) {
+    const options = { method, ...(payload ? { headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload) } : {}) };
+    assert.equal((await handle(consoleRequest(path, options, "https://example.com"))).status, 403);
+    assert.equal((await handle(consoleRequest(path, options))).status, 200);
+  }
+  assert.deepEqual(received, routes.map(([path, method, payload]) => ({
+    path, method, auth: `Bearer ${token}`, origin: `http://127.0.0.1:${port}`,
+    body: payload ? JSON.stringify(payload === login ? { username: login.username, password: login.password } : payload) : "",
+  })));
+  const invalid = ["not JSON", "null", "[]", JSON.stringify({ ...login, remember: true }),
+    JSON.stringify({ ...login, remember_scope: "a".repeat(64) }), JSON.stringify({ username: "alice" })];
+  for (const body of invalid) {
+    assert.equal((await handle(consoleRequest("/api/login", { method: "POST",
+      headers: { "Content-Type": "application/json" }, body }))).status, 400);
+  }
+  assert.equal(received.length, routes.length);
+  assert.equal((await handle(consoleRequest("/api/admin/session", { method: "POST" }))).status, 404);
+});
+
 for (const route of ["/api/workspace", "/api/versions"]) {
   test(`reacquires the console endpoint for ${route} after a stale launch credential`, async (t) => {
     let accepted = false;

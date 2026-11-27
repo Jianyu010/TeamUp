@@ -638,6 +638,36 @@ def test_team_uses_same_scoped_presence_for_local_remote_and_other_members():
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("online_for_ms", [0, 75_000, -1, True, None])
+def test_team_projects_optional_uptime_from_authorized_presence(online_for_ms):
+    async def scenario():
+        upstream = RosterUpstream()
+        uptime = {"online_since": upstream.observed_at, "online_for_ms": online_for_ms}
+
+        async def request(method, path, token, *, query=None):
+            if path.endswith("/tasks"):
+                return {"tasks": [], "next_after": None}
+            result = await upstream(method, path, token, query=query)
+            if path == "/presence":
+                for member in result["members"]:
+                    member.update(uptime)
+            return result
+
+        reader = ConsoleReader(sessions, request)
+        team = await reader.team("primary")
+        observations = {item["id"]: item["presence"] for item in team["members"]}
+        assert not uptime.keys() & observations[REMOTE].keys()
+        assert not uptime.keys() & observations[OUTSIDER].keys()
+        if type(online_for_ms) is int and online_for_ms >= 0:
+            assert {field: observations[BACKEND][field] for field in uptime} == uptime
+        else:
+            assert not uptime.keys() & observations[BACKEND].keys()
+        roster = await reader.room_members("primary", ROOM)
+        assert all(not uptime.keys() & row["presence"].keys() for row in roster["members"])
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize(
     "metadata",
     [
@@ -1065,5 +1095,69 @@ def test_incomplete_task_observation_bounds_upstream_pages():
             membership["active_task"] is None
             for membership in data["rooms"][0]["memberships"]
         )
+
+    asyncio.run(scenario())
+
+
+def test_archive_reads_use_the_selected_binding_and_keep_the_roster_when_chat_is_gated():
+    async def scenario():
+        upstream = Upstream()
+
+        async def request(method, path, token, *, query=None):
+            if path == "/rooms/archive":
+                assert token == "reviewer-secret"
+                return {"rooms": [{"room_id": ROOM}], "next_after": None}
+            if path == f"/rooms/{ROOM}":
+                assert token == "reviewer-secret"
+                return {"archived_at": "2026-11-26T00:00:00Z", "archive_reason": "inactive"}
+            if path == f"/rooms/{ROOM}/members":
+                assert token == "reviewer-secret"
+                return {"members": [{"member_id": BACKEND, "role_description": "Backend"}]}
+            return await upstream(method, path, token, query=query)
+
+        reader = ConsoleReader(sessions, request)
+        assert (await reader.archived_rooms("review"))["rooms"] == [{"room_id": ROOM}]
+        result = await reader.archived_room("review", ROOM)
+        assert result["state"] == "ready"
+        assert result["members"][0]["member_id"] == BACKEND
+        assert result["history_state"] == "board_ack_required"
+        assert result["messages"] == []
+        assert await reader.archived_room("unknown", ROOM) == {"state": "not_found"}
+
+    asyncio.run(scenario())
+
+
+def test_desktop_admin_session_requires_private_socket_and_launcher_authorization():
+    class Reader:
+        async def admin_session(self):
+            return {"state": "ready", "session": {"access_token": "scoped-console"}}
+
+    async def scenario():
+        async with serve_console(Reader(), desktop=True) as endpoints:
+            url, socket = endpoints.splitlines()
+            base, secret = url.split("/#")
+            headers = {"Authorization": "Bearer " + secret, "Origin": base}
+            path = "/api/admin/session"
+            async with httpx.AsyncClient(base_url=base, trust_env=False) as local:
+                assert (await local.post(path, headers=headers)).status_code == 404
+            transport = httpx.AsyncHTTPTransport(uds=socket)
+            async with httpx.AsyncClient(base_url=base, transport=transport) as desktop:
+                assert (
+                    await desktop.post(path, headers={"Origin": base})
+                ).status_code == 401
+                assert (
+                    await desktop.post(
+                        path, headers={**headers, "Origin": "https://example.com"}
+                    )
+                ).status_code == 403
+                assert (
+                    await desktop.post(
+                        path, headers=headers, json={"username": "other"}
+                    )
+                ).status_code == 400
+                response = await desktop.post(path, headers=headers)
+                assert response.status_code == 200
+                assert response.headers["Cache-Control"] == "no-store"
+                assert response.json()["session"] == {"access_token": "scoped-console"}
 
     asyncio.run(scenario())

@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 
 import httpx
 
+from ._local import LocalError, private_forward_socket
 from ._protocol import decode_json, is_integer, is_secret
 from .ipc import ClientError
 
@@ -45,20 +46,33 @@ def _status_error(response, *, member_auth):
 
 @asynccontextmanager
 async def connect(config):
+    limits = httpx.Limits(max_connections=None, max_keepalive_connections=20)
+    transport = None
+    server_socket = None
+    if config.server_socket is not None:
+        try:
+            server_socket = private_forward_socket(config.server_socket)
+        except (OSError, LocalError, RuntimeError):
+            raise unavailable() from None
+        transport = httpx.AsyncHTTPTransport(
+            uds=str(server_socket), limits=limits, trust_env=False,
+        )
     async with httpx.AsyncClient(
         base_url=config.server_url,
         verify=config.tls,
         timeout=10,
         trust_env=False,
         follow_redirects=False,
-        limits=httpx.Limits(max_connections=None, max_keepalive_connections=20),
+        limits=limits,
+        transport=transport,
     ) as http:
-        yield Upstream(http)
+        yield Upstream(http, server_socket=server_socket)
 
 
 class Upstream:
-    def __init__(self, http):
+    def __init__(self, http, *, server_socket=None):
         self._http = http
+        self.server_socket = server_socket
 
     async def login(self, username, password):
         try:

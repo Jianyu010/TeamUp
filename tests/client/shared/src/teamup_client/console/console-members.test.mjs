@@ -1,10 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {roomMembers} from "../../../../../../client/shared/src/teamup_client/console/console-members.js";
+import {renderTeam, roomMembers} from "../../../../../../client/shared/src/teamup_client/console/console-members.js";
 
 class Element {
   dataset = {};
   children = [];
+  #text = "";
+
+  get textContent() { return this.#text; }
+  set textContent(value) {
+    this.replaceChildren();
+    this.#text = value;
+  }
 
   get nextElementSibling() {
     const siblings = this.parentElement?.children;
@@ -227,4 +234,48 @@ test("the roster renders icon actions only on eligible rows", async (t) => {
   assert.equal(roster.action("other"), undefined);
   leave.onclick();
   assert.deepEqual(called, ["mine"]);
+});
+
+test("Team ranks Online first, sorts names, and clears uptime at local expiry", (t) => {
+  const list = new Element();
+  globalThis.document = {
+    getElementById: () => list,
+    createElement: () => new Element(),
+  };
+  t.after(() => { delete globalThis.document; });
+  let now = 0;
+  t.mock.method(performance, "now", () => now);
+  t.mock.timers.enable({apis: ["setTimeout"]});
+  const onlineSince = "2026-11-25T12:00:00Z";
+  const online = (id, name, duration, age_ms = 0) => ({
+    ...member(id, "online", age_ms),
+    name,
+    presence: {
+      state: "online", age_ms, observed_at: onlineSince,
+      online_since: onlineSince, online_for_ms: duration,
+    },
+  });
+  const members = [
+    member("alfa", "offline"), online("zed", "Zed", 59_000),
+    online("beta", "Beta", 60_000, 44_000),
+    online("room", "Room", 3_999_999), online("days", "Days", 262_800_000),
+    online("old", "Old Server", undefined), member("AAA", "unknown"),
+  ];
+  const values = () => list.children.map(({children}) => [
+    children[0].children[0].children[0].textContent,
+    children[3]?.children[0]?.dateTime ?? children[3]?.textContent,
+    children[4]?.textContent,
+  ]);
+  renderTeam({members}, now);
+  assert.deepEqual(values(), [
+    ["Beta", onlineSince, "1m 0s"], ["Days", onlineSince, "3d 1h"],
+    ["Old Server", "—", "—"], ["Room", onlineSince, "1h 6m"],
+    ["Zed", onlineSince, "59s"], ["AAA", "—", "—"], ["alfa", "—", "—"],
+  ]);
+  now += 1_000;
+  t.mock.timers.tick(1_000);
+  assert.deepEqual(values().at(-1), ["Beta", "—", "—"]);
+  renderTeam({members: [...members.filter(({id}) => id !== "beta"),
+    online("beta", "Beta", 62_000)]}, now);
+  assert.deepEqual(values()[0], ["Beta", onlineSince, "1m 2s"]);
 });

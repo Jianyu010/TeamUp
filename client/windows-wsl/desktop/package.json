@@ -11,7 +11,7 @@
   },
   "scripts": {
     "start": "electron .",
-    "test": "node --test ../../../tests/client/windows-wsl/desktop/*.test.cjs ../../../tests/client/windows-wsl/desktop/*.test.mjs",
+    "test": "node --test \"../../../tests/client/windows-wsl/desktop/**/*.test.*\" \"../../../tests/client/shared/src/teamup_client/console/**/*.test.*\"",
     "package:win": "node package-win.mjs"
   },
   "devDependencies": {

@@ -18,12 +18,12 @@ const assets = new Map([
   ["/jet-pair.png", ["jet-pair.png", "image/png"]],
 ]);
 const reads = new Set([
-  "/api/workspace", "/api/versions", "/api/retired", "/api/team", "/api/room", "/api/room-members",
-  "/api/room-board", "/api/tasks", "/api/task-events",
+  "/api/workspace", "/api/login", "/api/wake-settings", "/api/versions", "/api/retired", "/api/team", "/api/room", "/api/room-members",
+  "/api/room-board", "/api/room-archive", "/api/tasks", "/api/task-events",
 ]);
 const taskAction = /^\/api\/tasks\/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\/(?:join|progress|finish)$/i;
 const actions = new Set([
-  "/api/sessions/leave", "/api/sessions/retire", "/api/room-board", "/api/room-members/remove",
+  "/api/login", "/api/wake-settings", "/api/sessions/leave", "/api/sessions/retire", "/api/room-board", "/api/room-archive", "/api/room-members/remove",
 ]);
 const requestLimit = 128 * 1024;
 const headers = {
@@ -59,6 +59,22 @@ async function forward(request, target, { port, token }) {
     if (body.length) {
       if (request.headers.get("Content-Type") !== "application/json") {
         return failure(400, "invalid_request");
+      }
+      if (target.pathname === "/api/login") {
+        let credentials;
+        try {
+          credentials = JSON.parse(body);
+        } catch {
+          return failure(400, "invalid_request");
+        }
+        if (!credentials || Object.keys(credentials).some(key => !["username", "password", "remember"].includes(key)) ||
+            typeof credentials.username !== "string" || typeof credentials.password !== "string" ||
+            ("remember" in credentials && credentials.remember !== false)) {
+          return failure(400, "invalid_request");
+        }
+        // The shared desktop renderer sends a macOS-only Keychain preference.
+        // Windows uses the existing browser sign-in contract without storing secrets.
+        body = Buffer.from(JSON.stringify({ username: credentials.username, password: credentials.password }));
       }
       clientHeaders["Content-Type"] = "application/json";
     }

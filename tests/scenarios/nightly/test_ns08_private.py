@@ -1,21 +1,21 @@
 import asyncio
 
 import pytest
-from _stack import agent_tool_names, deploy, tool
-
-DM_WORDS = ("dm", "direct", "private", "conversation")
+from _stack import deploy, tool
 
 
-async def run(alice, bob, carol, record):
+async def wait_for_dm_notices(agent, message_id):
+    async with asyncio.timeout(20):
+        while True:
+            notifications = (await tool(agent, "notifications"))["notifications"]
+            notices = [notice for notice in notifications if notice.get("kind") == "dm"]
+            if any(notice["message_id"] == message_id for notice in notices):
+                return notices
+            await asyncio.sleep(0.1)
+
+
+async def run(alice, bob, carol):
     async with alice.agent() as a, bob.agent() as b, carol.agent() as c:
-        names = await agent_tool_names(a)
-        dm_tools = sorted(n for n in names if any(w in n.lower() for w in DM_WORDS))
-        if dm_tools:
-            pytest.skip(f"DM tools detected {dm_tools}; extend NS-08 to cover them")
-        record(
-            "detail",
-            "DM is not merged on this branch: ran as a two-member room",
-        )
         a_member = await tool(
             a,
             "register",
@@ -35,74 +35,74 @@ async def run(alice, bob, carol, record):
             description="Verifies that private conversations remain out of scope.",
         )
 
-        room = (await tool(a, "create_room", name="alice+bob", rules="Private pair"))[
-            "room_id"
-        ]
-        await tool(
-            a,
-            "ack_board",
-            room_id=room,
-            version=(await tool(a, "get_board", room_id=room))["version"],
-        )
-        await tool(b, "join_room", room_id=room)
-        await tool(
-            b,
-            "ack_board",
-            room_id=room,
-            version=(await tool(b, "get_board", room_id=room))["version"],
-        )
+        opened = await tool(a, "open_dm", member_id=b_member["member_id"])
+        dm_id = opened["dm_id"]
+        assert opened["peer_member_id"] == b_member["member_id"]
 
+        question = "Which fields does /orders return?"
         first = await tool(
             a,
-            "send_message",
-            room_id=room,
+            "send_dm",
+            dm_id=dm_id,
             client_message_id="q1",
-            text="Which fields does /orders return?",
-            mention_member_id=b_member["member_id"],
+            text=question,
         )
-        await asyncio.to_thread(bob.wait_for_notice, first["message_id"])
+        bob_notices = await wait_for_dm_notices(b, first["message_id"])
+
+        reopened = await tool(b, "open_dm", member_id=a_member["member_id"])
+        assert reopened["dm_id"] == dm_id
+        assert reopened["peer_member_id"] == a_member["member_id"]
+
+        answer = "id, total, items."
         reply = await tool(
             b,
-            "send_message",
-            room_id=room,
+            "send_dm",
+            dm_id=dm_id,
             client_message_id="r1",
-            text="id, total, items.",
-            mention_member_id=a_member["member_id"],
+            text=answer,
         )
-        await asyncio.to_thread(alice.wait_for_notice, reply["message_id"])
+        alice_notices = await wait_for_dm_notices(a, reply["message_id"])
+        assert [first["text"], reply["text"]] == [question, answer]
 
-        # Each side reads the full conversation in order.
-        for agent in (a, b):
-            texts = [
-                m["text"]
-                for m in (await tool(agent, "read_messages", room_id=room))["messages"]
-            ]
-            assert texts == ["Which fields does /orders return?", "id, total, items."]
-        # A third member can neither read nor write the pair's room, nor be mentioned.
-        await tool(c, "read_messages", error="not_found", room_id=room)
+        for agent, notices, received, sender in (
+            (a, alice_notices, reply, b_member),
+            (b, bob_notices, first, a_member),
+        ):
+            assert len(notices) == 1
+            notice = notices[0]
+            assert notice["dm_id"] == dm_id
+            assert notice["message_id"] == received["message_id"]
+            assert notice["sender_member_id"] == sender["member_id"]
+            assert "text" not in notice
+
+            history = await tool(agent, "read_dm", dm_id=dm_id)
+            assert history["messages"] == [first, reply]
+
+        await tool(c, "read_dm", error="not_found", dm_id=dm_id)
         await tool(
             c,
-            "send_message",
+            "send_dm",
             error="not_found",
-            room_id=room,
+            dm_id=dm_id,
             client_message_id="x",
             text="hi",
         )
-        await tool(
+        # A later DM confirms Carol's notification feed has caught up.
+        separate_dm = await tool(a, "open_dm", member_id=c_member["member_id"])
+        control = await tool(
             a,
-            "send_message",
-            error="invalid_mention",
-            room_id=room,
-            client_message_id="q2",
-            text="adding you",
-            mention_member_id=c_member["member_id"],
+            "send_dm",
+            dm_id=separate_dm["dm_id"],
+            client_message_id="control",
+            text="This message is for Carol.",
         )
-        assert carol.notices() == [] and carol.desktop_notices() == []
+        carol_notices = await wait_for_dm_notices(c, control["message_id"])
+        assert [notice["message_id"] for notice in carol_notices] == [
+            control["message_id"]
+        ]
 
 
-@pytest.mark.scenario(
-    "NS-08", "Two-member private conversation (room fallback until DM lands)"
-)
-def test_two_member_conversation(ws, record_property):
+@pytest.mark.scenario("NS-08", "Two-member direct message conversation")
+def test_two_member_conversation(ws):
     _, (alice, bob, carol) = deploy(ws, names=("alice", "bob", "carol"))
-    asyncio.run(asyncio.wait_for(run(alice, bob, carol, record_property), 90))
+    asyncio.run(asyncio.wait_for(run(alice, bob, carol), 90))

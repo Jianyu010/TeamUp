@@ -1,0 +1,9 @@
+[Unit]
+Description=Pull TeamUp database backups hourly
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+
+[Install]
+WantedBy=timers.target

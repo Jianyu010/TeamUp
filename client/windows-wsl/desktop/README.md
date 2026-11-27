@@ -6,7 +6,7 @@ TeamUp.exe opens a single Windows desktop window for the shared Client console. 
 
 The Windows package opens `TeamUp.exe` as a native Electron window. Its Python Client stays in WSL2 and uses the existing private profile and Server connection. It is not a native Windows Python Client.
 
-Prerequisites: Windows with WSL2, Python 3 available as `python3` in the selected distribution, an installed TeamUp Client supporting `serve --console`, and a configured private profile. The default WSL profile is `~/.config/teamup/client.json`. Install the runtime using [Client setup](../../../docs/modules/quickstart.md#启动-client), then point `~/.local/share/teamup/clients/current` at that checkout (whose `.venv/bin` contains the Client).
+Prerequisites: Windows with WSL2, Python 3 available as `python3` in the selected distribution, an installed TeamUp Client supporting `serve --console`, and a configured private profile. The default WSL profile is `~/.config/teamup/client.json`. Install the runtime using [Client setup](../../../docs/modules/quickstart.md#start-the-client), then point `~/.local/share/teamup/clients/current` at that checkout (whose `.venv/bin` contains the Client).
 
 On Windows, with Node.js 22.12 or newer:
 
@@ -47,6 +47,8 @@ $env:TEAMUP_DESKTOP_CONFIG = '/home/alice/.config/teamup/client.json'
 $env:TEAMUP_DESKTOP_STATE_DIR = '/home/alice/.local/state/teamup/launcher'
 ```
 
+A newly started account-based Client opens the shared sign-in form before creating its IPC socket. Sign in with your TeamUp username and password. Reopening the app reuses the same pending sign-in or active Client process. The macOS Keychain preference is unavailable on Windows.
+
 The launcher uses the default WSL distribution when none is selected. WSL localhost forwarding must be enabled. An existing Client started outside this launcher must be stopped or moved to the same launcher-managed startup before opening the app; the app preserves the profile and refuses to take over a live socket. The launch credential travels over a private pipe and stays in Electron's main process.
 
 `TEAMUP_ELECTRON_ZIP_DIR` can point the Windows packager at a directory containing the pinned `electron-vVERSION-win32-x64.zip` for offline packaging. The normal download uses the Electron package's pinned checksums. Run `uv run pytest -q tests/client/windows-wsl/desktop/test_wsl_bridge.py` inside WSL to verify the actual bridge into a selected runtime.
@@ -60,7 +62,7 @@ from the repository root inside WSL:
 uv run pytest -q tests/client/windows-wsl/desktop
 ```
 
-Open TeamUp.exe twice and confirm one window comes forward. In a profile with
+Start with a new account-based Client and confirm the sign-in form opens. Reopen it before signing in and confirm the same Client process is reused, then sign in and reopen it again. Open TeamUp.exe twice and confirm one window comes forward. In a profile with
 approved sessions, open a room and check its transcript, board, members, and Tasks
 tab. Close and reopen the app and verify it reconnects to the same Client process.
 See the [console contract](../../../docs/modules/client-console.md) and

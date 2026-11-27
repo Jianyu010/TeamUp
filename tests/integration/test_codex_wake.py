@@ -3,6 +3,7 @@
 import asyncio
 import json
 import re
+import secrets
 import sqlite3
 import sys
 import tempfile
@@ -10,8 +11,10 @@ import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import httpx
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from teamup_server.collaboration import Collaboration
 from test_loop import ROOT, Developer, available_port, process, tcp_is_ready, wait_for
 from test_wake import InstallDeveloper, until
 
@@ -76,6 +79,37 @@ class CodexDeveloper(InstallDeveloper):
         ):
             await session.initialize()
             yield session
+
+    @asynccontextmanager
+    async def signed_in_console(self, password):
+        offset = self.log.stat().st_size if self.log.exists() else 0
+
+        def console_address():
+            with self.log.open() as log:
+                log.seek(offset)
+                for line in log:
+                    if line.startswith("http://"):
+                        return line.strip()
+            return None
+
+        with process(
+            "teamup_client.main",
+            "client/shared/src",
+            ["serve", "--config", self.config_path, "--console"],
+            self.log,
+        ) as child:
+            url, token = wait_for(console_address, child).split("/#")
+            async with httpx.AsyncClient(
+                base_url=url,
+                headers={"Authorization": f"Bearer {token}", "Origin": url},
+                trust_env=False,
+            ) as console:
+                assert not self.socket_path.exists()
+                response = await console.post(
+                    "/api/login", json={"username": "bob", "password": password}
+                )
+                assert response.json() == {"state": "ready"}
+                yield console
 
     def approve(self, thread):
         self.owner(
@@ -292,3 +326,69 @@ def test_mention_wakes_only_the_permitted_codex_thread():
                 await run_codex_wake(Path(directory), available_port())
 
         asyncio.run(run())
+
+
+async def check_signed_in_console_wake(root, port):
+    codex = FakeCodex(root)
+    a = Developer(root, "alice", port)
+    b = CodexDeveloper(root, "bob", port, codex)
+    profile = json.loads(b.config_path.read_text())
+    del profile["enrollment_key"]
+    b.config_path.write_text(json.dumps(profile))
+    keys = {"alice": a.enrollment_key}
+    password, thread = secrets.token_urlsafe(32), str(uuid.uuid4())
+    database = root / "server.db"
+    Collaboration(database, keys).create_account("bob", password)
+
+    with (
+        process(
+            "teamup_server.main", "server/src", ["--db", database, "--port", port],
+            root / "server.log", {"TEAMUP_ENROLLMENT_KEYS": json.dumps(keys)},
+        ) as server,
+        a.daemon(),
+    ):
+        wait_for(lambda: tcp_is_ready(port), server)
+        async with (
+            b.signed_in_console(password) as console,
+            a.agent() as agent_a,
+            b.codex_process() as agent_b,
+        ):
+            settings = "/api/wake-settings"
+            assert (await console.get(settings)).json() == {"state": "ready", "enabled": True}
+            profile = {"name": "Reviewer", "description": "Reviews room changes."}
+            await call(agent_b, thread, "register", "session_pending", **profile)
+            b.approve(thread)
+            reviewer = await call(agent_b, thread, "register", **profile)
+            await call(agent_a, None, "register", name="Owner", description="Runs this room.")
+            room = (await call(agent_a, None, "create_room", name="Wake by default"))["room_id"]
+            await call(agent_b, thread, "join_room", room_id=room)
+            for agent, target in ((agent_a, None), (agent_b, thread)):
+                board = await call(agent, target, "get_board", room_id=room)
+                await call(agent, target, "ack_board", room_id=room, version=board["version"])
+
+            async def send(key, **mention):
+                return await call(
+                    agent_a, None, "send_message", room_id=room,
+                    client_message_id=key, text=key, **mention,
+                )
+
+            await send("broadcast")
+            ping = await send("wake-without-setup", mention_member_id=reviewer["member_id"])
+            await until(lambda: b.harness_states().get(ping["message_id"]) == {"submitted"})
+            (args,) = codex.calls()
+            assert args[args.index("--thread") + 1] == thread
+            assert "wake-without-setup" in args[-1]
+
+            response = await console.post(settings, json={"enabled": False})
+            assert response.json() == {"state": "ready", "enabled": False}
+            quiet = await send("wake-default-off", mention_member_id=reviewer["member_id"])
+            await until(lambda: b.harness_states().get(quiet["message_id"]) == {"not_allowed"})
+            assert codex.calls() == [args]
+
+        async with b.signed_in_console(password) as console:
+            assert (await console.get(settings)).json() == {"state": "ready", "enabled": False}
+
+
+def test_signed_in_console_wakes_an_approved_thread_without_a_wake_command():
+    with tempfile.TemporaryDirectory(prefix="tu-default-wake-", dir="/tmp") as root:
+        asyncio.run(check_signed_in_console_wake(Path(root), available_port()))

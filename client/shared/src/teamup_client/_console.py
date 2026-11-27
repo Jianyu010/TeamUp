@@ -4,20 +4,27 @@ import asyncio
 import concurrent.futures
 import hmac
 import json
+import re
 import secrets
 import sqlite3
 import threading
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from functools import partial
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
+from pathlib import Path
+from socketserver import ThreadingUnixStreamServer
+from tempfile import TemporaryDirectory
 from urllib.parse import parse_qs, urlsplit
 
+from ._config import ConfigError
 from ._console_data import MAX_BEFORE, ConsoleReader
+from ._local import LocalError
 from ._protocol import REQUEST_LIMIT, decode_json, is_integer, is_string, is_uuid
 from .ipc import ClientError
 
 CONSOLE_REQUEST_SECONDS = 18
+CONSOLE_LOGIN_SECONDS = 15
 WORKSPACE_RESPONSE_RESERVE_SECONDS = 0.5
 STATIC = {
     "/": ("index.html", "text/html; charset=utf-8"),
@@ -37,10 +44,65 @@ CSP = (
 )
 
 
+class ConsoleSession:
+    def __init__(self, reader, sign_in, remember_scope):
+        self.reader = reader
+        self.remember_scope = remember_scope
+        self._sign_in = sign_in
+        self._lock = asyncio.Lock()
+        self._login_task = None
+
+    def status(self):
+        return {"state": "ready" if self.reader is not None else "sign_in_required"}
+
+    async def login(self, username, password, *, private=False, remember_scope=None):
+        async with self._lock:
+            if self.reader is not None:
+                return self.status()
+            if self._sign_in is None:
+                return {"state": "unavailable"}
+            if not all(
+                is_string(value, limit, require_content=False)
+                for value, limit in ((username, 64), (password, 128))
+            ):
+                return {"state": "wrong_credentials"}
+            self._login_task = asyncio.current_task()
+            try:
+                async with asyncio.timeout(CONSOLE_LOGIN_SECONDS):
+                    self.reader, authenticated_scope = await self._sign_in(
+                        username, password, remember_scope
+                    )
+            except ClientError as error:
+                if error.code in {"unauthorized", "invalid_request"}:
+                    return {"state": "wrong_credentials"}
+                if error.code == "rate_limited":
+                    return {"state": "rate_limited"}
+                return {"state": "unavailable"}
+            except ConfigError:
+                return {"state": "profile_unavailable"}
+            except (LocalError, OSError, sqlite3.Error):
+                return {"state": "unavailable"}
+            finally:
+                self._login_task = None
+            result = self.status()
+            if private:
+                result["authenticated_scope"] = authenticated_scope
+            return result
+
+    async def close(self):
+        self._sign_in = None
+        if self._login_task is not None:
+            task = self._login_task
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+
 class Handler(BaseHTTPRequestHandler):
-    def __init__(self, *args, loop, reader, secret, **kwargs):
+    def __init__(self, *args, loop, session, secret, loopback_host=None, **kwargs):
         self._loop = loop
-        self._reader = reader
+        self._loopback_host = loopback_host
+        self._session = session
+        self._reader = session.reader
         self._secret = secret
         super().__init__(*args, **kwargs)
 
@@ -72,7 +134,7 @@ class Handler(BaseHTTPRequestHandler):
         )
 
     def _origin_allowed(self, *, write=False):
-        host = f"127.0.0.1:{self.server.server_address[1]}"
+        host = self._loopback_host or f"127.0.0.1:{self.server.server_address[1]}"
         origin = self.headers.get("Origin")
         return self.headers.get("Host") == host and (
             origin == f"http://{host}" or (origin is None and not write)
@@ -103,6 +165,15 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorized():
             self._json(401, {"state": "unauthorized"})
             return
+        if target.path == "/api/login" and not target.query:
+            status = self._session.status()
+            if self._loopback_host is not None:
+                status["remember_scope"] = self._session.remember_scope
+            self._json(200, status)
+            return
+        if self._reader is None:
+            self._json(409, {"state": "sign_in_required"})
+            return
         try:
             operation = self._operation(target.path, target.query)
         except (ValueError, KeyError):
@@ -122,7 +193,26 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             target = urlsplit(self.path)
-            operation = self._write_operation(target.path, target.query)
+            if target.path == "/api/login":
+                if target.query:
+                    raise ValueError
+                credentials = self._action_body(required=True)
+                private = self._loopback_host is not None
+                fields = {"username", "password"}
+                optional = {"remember_scope"} if private else set()
+                if not fields <= credentials.keys() <= fields | optional:
+                    raise ValueError
+                if "remember_scope" in credentials and not (
+                    isinstance(credentials["remember_scope"], str)
+                    and re.fullmatch(r"[0-9a-f]{64}", credentials["remember_scope"])
+                ):
+                    raise ValueError
+                operation = self._session.login(**credentials, private=private)
+            elif self._reader is None:
+                self._json(409, {"state": "sign_in_required"})
+                return
+            else:
+                operation = self._write_operation(target.path, target.query)
         except (KeyError, TypeError, ValueError, RecursionError, OSError):
             self._json(400, {"state": "invalid_request"})
             return
@@ -132,6 +222,18 @@ class Handler(BaseHTTPRequestHandler):
         self._run(operation, write=True)
 
     def _write_operation(self, path, query):
+        if path == "/api/admin/session" and self._loopback_host is not None:
+            if query:
+                raise ValueError
+            self._action_body(required=False)
+            return self._reader.admin_session()
+
+        if path == "/api/wake-settings":
+            body = self._action_body(required=True)
+            if query or set(body) != {"enabled"} or type(body["enabled"]) is not bool:
+                raise ValueError
+            return self._reader.wake_settings(body["enabled"])
+
         if path in {"/api/sessions/leave", "/api/sessions/retire"}:
             params = self._params(query)
             required = {"session", "room"} if path.endswith("/leave") else {"session"}
@@ -149,6 +251,13 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError
             self._action_body(required=False)
             return self._reader.session_action(params["session"], room_id, membership_id)
+
+        if path == "/api/room-archive":
+            params = self._params(query)
+            if set(params) != {"session", "room"} or not is_uuid(params["room"]):
+                raise ValueError
+            self._action_body(required=False)
+            return self._reader.archive_room(params["session"], params["room"])
 
         if path == "/api/room-members/remove":
             params = self._params(query)
@@ -237,6 +346,9 @@ class Handler(BaseHTTPRequestHandler):
                 {
                     "ready": 200,
                     "unauthorized": 401,
+                    "wrong_credentials": 401,
+                    "rate_limited": 429,
+                    "profile_unavailable": 409,
                     "not_registered": 401,
                     "forbidden": 403,
                     "not_found": 404,
@@ -244,6 +356,7 @@ class Handler(BaseHTTPRequestHandler):
                     "conflict": 409,
                     "member_retired": 409,
                     "membership_changed": 409,
+                    "room_archived": 409,
                     "invalid_request": 422,
                     "unavailable": 503,
                 }.get(data.get("state"), 503)
@@ -261,6 +374,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def _operation(self, path, query):
         params = self._params(query)
+        if path == "/api/access" and not params:
+            return self._reader.access(private=self._loopback_host is not None)
+        if path == "/api/wake-settings" and not params:
+            return self._reader.wake_settings()
         if path == "/api/versions":
             if params:
                 raise ValueError
@@ -276,6 +393,18 @@ class Handler(BaseHTTPRequestHandler):
             return self._retired_operation(params)
         if path == "/api/team" and set(params) == {"session"}:
             return self._reader.team(params["session"])
+        if path == "/api/room-archive":
+            if set(params) in ({"session"}, {"session", "after"}):
+                after = params.get("after")
+                if after is not None and not is_uuid(after):
+                    raise ValueError
+                return self._reader.archived_rooms(params["session"], after)
+            if set(params) not in ({"session", "room"}, {"session", "room", "before"}):
+                raise ValueError
+            before = int(params.get("before", MAX_BEFORE))
+            if not is_uuid(params["room"]) or not 1 <= before <= MAX_BEFORE:
+                raise ValueError
+            return self._reader.archived_room(params["session"], params["room"], before)
         if path == "/api/room-board":
             if set(params) != {"session", "room"} or not is_uuid(params["room"]):
                 raise ValueError
@@ -363,20 +492,49 @@ class Handler(BaseHTTPRequestHandler):
 
 
 @asynccontextmanager
-async def serve_console(reader: ConsoleReader):
+async def _running_listener(server):
+    with server:
+        thread = threading.Thread(
+            target=server.serve_forever, kwargs={"poll_interval": 0.15}, daemon=True
+        )
+        thread.start()
+        try:
+            yield
+        finally:
+            await asyncio.to_thread(server.shutdown)
+            await asyncio.to_thread(thread.join)
+
+
+class _DesktopListener(ThreadingUnixStreamServer):
+    daemon_threads = True
+
+
+@asynccontextmanager
+async def serve_console(
+    reader: ConsoleReader | None, *, sign_in=None, desktop=False, remember_scope=None
+):
     loop = asyncio.get_running_loop()
     token = secrets.token_urlsafe(32)
+    session = ConsoleSession(reader, sign_in, remember_scope)
     handler = partial(
-        Handler, loop=loop, reader=reader, secret=f"Bearer {token}".encode()
+        Handler, loop=loop, session=session, secret=f"Bearer {token}".encode()
     )
-    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
-    thread = threading.Thread(
-        target=server.serve_forever, kwargs={"poll_interval": 0.15}, daemon=True
-    )
-    thread.start()
-    try:
-        yield f"http://127.0.0.1:{server.server_port}/#{token}"
-    finally:
-        await asyncio.to_thread(server.shutdown)
-        await asyncio.to_thread(server.server_close)
-        await asyncio.to_thread(thread.join)
+    async with AsyncExitStack() as listeners:
+        server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        await listeners.enter_async_context(_running_listener(server))
+        host = f"127.0.0.1:{server.server_port}"
+        endpoint = f"http://{host}/#{token}"
+        if desktop:
+            # Keep the path within the Unix socket address limit on macOS.
+            directory = listeners.enter_context(
+                TemporaryDirectory(prefix="teamup-console-", dir="/tmp")
+            )
+            login_socket = Path(directory) / "login.sock"
+            private = _DesktopListener(str(login_socket), partial(handler, loopback_host=host))
+            await listeners.enter_async_context(_running_listener(private))
+            login_socket.chmod(0o600)
+            endpoint += f"\n{login_socket}"
+        try:
+            yield endpoint
+        finally:
+            await session.close()

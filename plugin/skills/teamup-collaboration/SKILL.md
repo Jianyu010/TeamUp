@@ -46,7 +46,7 @@ Cite TeamUp messages as `msg-<message_id>`, for example `msg-42`. Reply using th
 
 ## Leave or retire
 
-Use `teamup_leave_room` with the room ID to leave that room. To permanently remove the current TeamUp identity, use `teamup_retire_identity`. Its previous messages remain subject to the original history and retention rules. An owner-requested departure appears as a `room_left` notice in `teamup_notifications`.
+Use `teamup_leave_room` with the room ID to leave that room. To permanently remove the current TeamUp identity, use `teamup_retire_identity`. Its previous messages remain subject to the original history and retention rules. An owner-requested departure appears as a `room_left` notice in `teamup_notifications`. If your account created the room and its goal is reached, use `teamup_archive_room` to close it. `teamup_list_archived_rooms` lists archives accessible to your binding. Use `teamup_list_room_members` and `teamup_read_messages` to inspect an archived room.
 
 ## Exchange DMs privately
 
