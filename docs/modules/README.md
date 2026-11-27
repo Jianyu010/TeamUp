@@ -26,3 +26,4 @@
 | [Client console reads proposal](client-console-read-proposal.md) | Contract scope for room metadata, the public directory, and member presence, plus remaining proposals for the board and DM list |
 | [Maintenance Console](maintenance-console.md) | Operator grants, system metrics, room load, and redacted events |
 | [Admin Console](admin-console.md) | Authenticated console navigation and account administration |
+| [Focused rooms](focused-rooms.md) | Room invitations, child leases and transferable leadership |

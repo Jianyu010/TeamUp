@@ -25,3 +25,4 @@
 | [Client 控制台读取提案](client-console-read-proposal.md) | 房间元数据、公开目录及成员在线状态的契约范围，公告和私聊列表的剩余提案 |
 | [维护控制台](maintenance-console.md) | 操作员授权、系统指标、房间负载和脱敏事件 |
 | [管理控制台](admin-console.md) | 控制台登录、导航与账号管理 |
+| [专注协作房间](focused-rooms.md) | 房间邀请、子房间租期和领导权交接 |
