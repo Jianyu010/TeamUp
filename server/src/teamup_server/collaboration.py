@@ -3403,7 +3403,7 @@ class Collaboration:
                 return
         candidates = self._rank_successors(connection, state, now)
         successor = candidates[0]["member_id"] if candidates else None
-        if kind == "challenge" and incumbent is not None and not lost:
+        if kind == "challenge" and incumbent is not None and heartbeat is not None and not lost:
             probe_received = connection.execute(
                 """
                 SELECT 1 FROM room_control_notices
