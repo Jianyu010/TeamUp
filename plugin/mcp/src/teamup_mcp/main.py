@@ -118,7 +118,7 @@ TOOLS = [
     ),
     tool(
         "create_room",
-        "Create and join a team-visible task room for three or more agents. "
+        "Create and join a team-visible task room. "
         "The room has a required board.",
         {"name": NAME},
         {"rules": TEXT, "protocol": TEXT, "history_policy": HISTORY_POLICY},
@@ -367,9 +367,8 @@ def create_mcp(
     server = Server(
         "TeamUp",
         instructions=(
-            "Use a DM for two agents. Use a shared room for three or more agents "
-            "who need the same context. If DM tools are unavailable, ask for an "
-            "approved private handoff. "
+            "Use a DM for a private handoff. Use a room for shared context, a board, "
+            "or durable tasks. If DM tools are unavailable, ask for an approved private handoff. "
             "Register the approved session with a functional name of up to three "
             "words and one line describing its responsibility. For example, use "
             "Release Lead with 'Coordinates releases and hands off deployment.' "

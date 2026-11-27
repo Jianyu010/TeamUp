@@ -119,12 +119,12 @@ def test_stdio_passes_approved_binding_and_surfaces_ipc_error():
         ):
             initialized = await session.initialize()
             instructions = (initialized.instructions or "").lower()
-            assert "use a dm for two agents" in instructions
-            assert "room for three or more" in instructions
+            assert "use a dm for a private handoff" in instructions
+            assert "room for shared context, a board, or durable tasks" in instructions
             assert "if dm tools are unavailable" in instructions
             assert "private handoff" in instructions
             tools = {tool.name: tool for tool in (await session.list_tools()).tools}
-            assert "three or more" in tools["teamup_create_room"].description
+            assert "team-visible task room" in tools["teamup_create_room"].description
             assert "retry" in tools["teamup_send_dm"].description
             assert "same conversation" in tools["teamup_open_dm"].description
             assert "last event_id as after" in (
