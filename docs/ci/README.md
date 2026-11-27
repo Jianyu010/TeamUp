@@ -103,6 +103,14 @@ The long-running layer 3 jobs have three concurrent slots each. [`scripts/ci/hp-
 - PyPI requests go through the Tsinghua mirror. The runners rewrite the URLs in a temporary `uv.lock` before running `uv sync --frozen`.
 - Model requests go through a local proxy at `127.0.0.1:18081`. The gateway secret stays out of runner home directories.
 
+## Scenario checks and performance
+
+Nightly reports individual Client Console, Admin Console, archive, and task checks on the CI dashboard. The Linux runner also runs the browser checks with pinned Playwright and Chromium. A required failure blocks the nightly verdict while independent checks still report their own results.
+
+The pressure profiles vary room count, simultaneous posts, idle SSE streams, heartbeats, and task participants. Nightly covers 100 and 300 rooms. Weekly covers 1,000 and 10,000 rooms and runs a synthetic online backup and recovery drill. The weekly load phase runs after the real-agent phase on the same runner, with its own time limit. The workflow publishes both phases in the weekly report. A weekly failure opens an issue without freezing merges.
+
+Scenario databases, browser profiles, and recovered snapshots live under a disposable runner directory. The workflow removes the directory after the tests. The recovery drill runs the capture, validation, publication, and restore scripts using a local transport adapter. Deployment SSH and off-host storage remain part of the operator recovery procedure.
+
 ## Scheduling
 
 GitHub cron runs often start 3–5 hours late. `gate-tick.yml` runs every 15 minutes to advance the merge queue and dispatch nightly, weekly, and dashboard jobs when they are due under the `cadence` settings in `policy.json`.

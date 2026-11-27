@@ -25,6 +25,7 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 _records = {}
+_finished_tests = set()
 _session_start = None
 
 
@@ -41,6 +42,22 @@ def pytest_sessionstart(session):
     _session_start = _results.utc_now()
 
 
+def pytest_collection_finish(session):
+    for item in session.items:
+        mark = item.get_closest_marker("scenario")
+        if mark is None or len(mark.args) < 2:
+            continue
+        _records[item.nodeid] = {
+            "id": mark.args[0],
+            "title": mark.args[1],
+            "suite": item.path.parent.name,
+            "status": "pass",
+            "detail": "",
+            "duration_s": 0.0,
+        }
+    write_results()
+
+
 @pytest.hookimpl(wrapper=True)
 def pytest_runtest_makereport(item, call):
     report = yield
@@ -48,17 +65,7 @@ def pytest_runtest_makereport(item, call):
     mark = item.get_closest_marker("scenario")
     if mark is None or len(mark.args) < 2:
         return report
-    record = _records.setdefault(
-        item.nodeid,
-        {
-            "id": mark.args[0],
-            "title": mark.args[1],
-            "suite": item.path.parent.name,
-            "status": "pass",
-            "detail": "",
-            "duration_s": 0.0,
-        },
-    )
+    record = _records[item.nodeid]
     record["duration_s"] += report.duration
     for key, value in report.user_properties:
         if key == "detail" and record["status"] == "pass":
@@ -80,23 +87,27 @@ def pytest_runtest_makereport(item, call):
             )
     elif report.passed and report.when == "call" and hasattr(report, "wasxfail"):
         record.update(status="fail", detail="xfail(strict) test unexpectedly passed")
+    if report.when == "teardown":
+        _finished_tests.add(item.nodeid)
+        write_results()
     return report
 
 
-def pytest_sessionfinish(session, exitstatus):
+def write_results():
     if not _records:
         return
     import _results
 
     suites = {}
-    for record in _records.values():
+    for node_id, record in _records.items():
+        finished = node_id in _finished_tests
         suites.setdefault(record["suite"], []).append(
             _results.scenario_entry(
                 record["id"],
                 record["title"],
-                record["status"],
+                record["status"] if finished else "error",
                 record["duration_s"],
-                record["detail"],
+                record["detail"] if finished else "scenario did not finish",
             )
         )
     for suite, entries in suites.items():
@@ -122,11 +133,10 @@ def ws(request):
 def workspace_venv():
     """Bin directory of one venv with all three packages installed from local paths."""
     import shutil
-    import tempfile
 
-    from _stack import CLIENT_PACKAGE, install_venv
+    from _stack import CLIENT_PACKAGE, install_venv, scenario_temp_dir
 
-    root = Path(tempfile.mkdtemp(prefix="tu-venv-", dir="/tmp"))
+    root = scenario_temp_dir("tu-venv-")
     try:
         yield install_venv(root / "all", ["server", CLIENT_PACKAGE, "plugin/mcp"])
     finally:

@@ -6,13 +6,14 @@
 
 | ID | 场景 | 通过条件 |
 | --- | --- | --- |
-| WE-01 | 两个 Agent 直接交流 | A 向 B 提问并 @B。B 回复并 @A，内容含只有 B 知道的端口号。A 随后发出含该端口号的消息 |
+| WE-01 | 两个 Agent 私聊 | A 通过 DM 提问，B 在同一 DM 回复请求编号和自己知道的端口号，A 再用该端口号确认。三条消息按顺序保存在 DM 历史中 |
 | WE-02 | 三个 Agent 的房间 | 三方都确认了当前公告版本，各自发过消息。Tester 分别 @ 另两方，被 @ 的两方都在 @ 之后回复 |
 | WE-03 | 离线时被 @ | B 的 Client 停止。A @B 后再启动 B 的 Client。B 只收到一条补发通知，被唤醒一次，只回复一次 |
-| WE-04 | 公告中途变更 | 跳过。Server 和 MCP 没有更新公告的操作，公告固定为版本 1 |
+| WE-04 | 公告中途变更 | 保留历史编号。由 nightly 的 NS-15.04 验证 |
 | WE-05 | 五个 Agent 站会 | Backend 发起，经 Frontend、Tester、Docs 到 Ops 逐级 @ 交接。五方都发过状态 |
+| WE-06 | 三个 Agent 交接房间任务 | Release Lead 创建并指派任务。Tester 领取任务并记录测试夹具编号。Reviewer 从任务历史读取编号，领取任务，记录核验结果并完成任务 |
 
-DM 尚未合入。WE-01 用只有两名成员的房间代替，并在 `detail` 中注明。DM 合入后在 `scenarios.py` 的 `we01` 改用 DM 工具。
+WE-06 模拟三人发布核验流程，共六轮。每周负载测试由 `python -m tests.scenarios.perf --suite weekly` 单独运行，使用脚本化参与者覆盖 10、30、50、100 人的任务组。
 
 ## Agent 如何接入
 
@@ -35,9 +36,11 @@ TeamUp Client 只有 Claude Code 和 Codex 两种唤醒 driver，没有 opencode
 2. 编排器轮询各 Agent 的记录文件。出现新通知且该 Agent 空闲时，用 `opencode run --session <id>` 在同一会话里启动它的下一轮，提示词说明“你被 @ 了”，并要求先查看通知和房间历史，已回复过则什么也不做。
 3. 所有 Agent 都空闲且判定条件未满足时，等待数秒后判失败，不会反复催促。
 
+DM 通知只保存在 Client 本地，不会自动启动 Agent。WE-01 在问句和回复分别写入 DM 后显式启动 B 和 A 的下一轮。WE-06 在任务创建和测试记录写入后显式启动 Tester 和 Reviewer。
+
 ## 判定与指标
 
-判定只读 TeamUp 状态：用房间创建者的 MCP 会话读完整房间历史，用 `board_ack_required` 判断某成员是否确认了当前公告。成员 ID 取自 Agent 自己的 `teamup_register` 结果。
+判定通过 MCP 读取 TeamUp 状态。房间聊天使用房间历史，用 `board_ack_required` 判断成员是否确认了当前公告。WE-01 以双方身份读取同一个 DM 的历史。WE-06 读取任务记录和事件，核对参与者、事件顺序和完成状态。成员 ID 取自 Agent 自己的 `teamup_register` 结果。
 
 每个场景记录以下指标，`labels` 为 `{"scenario": "WE-02", "agents": 3}`：
 
@@ -61,7 +64,7 @@ TeamUp Client 只有 Claude Code 和 Codex 两种唤醒 driver，没有 opencode
 
 ## 2026-11-24 hp-laptop 实测
 
-一次完整运行：WE-01、02、03、05 全部通过，WE-04 跳过。共 25 轮、120 次模型步数，约 34 万 token，总耗时约 9.5 分钟。
+该次运行使用 WE-01 的旧版双成员房间流程。WE-01、02、03、05 全部通过，WE-04 跳过。共 25 轮、120 次模型步数，约 34 万 token，总耗时约 9.5 分钟。
 
 | 场景 | 轮次 | 耗时 | 唤醒到回复 |
 | --- | --- | --- | --- |
@@ -75,6 +78,7 @@ TeamUp Client 只有 Claude Code 和 Codex 两种唤醒 driver，没有 opencode
 ```sh
 # 不调用模型，验证接线（macOS 和 Linux 均可）
 uv run --no-sync python -m tests.scenarios.weekly --dry-run --out /tmp/weekly.json
+uv run --no-sync python -m tests.scenarios.weekly --dry-run --only WE-01,WE-06 --out /tmp/weekly-handoffs.json
 
 # 真实 Agent（需要 opencode 和本机中继）
 uv run --no-sync python -m tests.scenarios.weekly --out results/weekly/summary.json

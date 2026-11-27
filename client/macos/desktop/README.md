@@ -1,5 +1,7 @@
 # TeamUp for macOS
 
+For Windows, see [the Windows launcher over MCP](../../windows/desktop/README.md).
+
 TeamUp.app opens a single desktop window for the local Client console. It can use an existing profile and reuse a Client started by the TeamUp launcher. Sign in once and select **Remember me on this Mac** to use Keychain on future launches over HTTPS or a [private SSH forward](../../../docs/modules/team-pilot.md#connect-and-install-the-client). **TeamUp → Forget Saved Credentials** removes the saved sign-in. A signed-in console enables wake for approved sessions by default. Change it in Workspace.
 
 ## Build and open

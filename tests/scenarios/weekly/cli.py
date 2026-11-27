@@ -134,7 +134,19 @@ async def suite(args) -> bool:
             "started_at": stamp(started),
             "finished_at": stamp(time.time()),
             "host": os.environ.get("TEAMUP_HOST") or socket.gethostname(),
-            "scenarios": rows,
+            "scenarios": [
+                *rows,
+                *(
+                    {
+                        "id": scenario.id,
+                        "title": scenario.title,
+                        "status": "error",
+                        "duration_s": 0.0,
+                        "detail": "scenario did not finish",
+                    }
+                    for scenario in chosen[len(rows) :]
+                ),
+            ],
             "metrics": metrics,
         }
         args.out.parent.mkdir(parents=True, exist_ok=True)
@@ -142,14 +154,15 @@ async def suite(args) -> bool:
         partial.write_text(json.dumps(summary, indent=2) + "\n")
         partial.replace(args.out)
 
+    write()
     try:
-        await scenarios(chosen, options, args, rows, metrics, started)
+        await scenarios(chosen, options, rows, metrics, started, write)
     finally:
         write()
     return not any(row["status"] in ("fail", "error") for row in rows)
 
 
-async def scenarios(chosen, options, args, rows, metrics, started) -> None:
+async def scenarios(chosen, options, rows, metrics, started, checkpoint) -> None:
     turns = 0
     for scenario in chosen:
         holder = options | {"collector": {}}
@@ -163,12 +176,14 @@ async def scenarios(chosen, options, args, rows, metrics, started) -> None:
                     "detail": "suite time or turn budget exhausted before this scenario",
                 }
             )
+            checkpoint()
             continue
         row = await run_one(scenario, holder)
         rows.append(row)
         if run := holder["collector"].get(scenario.id):
             turns += len(run.turns)
             metrics += metrics_for(scenario, run)
+        checkpoint()
         print(
             f"{row['id']} {row['status']:5} {row['duration_s']:7.1f}s  {row['detail'][:160]}",
             flush=True,

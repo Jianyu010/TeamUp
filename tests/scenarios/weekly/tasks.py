@@ -5,6 +5,7 @@ same job through MCP for --dry-run. The two must stay equivalent: the scripts
 are how the wiring is proven without spending model calls.
 """
 
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
@@ -18,6 +19,15 @@ class Task:
 
 
 # --- setup ------------------------------------------------------------------
+
+
+def register() -> Task:
+    async def script(ctx):
+        await ctx.call("register", **ctx.spec.profile)
+
+    return Task(
+        "Register with TeamUp using your assigned name and description.", script
+    )
 
 
 def create_room(name: str, rules: str, protocol: str, ready: str = "") -> Task:
@@ -117,6 +127,163 @@ def ask(room_id: str, targets: list[tuple[str, str]]) -> Task:
                 text=question,
                 mention_member_id=member["member_id"],
             )
+
+    return Task(prompt, script)
+
+
+# --- direct messages --------------------------------------------------------
+
+
+def ask_dm(role: str, question: str) -> Task:
+    prompt = (
+        "Register with TeamUp using your assigned name and description. "
+        f'Use teamup_find_members to find "{role}" and teamup_open_dm with that '
+        f'member_id. In that DM, send exactly one message with teamup_send_dm: "{question}" '
+        "Use a new client_message_id. End your turn after sending."
+    )
+
+    async def script(ctx):
+        await ctx.call("register", **ctx.spec.profile)
+        found = await ctx.call("find_members", q=role)
+        [peer] = [member for member in found["members"] if member["name"] == role]
+        dm = await ctx.call("open_dm", member_id=peer["member_id"])
+        await ctx.call(
+            "send_dm",
+            dm_id=dm["dm_id"],
+            text=question,
+            client_message_id=ctx.message_id("dm-question"),
+        )
+
+    return Task(prompt, script)
+
+
+def answer_dm(dm_id: str) -> Task:
+    prompt = (
+        f"Read DM {dm_id} with teamup_read_dm. Reply to the question with one "
+        "teamup_send_dm in the same conversation. Copy the exact request code "
+        "from the question and give the port you know, as plain digits. "
+        "Use a new client_message_id."
+    )
+
+    async def script(ctx):
+        history = await ctx.call("read_dm", dm_id=dm_id)
+        request = re.search(r"\breq-[0-9a-f]{8}\b", history["messages"][0]["text"])
+        if request is None:
+            raise ValueError("DM question lacks a request code")
+        await ctx.call(
+            "send_dm",
+            dm_id=dm_id,
+            text=f"{request[0]}: {ctx.spec.facts[0]}",
+            client_message_id=ctx.message_id("dm-reply"),
+        )
+
+    return Task(prompt, script)
+
+
+def confirm_dm(dm_id: str) -> Task:
+    prompt = (
+        f"Read the reply in DM {dm_id} with teamup_read_dm. Use teamup_send_dm to "
+        "send one confirmation in the same conversation that includes the port "
+        "from your teammate's reply as plain digits. Use a new client_message_id."
+    )
+
+    async def script(ctx):
+        history = await ctx.call("read_dm", dm_id=dm_id)
+        reply = history["messages"][-1]
+        port = re.search(r"\b[0-9]{5}\b", reply["text"])
+        if port is None:
+            raise ValueError("DM reply lacks a five-digit port")
+        await ctx.call(
+            "send_dm",
+            dm_id=dm_id,
+            text=f"I will use port {port[0]}.",
+            client_message_id=ctx.message_id("dm-confirm"),
+        )
+
+    return Task(prompt, script)
+
+
+# --- room tasks -------------------------------------------------------------
+
+
+def assign_release_check(room_id: str, title: str) -> Task:
+    description = (
+        "Tester records the release smoke test fixture in task progress. "
+        "Reviewer checks that progress and finishes the task."
+    )
+    prompt = (
+        f'In room {room_id}, assign a task titled "{title}" to Tester and Reviewer. '
+        "Get their member IDs with teamup_list_room_members. Use teamup_create_task "
+        "with both IDs in addressed_member_ids and a new client_task_id. "
+        f'Use this description: "{description}"'
+    )
+
+    async def script(ctx):
+        roster = (await ctx.call("list_room_members", room_id=room_id))["members"]
+        member_ids = {member["name"]: member["member_id"] for member in roster}
+        await ctx.call(
+            "create_task",
+            room_id=room_id,
+            title=title,
+            description=description,
+            addressed_member_ids=[member_ids["Tester"], member_ids["Reviewer"]],
+            client_task_id=ctx.message_id("release-task"),
+        )
+
+    return Task(prompt, script)
+
+
+async def find_room_task(ctx, room_id: str, title: str) -> dict:
+    records = (await ctx.call("list_tasks", room_id=room_id))["tasks"]
+    [task] = [record for record in records if record["title"] == title]
+    return {"room_id": room_id, "task_id": task["task_id"]}
+
+
+def record_release_check(room_id: str, title: str) -> Task:
+    prompt = (
+        f'Use teamup_list_tasks in room {room_id} and take the task titled "{title}" '
+        "with teamup_join_task. Record your private smoke-test result in one "
+        "teamup_report_progress, preserving the exact fixture ID and using a new "
+        "client_progress_id. Leave the task open for the reviewer."
+    )
+
+    async def script(ctx):
+        args = await find_room_task(ctx, room_id, title)
+        await ctx.call("join_task", **args)
+        await ctx.call(
+            "report_progress",
+            **args,
+            note=ctx.spec.facts[0],
+            client_progress_id=ctx.message_id("release-evidence"),
+        )
+
+    return Task(prompt, script)
+
+
+def review_release_check(room_id: str, title: str) -> Task:
+    prompt = (
+        f'Find the task titled "{title}" in room {room_id} with teamup_list_tasks. '
+        "Use teamup_task_history to read the tester's progress. If the smoke test "
+        "passed, use teamup_join_task, then record one note with teamup_report_progress "
+        "confirming the result and copying the exact fixture ID from the tester's note. "
+        "Use a new client_progress_id. Then close the task with teamup_finish_task."
+    )
+
+    async def script(ctx):
+        args = await find_room_task(ctx, room_id, title)
+        history = (await ctx.call("task_history", **args))["events"]
+        [note] = [event["note"] for event in history if event["kind"] == "progress"]
+        fixture = re.search(r"\bfixture-[0-9a-f]{8}\b", note)
+        if fixture is None or "passed" not in note:
+            raise ValueError("Task progress lacks a passing fixture result")
+        await ctx.call("join_task", **args)
+        await ctx.call(
+            "report_progress",
+            **args,
+            note=f"Reviewed the passing smoke test for {fixture[0]}.",
+            client_progress_id=ctx.message_id("release-review"),
+        )
+        await ctx.call("finish_task", **args)
 
     return Task(prompt, script)
 

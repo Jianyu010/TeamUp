@@ -326,9 +326,12 @@ export function roomMembers({read, subject, chat, policyChanged, namesChanged, a
 
   function render(result, started) {
     page = result;
+    const directory = result.state === "directory_only";
     const ready = result.state === "ready";
-    get("roster-title").textContent = ready ? "Members (" + result.members.length + ")" : "Members";
-    get("roster-status").textContent = !ready ? "Room members unavailable."
+    get("roster-title").textContent = directory ? "Team directory (" + result.members.length + ")"
+      : ready ? "Members (" + result.members.length + ")" : "Members";
+    get("roster-status").textContent = directory ? "This connection does not expose room membership."
+      : !ready ? "Room members unavailable."
       : !result.members.length ? "No room members." : "";
     const existing = new Map(rows.map((entry) => [entry.row.dataset.member, entry]));
     const members = result.members || [];
@@ -350,7 +353,7 @@ export function roomMembers({read, subject, chat, policyChanged, namesChanged, a
       entry.badge = presenceBadge(member.presence, started);
       entry.button.dataset.label = names[index].label;
       entry.button.replaceChildren(names[index].view, entry.badge);
-      const action = actionFor?.(member);
+      const action = directory ? null : actionFor?.(member);
       if (entry.control?.dataset.kind !== action?.kind) {
         entry.control?.remove();
         entry.control = null;

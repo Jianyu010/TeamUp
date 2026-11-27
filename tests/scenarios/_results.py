@@ -95,7 +95,9 @@ def document(suite, started_at, scenarios, metrics):
 def write(path, doc):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(doc, indent=2, ensure_ascii=False) + "\n")
+    partial = path.with_suffix(path.suffix + ".tmp")
+    partial.write_text(json.dumps(doc, indent=2, ensure_ascii=False) + "\n")
+    partial.replace(path)
     return path
 
 

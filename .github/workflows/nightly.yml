@@ -25,7 +25,7 @@ jobs:
     name: 4 · Nightly
     if: ${{ github.ref == 'refs/heads/main' }}
     runs-on: [self-hosted, e2e]
-    timeout-minutes: 60
+    timeout-minutes: 90 # leaves time to report and clean up after step timeouts
     permissions:
       contents: read
     env:
@@ -51,17 +51,29 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: echo "TEAMUP_VERSION=$(python3 -E -s -m scripts.ci.version --sha "$GITHUB_SHA")" >> "$GITHUB_ENV"
+      - name: Prepare a disposable scenario directory
+        run: |
+          scenario_dir=$(mktemp -d /tmp/tu-ci-XXXXXX)
+          echo "TEAMUP_SCENARIO_TMPDIR=$scenario_dir" >> "$GITHUB_ENV"
       - name: Python environment (uv, locked, through the mirror)
         timeout-minutes: 10
         run: |
           set -euo pipefail
           sed -i 's#https://pypi.org/simple#https://pypi.tuna.tsinghua.edu.cn/simple#g; s#https://files.pythonhosted.org/packages/#https://pypi.tuna.tsinghua.edu.cn/packages/#g' uv.lock
           uv sync --frozen --all-packages --python 3.12 2>&1 | tail -3
+      - name: Prepare Chromium for the browser scenarios
+        timeout-minutes: 5
+        continue-on-error: true # the browser cases report setup failure with their own IDs
+        run: |
+          uv pip install --python .venv/bin/python playwright==1.65.2
+          .venv/bin/python -m playwright install --only-shell chromium
       - name: Scenarios (NS)
         timeout-minutes: 20
         continue-on-error: true # the report judges; perf still runs
         env:
           TEAMUP_SCENARIOS: nightly
+          TEAMUP_REQUIRE_BROWSER: "1"
+          TMPDIR: ${{ env.TEAMUP_SCENARIO_TMPDIR }}
         run: uv run --no-sync pytest tests/scenarios/nightly -q -p no:cacheprovider 2>&1 | tail -40
       - name: Performance (NP)
         timeout-minutes: 30
@@ -73,6 +85,13 @@ jobs:
           python3 -E -s -m scripts.ci.results merge --suite nightly --out results/nightly/summary.json \
             results/nightly/scenarios.json results/nightly/perf.json
           python3 -E -s -m scripts.ci.results status results/nightly/summary.json || true
+      - name: Clean up scenario databases and browser profiles
+        if: ${{ always() && env.TEAMUP_SCENARIO_TMPDIR != '' }}
+        run: |
+          case "$TEAMUP_SCENARIO_TMPDIR" in
+            /tmp/tu-ci-??????) rm -rf -- "$TEAMUP_SCENARIO_TMPDIR" ;;
+            *) exit 1 ;;
+          esac
       - name: Keep the results
         id: keep1
         if: ${{ always() }}

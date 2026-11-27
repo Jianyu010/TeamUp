@@ -20,14 +20,25 @@
 | NS-12 | Client 拒绝不受信任证书的 Server | 未配置 `ca_file` 时 Client 返回 `unavailable`，不降级 |
 | NS-13 | 经 Client 与 MCP 的登记和角色查找 | MCP 工具与 HTTP 语义一致 |
 | NS-14 | 经 Client 与 MCP 的公告错误码 | MCP 返回的错误码与 HTTP 一致 |
+| NS-15.01–06 | Client Console | 分别验证登录、房间发现、历史访问、公告编辑冲突、对话中途变更和浏览器操作 |
+| NS-16.01–07 | Admin Console | 分别验证入口授权、对话记录权限、账号创建、重置、停用、浏览器操作和维护权限 |
+| NS-17A–D | 房间归档 | 分别验证作者权限、停止投递、历史分页和精确的闲置截止时间 |
+| NS-18 | 房间任务 | 分别验证指派可见性、MCP 任务历史与重启持久性，以及处理进度后失效的提醒 |
 
 ## 性能基准
 
 | ID | 标题 | 指标 |
 | --- | --- | --- |
-| NP-01 | 两个 Agent 的 @ 通知延迟 | `dm_delivery_latency`（ms）。从 A 的 IPC 发送开始，到 B 的 Client 打印通知为止，包含 Client A、Server、SSE 和 Client B。DM 合入前用两人房间加 @ |
+| NP-01 | 两个 Agent 的 @ 通知延迟 | `dm_delivery_latency`（ms）。从 A 的 IPC 发送开始，到 B 的 Client 打印通知为止，包含 Client A、Server、SSE 和 Client B。始终用两人房间加 @，保留历史序列。实际私聊见 NP-14 |
 | NP-02 | 五个 Agent 的房间聊天 | 低、中、高三档（2、10、40 条/秒）下的 `room_post_latency`、`room_fanout_latency`（ms），`room_throughput`（msg/s），`room_errors`、`room_undelivered`（count）。接收端用公开的 `/v1/events` 和 `/v1/inbox` |
 | NP-03 | 历史增长 | 1k、10k、50k 条消息处的 `history_post_latency`、`history_latest_page_latency`、`history_full_scan`（ms）和 `history_db_size`（bytes，对数据库文件 `os.stat`） |
+| NP-04 | 房间数量 | nightly 为 100、300 个房间，weekly 为 1,000、10,000 个房间。检查创建、目录分页和成员的房间列表 |
+| NP-05–07、NP-13 | 并发发送、在线连接和 Presence | 单独改变发送并发、空闲 SSE 连接和心跳人数，再比较空闲连接与发送同时发生时的延迟 |
+| NP-08 | 归档负载 | 分别验证归档与实时发送的并发行为、归档列表及历史读取 |
+| NP-09 | 任务和停滞提醒 | nightly 任务组为 3、4、5 人，weekly 为 10、30、50、100 人。验证加入、进度重试、分页同步、完成竞争，以及启用和停用提醒时的对照负载 |
+| NP-10 | 在线备份与恢复 | 仅 weekly。并发写入期间调用备份和校验流程，启动隔离 Server 并验证恢复数据 |
+| NP-11–12 | Console 负载 | Client 刷新和历史分页，以及 Admin 轮询对聊天室延迟的影响 |
+| NP-14–15 | 实际私聊延迟 | 测量持久通知可见时间，以及 Client 重连后离线消息的恢复时间 |
 
 每条指标的 `labels` 区分序列，例如 `{"agents": 5, "load": "low"}`、`{"history": 10000}`。`extra` 记录 CPU 数、Python 版本和平台。NP-02、NP-03 里单值指标的 `stats` 五项相同。
 
@@ -47,12 +58,15 @@ TEAMUP_SCENARIOS=nightly uv run --no-sync pytest tests/scenarios/nightly -q
 
 NS-01 会用 `uv` 建新的 venv 并从本地路径安装，沿用环境里的 `UV_DEFAULT_INDEX` 或 `UV_INDEX_URL`，并用运行 pytest 的解释器（`--python sys.executable`）。无法访问 PyPI 的机器要先设置镜像。
 
-性能基准。`--quick` 约 15 秒，用来验证脚本；正式运行 NP-02 每档持续 30 秒，NP-03 播种到 50k 条：
+浏览器场景使用 Chromium。可用 `uv pip install --python .venv/bin/python playwright==1.65.2` 和 `.venv/bin/python -m playwright install --only-shell chromium` 安装。流水线设置 `TEAMUP_REQUIRE_BROWSER=1`，缺少浏览器依赖时报告失败。
+
+性能基准。`--quick` 采用小数据集来验证脚本；正式运行 NP-02 每档持续 30 秒，NP-03 播种到 50k 条：
 
 ```sh
 uv run --no-sync python -m tests.scenarios.perf --quick --out results/nightly/perf.json
 uv run --no-sync python -m tests.scenarios.perf --out results/nightly/perf.json
 uv run --no-sync python -m tests.scenarios.perf --only NP-01,NP-03
+uv run --no-sync python -m tests.scenarios.perf --suite weekly
 ```
 
 ## 结果文件
