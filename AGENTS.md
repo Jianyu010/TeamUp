@@ -1,11 +1,17 @@
 # TeamUp
 
-动手前，人和 AI agent 都必须读完本文件和 [开发协议](docs/protocols/README.md)，再从 [文档索引](docs/README.md) 找到受影响的契约。以下不变量优先于其他设计与实施说明。
+Before making changes, developers and AI agents must read this file and the [development protocol](docs/protocols/README.md), then use the [documentation index](docs/README.md) to find the affected contracts. The following invariants take precedence over other design and implementation guidance.
 
-1. **只走公开入口。** 组件之间只通过已发布的入口和协议通信。禁止导入对方内部模块、直接操作对方的数据、绕过对方的权限检查。依赖方向必须无环。
-2. **每份状态只有一个 owner 和一条授权写入路径。** 缓存、投影和连接状态不能成为业务授权依据。凡是必须一起成立的约束，由状态 owner 在同一个边界内执行。
-3. **先改契约，再改代码。** 更新字段、权限、失败语义或兼容性前，先修订公开契约并取得提供方和受影响调用方的 owner 同意。调用方不得私自扩展契约。
-4. **组合根只做装配。** 组合根加载配置，构建生产组件并绑定公开入口。业务逻辑留在职责所属组件，测试替身留在测试代码。
-5. **边界必须可验证。** 依赖检查验证合法调用方向，契约测试验证权限、持久化和并发行为。修复问题时必须维持边界。
+1. **Use public interfaces.** Components communicate only through published entry points and protocols. Do not import another component's internals, manipulate its data directly, or bypass its authorization checks. Keep dependencies acyclic.
+2. **Give each piece of state one owner and one authorized write path.** Caches, projections, and connection state cannot determine business authorization. The state owner enforces constraints that must hold together within the same boundary.
+3. **Update the contract before changing code.** Before changing fields, permissions, failure semantics, or compatibility, revise the public contract and get agreement from the provider and the owners of affected callers. Callers may not extend the contract unilaterally.
+4. **Keep the composition root focused on wiring.** It loads configuration, constructs production components, and connects public interfaces. Business logic belongs in the responsible component, and test doubles belong in tests.
+5. **Make boundaries verifiable.** Use dependency checks to enforce allowed dependency directions and contract tests to verify authorization, persistence, and concurrent behavior. Preserve these boundaries when fixing defects.
 
-本文件保留持久规则。目录、技术选型、操作规程和进度写入 `docs/`。
+Keep enduring rules here. Document the repository layout, technology choices, operating procedures, and progress under `docs/`.
+
+## Documentation languages
+
+Write Markdown documentation under `docs/` in clear, natural English. Publish tutorials, hands-on guides, introductions, and explainers for human readers in both English (`<name>.md`) and Simplified Chinese (`<name>.zh-CN.md`). Keep all architecture documentation under `docs/architecture/` in English only, along with technical references such as contracts, specifications, and implementation plans.
+
+Add or update both editions of a bilingual document in the same change. Link the editions near the top of each page. In the Chinese edition, link to Chinese editions where available. Keep commands, API names, and identifiers the same in both editions.

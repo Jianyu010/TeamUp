@@ -12,20 +12,36 @@
   <main class="console" aria-label="TeamUp Client Console">
     <header class="chrome">
       <h1><img alt="" width="34" height="34" src="/jet-pair.png">TeamUp</h1>
-      <nav aria-label="Client navigation">
+      <nav id="client-nav" aria-label="Client navigation" hidden>
         <button type="button" id="workspace-nav" aria-pressed="true">Workspace</button>
         <button type="button" id="team-nav" aria-pressed="false">Team</button>
       </nav>
-      <span id="connection" role="status">Connecting</span>
+      <div class="chrome-status">
+        <a id="admin-entry" target="_blank" rel="noopener noreferrer" hidden>Admin</a>
+        <span id="connection" role="status">Connecting</span>
+      </div>
     </header>
 
-    <div id="stage" class="stage" data-page="workspace">
+    <section id="sign-in" class="sign-in" aria-labelledby="sign-in-title" hidden>
+      <form id="sign-in-form">
+        <h2 id="sign-in-title">Sign in to TeamUp</h2>
+        <label>Username <input id="sign-in-username" autocomplete="username" autocapitalize="none" spellcheck="false" required></label>
+        <label>Password <input id="sign-in-password" type="password" autocomplete="current-password" required></label>
+        <label id="remember-login-label" class="checkbox-label" hidden><input id="remember-login" type="checkbox"> Remember me on this Mac</label>
+        <p class="muted">Room mentions can wake approved sessions that have no saved wake rule. Change the default in Workspace.</p>
+        <button id="sign-in-submit" type="submit">Sign in</button>
+        <p id="sign-in-status" role="status"></p>
+      </form>
+    </section>
+
+    <div id="stage" class="stage" data-page="workspace" hidden>
       <svg id="links" aria-hidden="true"></svg>
       <section class="session-panel" aria-labelledby="sessions-title">
         <h2 id="sessions-title">My sessions (0)</h2>
         <div class="scroll-frame" id="session-scroll">
           <div class="nodes" id="sessions"></div>
         </div>
+        <label id="wake-settings" class="checkbox-label" hidden><input id="wake-on-mention" type="checkbox"> Wake sessions by default</label>
         <button type="button" id="retire-identity" class="retire-action" hidden>Retire selected identity</button>
         <details id="retired-sessions">
           <summary id="retired-summary">Retired sessions (0)</summary>
@@ -38,6 +54,7 @@
         <div class="scroll-frame" id="room-scroll">
           <div class="nodes" id="rooms"></div>
         </div>
+        <button type="button" id="open-room-archive">Archived rooms</button>
       </section>
 
       <section class="detail scroll-frame" id="detail" aria-label="Room details" inert>
@@ -59,6 +76,7 @@
               </div>
               <span id="copy-status" class="sr-only" role="status"></span>
             </div>
+            <button type="button" id="archive-room" hidden>Mark goal reached</button>
             <p class="muted" id="room-preview" hidden></p>
             <section id="board-panel" aria-labelledby="board-title" tabindex="0" hidden>
               <div class="session-picker" id="board-session-label" hidden>
@@ -122,15 +140,24 @@
         <h2>Team</h2>
         <p id="team-status" role="status"></p>
         <table class="team-directory">
-          <thead><tr><th scope="col">Name</th><th scope="col">User</th><th scope="col">Description</th></tr></thead>
+          <thead>
+            <tr>
+              <th scope="col">Name</th>
+              <th scope="col">User</th>
+              <th scope="col">Description</th>
+              <th scope="col">Up since</th>
+              <th scope="col">Up for</th>
+            </tr>
+          </thead>
           <tbody id="team-list"></tbody>
         </table>
       </section>
     </div>
-    <footer class="versions" aria-label="TeamUp versions">
+    <footer id="versions" class="versions" hidden aria-label="TeamUp versions">
       <span>Client <span id="client-version">Unknown</span></span>
       <span>Server <span id="server-version">Unknown</span></span>
       <p id="session-action-status" role="status"></p>
+      <p id="login-preference-status" role="status" hidden></p>
     </footer>
   </main>
   <dialog id="retire-dialog" aria-labelledby="retire-title" aria-describedby="retire-description" class="session-dialog">
@@ -154,6 +181,24 @@
       <summary>Notifications</summary>
       <div id="archived-notices"></div>
     </details>
+  </dialog>
+  <dialog id="room-archive-dialog" aria-labelledby="room-archive-title" class="session-dialog">
+    <header class="archive-heading">
+      <h2 id="room-archive-title">Archived rooms</h2>
+      <form method="dialog"><button type="submit" autofocus>Close</button></form>
+    </header>
+    <label>Session <select id="room-archive-session"></select></label>
+    <label>Room <select id="room-archive-room"></select></label>
+    <button type="button" id="room-archive-more" hidden>More rooms</button>
+    <p id="room-archive-status" class="muted" role="status"></p>
+    <section id="room-archive-details" hidden>
+      <h3>Members at closing</h3>
+      <ul id="room-archive-members"></ul>
+      <h3>Chats</h3>
+      <p id="room-archive-history-status" class="muted"></p>
+      <button type="button" id="room-archive-older" hidden>Older messages</button>
+      <div id="room-archive-messages"></div>
+    </section>
   </dialog>
   <section id="member-detail" popover="manual" aria-label="Room member details"></section>
 </body>

@@ -12,7 +12,7 @@ from tempfile import NamedTemporaryFile
 from urllib.parse import urlsplit
 
 from ._local import LocalError, lock_endpoint, private_file
-from ._protocol import decode_json, is_secret, is_string
+from ._protocol import decode_json, is_secret, is_string, is_uuid
 
 
 class ConfigError(Exception):
@@ -25,6 +25,7 @@ class Binding:
     member_token: str = field(repr=False)
     harness_instance_id: str
     session_key: str
+    codex_install: str | None = None
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,14 @@ class ClientConfig:
     notify_command: tuple[str, ...] | None = None
     installs: tuple[Install, ...] = ()
     codex_command: tuple[str, ...] | None = None
+    server_socket: Path | None = None
+
+    @property
+    def remember_scope(self) -> str | None:
+        if self.server_socket is None and not self.server_url.startswith("https://"):
+            return None
+        transport = f"{self.server_url}\0{self.server_socket or ''}"
+        return hashlib.sha256(transport.encode()).hexdigest()
 
 
 def _server_origin(value):
@@ -97,6 +106,7 @@ def _read(path):
     required = {"server_url", "socket_path", "bindings"}
     optional = {
         "ca_file",
+        "server_socket",
         "account_token",
         "enrollment_key",
         "notify_command",
@@ -108,18 +118,23 @@ def _read(path):
     return data, contents
 
 
-def _socket_path(value):
+def _socket_path(value, name="socket_path"):
     if not is_string(value) or "\0" in value:
-        raise ConfigError("socket_path must be an absolute path")
+        raise ConfigError(f"{name} must be an absolute path")
     socket_path = Path(value)
     if not socket_path.is_absolute() or not socket_path.name:
-        raise ConfigError("socket_path must be an absolute path")
+        raise ConfigError(f"{name} must be an absolute path")
     return socket_path
 
 
 def _parse(path, data):
     socket_path = _socket_path(data["socket_path"])
     server_url = _server_origin(data["server_url"])
+    server_socket = None
+    if "server_socket" in data:
+        server_socket = _socket_path(data["server_socket"], "server_socket")
+        if not server_url.startswith("http://") or server_socket == socket_path:
+            raise ConfigError("server_socket requires a distinct socket and a loopback HTTP origin")
     enrollment_key = data.get("enrollment_key")
     account_token = data.get("account_token")
     if "account_token" in data and "enrollment_key" in data:
@@ -132,8 +147,12 @@ def _parse(path, data):
     bindings = []
     secrets = {enrollment_key, account_token} - {None}
     sessions = set()
+    codex_threads = set()
+    binding_fields = set(Binding.__dataclass_fields__) - {"codex_install"}
     for item in data["bindings"]:
-        if not isinstance(item, dict) or set(item) != set(Binding.__dataclass_fields__):
+        if not isinstance(item, dict) or not (
+            binding_fields <= item.keys() <= binding_fields | {"codex_install"}
+        ):
             raise ConfigError("Invalid binding fields")
         binding = Binding(**item)
         identity = (binding.harness_instance_id, binding.session_key)
@@ -147,6 +166,13 @@ def _parse(path, data):
         credentials = {binding.binding_key, binding.member_token}
         if len(credentials) != 2 or secrets & credentials or identity in sessions:
             raise ConfigError("Binding secrets and session identities must be unique")
+        if "codex_install" in item:
+            if not is_string(binding.codex_install, 128) or not is_uuid(binding.session_key):
+                raise ConfigError("A Codex mapping needs an installation ID and a thread UUID")
+            thread = (binding.codex_install, binding.session_key.lower())
+            if thread in codex_threads:
+                raise ConfigError("A Codex installation must map each thread UUID at most once")
+            codex_threads.add(thread)
         secrets.update(credentials)
         sessions.add(identity)
         bindings.append(binding)
@@ -178,6 +204,11 @@ def _parse(path, data):
         secrets.add(install.binding_key)
         installs.append(install)
 
+    if {install for install, _ in codex_threads} - {
+        install.harness_instance_id for install in installs
+    }:
+        raise ConfigError("codex_install must name a configured installation")
+
     ca_file = None
     if "ca_file" in data:
         if not is_string(data["ca_file"]) or "\0" in data["ca_file"]:
@@ -200,6 +231,7 @@ def _parse(path, data):
         notify_command,
         tuple(installs),
         codex_command,
+        server_socket,
     )
 
 
@@ -230,6 +262,15 @@ def read_config(path):
     """Parse the configuration without taking the Client lock (read-only use)."""
     data, _ = _read(path)
     return _parse(path, data)
+
+
+def read_locked_profile(path, socket_path):
+    """Read a profile without releasing the lock for its configured socket."""
+    data, contents = _read(path)
+    config = _parse(path, data)
+    if config.socket_path != socket_path:
+        raise ConfigError("Client socket path changed while opening the configuration")
+    return config, data, contents
 
 
 @contextmanager

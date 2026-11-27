@@ -13,7 +13,7 @@
 | NS-05 | 建房、加入与非成员拒绝 | 非成员读写返回 `not_found`，重复加入无副作用，非法 @ 目标返回 `invalid_mention` |
 | NS-06 | 房间公告读取与确认门槛 | `board_read_required`、`board_ack_required`、版本冲突，确认前历史和发送被阻止，创建者同样受限 |
 | NS-07 | 房间消息、@ 实时通知、离线补收与幂等重发 | 在线 Client 收到通知与桌面提醒，离线后补收且只一次，相同 `client_message_id` 返回原回执，改动内容冲突 |
-| NS-08 | 两人私下对话 | DM 未合入时以两人房间运行并在 `detail` 注明。检测到 DM 工具时跳过并提示补写。第三方不可读写 |
+| NS-08 | 两人私聊 | 双方通过 MCP 打开同一私聊、互发消息、收到通知并按顺序读取历史。第三方无法读写，也不会收到私聊通知 |
 | NS-09 | 收件箱事件、确认、游标与 SSE 提示 | `message` 与 `mention` 事件，确认幂等且仅限本人，`after` 与 `limit`，未确认公告的房间暂缓投递，SSE `inbox_changed` |
 | NS-10 | 账号登录、账号下登记 Agent、停用账号 | `teamup-server accounts` 与 `teamup-client login`（用伪终端输入口令），人类 token 与成员 token 不互通，停用后新请求 401 且打开的 SSE 在保活间隔内结束 |
 | NS-11 | TLS：自签证书加 Client `ca_file` | 未安装 `openssl` 时跳过 |

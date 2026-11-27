@@ -95,6 +95,10 @@ OPERATIONS = {
     "retire_identity": Operation("POST", "/members/me/retire"),
     "find_members": Operation("GET", "/members", optional={"q": SEARCH}),
     "list_rooms": Operation("GET", "/rooms"),
+    "list_archived_rooms": Operation(
+        "GET", "/rooms/archive", optional={"after": is_uuid, "limit": LIMIT}
+    ),
+    "archive_room": Operation("POST", "/rooms/{room_id}/archive", ROOM),
     "create_room": Operation(
         "POST",
         "/rooms",
@@ -242,8 +246,12 @@ def valid_session(value):
 
 
 class Coordinator:
-    def __init__(self, config, upstream, notices, notice_output, notifier, drivers):
+    def __init__(
+        self, config, upstream, notices, notice_output, notifier, drivers, *,
+        signed_in_console=False,
+    ):
         self._server_url = config.server_url
+        self._signed_in_console = signed_in_console and config.account_token is not None
         self._account_token = config.account_token
         self._registration_token = config.account_token or config.enrollment_key
         self._legacy_enrollment = config.enrollment_key is not None
@@ -256,6 +264,11 @@ class Coordinator:
         self._static = {
             binding.binding_key: (binding.harness_instance_id, binding.session_key)
             for binding in config.bindings
+        }
+        self._codex_static = {
+            (binding.codex_install, binding.session_key.lower()): self._static[binding.binding_key]
+            for binding in config.bindings
+            if binding.codex_install is not None
         }
         self._installs = {install.binding_key: install for install in config.installs}
         self._install_harnesses = {
@@ -316,7 +329,15 @@ class Coordinator:
             raise ClientError(
                 "invalid_request", "This install needs a session ID from its harness"
             )
-        return (install.harness_instance_id, session_ref["id"]), install
+        identity = (install.harness_instance_id, session_ref["id"])
+        if (
+            session_ref["kind"] == "codex"
+            and (static := self._codex_static.get((identity[0], identity[1].lower())))
+            and identity not in self._retired
+            and self._notices.session(*identity) is None
+        ):
+            return static, None
+        return identity, install
 
     async def _resolve(self, identity, install, session_ref):
         if session_ref is not None and session_ref["kind"] == "codex":
@@ -705,6 +726,53 @@ class Coordinator:
             "older": str(page[0]["message_id"]) if len(rows) > page_size else None,
         }
 
+    async def console_access(self, *, private: bool = False) -> dict:
+        if (token := self._account_token) is None:
+            return {}
+        try:
+            capabilities = await self._upstream.request(
+                "GET", "/auth/capabilities", token, member_auth=False
+            )
+        except ClientError:
+            return {}
+        if capabilities.get("admin") is not True:
+            return {}
+        access = {"admin_url": self._server_url + "/console/"}
+        if private and self._upstream.server_socket is not None:
+            access["server_socket"] = str(self._upstream.server_socket)
+        return access
+
+    async def console_admin_session(self) -> dict:
+        server_socket = self._upstream.server_socket
+        if server_socket is None and not self._server_url.startswith("https://"):
+            return {"state": "forbidden"}
+        if (token := self._account_token) is None:
+            return {"state": "unauthorized"}
+        try:
+            session = await self._upstream.request(
+                "POST", "/auth/console-session", token, member_auth=False
+            )
+        except ClientError as error:
+            state = error.code if error.code in {"unauthorized", "forbidden", "not_found"} else "unavailable"
+            return {"state": state}
+        return {
+            "state": "ready",
+            "admin_url": self._server_url + "/console/",
+            "session": session,
+            "server_socket": None if server_socket is None else str(server_socket),
+        }
+
+    async def console_wake_settings(self, enabled: bool | None = None) -> dict:
+        if not self._signed_in_console:
+            return {"state": "unavailable"}
+        if enabled is None:
+            enabled = self._notices.console_wake_enabled()
+        else:
+            self._notices.set_console_wake_enabled(enabled)
+            for session in self._sessions.values():
+                session.harness_changed.set()
+        return {"state": "ready", "enabled": enabled}
+
     def console_sessions(self) -> tuple[ConsoleSession, ...]:
         """Expose approved sessions to the Client-owned read projection."""
         return tuple(
@@ -1043,31 +1111,35 @@ class Coordinator:
                 self._notices.abandon_submitting(scope)
                 while True:
                     session.harness_changed.clear()
+                    pending = self._notices.undecided(scope)
                     blocked = False
-                    for notice in self._notices.undecided(scope):
-                        if not self._wake_allowed(session.identity, notice):
+                    for notice in pending:
+                        if not self._wake_allowed(session, notice):
                             state = "not_allowed"
                         elif blocked or self._leases.get(session.identity) is None:
-                            # Keep event order: later mentions wait behind this one.
-                            state, blocked = "waiting", True
+                            state = "waiting"
                         else:
                             state = await self._hand_off(binding, session, notice)
+                        if state == "waiting":
+                            # Keep event order: later mentions wait behind this one.
+                            blocked = True
                         self._notices.set_harness_state(
                             scope, notice["event_id"], state
                         )
-                    await session.harness_changed.wait()
+                    if blocked or not pending:
+                        await session.harness_changed.wait()
             except sqlite3.Error:
                 await asyncio.sleep(1)
 
-    def _wake_allowed(self, identity, notice):
+    def _wake_allowed(self, session, notice):
+        identity = session.identity
+        if self._sessions.get(identity) is not session or identity in self._pending_retirements:
+            return False
         allowed = self._notices.wake(*identity)
-        return bool(
-            allowed
-            and notice["room_id"] in allowed["rooms"]
-            and (
-                not allowed["senders"]
-                or notice["sender_member_id"] in allowed["senders"]
-            )
+        if allowed is None:
+            return self._signed_in_console and self._notices.console_wake_enabled()
+        return notice["room_id"] in allowed["rooms"] and (
+            not allowed["senders"] or notice["sender_member_id"] in allowed["senders"]
         )
 
     async def _hand_off(self, binding, session, notice):
@@ -1111,6 +1183,8 @@ class Coordinator:
             and isinstance(board.get("protocol"), str)
         ):
             return "failed"
+        if not self._wake_allowed(session, notice):
+            return "not_allowed"
         if self._leases.get(session.identity) is not lease:
             return "waiting"
         prompt = wake_prompt(notice, role, room_name, message, board)

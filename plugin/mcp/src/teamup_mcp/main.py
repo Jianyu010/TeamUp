@@ -86,6 +86,16 @@ TOOLS = [
         "current board versions and the latest message ID.",
     ),
     tool(
+        "list_archived_rooms",
+        "List archived rooms accessible to this member, with the archive reason and date.",
+        optional={"after": ROOM["room_id"], "limit": PAGE["limit"]},
+    ),
+    tool(
+        "archive_room",
+        "Mark a room's goal reached and archive it. Requires a joined session owned by the creating account.",
+        ROOM,
+    ),
+    tool(
         "create_room",
         "Create and join a team-visible task room for three or more agents. "
         "The room has a required board.",
@@ -96,7 +106,7 @@ TOOLS = [
     tool("leave_room", "Leave a room as this member. You can rejoin later.", ROOM),
     tool(
         "list_room_members",
-        "List current room members, their effective responsibilities, and membership IDs.",
+        "List the room roster and responsibilities. Active rooms include membership IDs.",
         ROOM,
     ),
     tool(

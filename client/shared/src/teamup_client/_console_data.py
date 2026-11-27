@@ -155,6 +155,12 @@ class Request(Protocol):
 
 
 class SessionLifecycle(Protocol):
+    async def console_admin_session(self) -> dict: ...
+
+    async def console_access(self, *, private: bool = False) -> dict: ...
+
+    async def console_wake_settings(self, enabled: bool | None = None) -> dict: ...
+
     def console_retired_sessions(self) -> list[dict]: ...
 
     async def console_session_action(
@@ -190,6 +196,21 @@ class ConsoleReader:
         self._version = (
             None if installed_version == "0.0.0+unknown" else installed_version
         )
+
+    async def access(self, *, private: bool = False) -> dict:
+        if self._lifecycle is None:
+            return {}
+        return await self._lifecycle.console_access(private=private)
+
+    async def admin_session(self) -> dict:
+        if self._lifecycle is None:
+            return {"state": "unavailable"}
+        return await self._lifecycle.console_admin_session()
+
+    async def wake_settings(self, enabled: bool | None = None) -> dict:
+        if self._lifecycle is None:
+            return {"state": "unavailable"}
+        return await self._lifecycle.console_wake_settings(enabled)
 
     async def versions(self) -> dict:
         server_version = None
@@ -490,7 +511,7 @@ class ConsoleReader:
         session = self._current(identity)
         if session is None:
             return {"state": "not_found", "members": []}
-        as_of, presence = await self._presence(session)
+        as_of, presence = await self._presence(session, include_uptime=True)
         try:
             result = await self._read(session, "/members")
         except ClientError as exc:
@@ -503,7 +524,9 @@ class ConsoleReader:
             ],
         }
 
-    async def _presence(self, session: ConsoleSession) -> tuple[str | None, dict]:
+    async def _presence(
+        self, session: ConsoleSession, *, include_uptime: bool = False
+    ) -> tuple[str | None, dict]:
         try:
             async with asyncio.timeout(PRESENCE_OBSERVATION_SECONDS):
                 result = await self._read(session, "/presence")
@@ -519,11 +542,17 @@ class ConsoleReader:
                 and is_integer(age, 0)
                 and is_string(observed_at)
             ):
-                presence[member["member_id"]] = {
+                observation = {
                     "state": state,
                     "observed_at": observed_at,
                     "age_ms": age,
                 }
+                if include_uptime and state == "online":
+                    since = member.get("online_since")
+                    duration = member.get("online_for_ms")
+                    if is_string(since) and is_integer(duration, 0):
+                        observation.update(online_since=since, online_for_ms=duration)
+                presence[member["member_id"]] = observation
         return result["as_of"], presence
 
     async def _roster_tasks(
@@ -565,6 +594,54 @@ class ConsoleReader:
         except ClientError as exc:
             return {"state": exc.code}
         return {"state": "ready", "board": board}
+
+    async def archive_room(self, identity: str, room_id: str) -> dict:
+        try:
+            result = await self._write(identity, f"/rooms/{room_id}/archive", None)
+        except ClientError as exc:
+            return {"state": exc.code}
+        return {"state": "ready", **result}
+
+    async def archived_rooms(self, identity: str, after: str | None = None) -> dict:
+        session = self._current(identity)
+        if session is None:
+            return {"state": "not_found"}
+        try:
+            result = await self._read(session, "/rooms/archive", {"after": after} if after else None)
+        except ClientError as exc:
+            return {"state": exc.code}
+        return {"state": "ready", **result}
+
+    async def archived_room(
+        self, identity: str, room_id: str, before: int = MAX_BEFORE
+    ) -> dict:
+        session = self._current(identity)
+        if session is None:
+            return {"state": "not_found"}
+        path = f"/rooms/{room_id}"
+        try:
+            detail = await self._read(session, path)
+            if not detail.get("archived_at"):
+                return {"state": "not_found"}
+            roster = (await self._read(session, f"{path}/members"))["members"]
+            try:
+                history = await self._read(session, f"{path}/messages", {"before": before, "limit": PAGE})
+            except ClientError as exc:
+                if exc.code != "board_ack_required":
+                    raise
+                history = None
+        except ClientError as exc:
+            return {"state": exc.code}
+        messages = history["messages"] if history else []
+        members = _message_members(roster)
+        return {
+            "state": "ready",
+            "members": roster,
+            "history_state": "ready" if history else "board_ack_required",
+            "history_truncated": bool(history and history.get("history_truncated")),
+            "messages": [_message(item, members) for item in messages],
+            "older": str(messages[0]["message_id"]) if len(messages) == PAGE else None,
+        }
 
     async def remove_room_member(
         self, identity: str, room_id: str, member_id: str, membership_id: str

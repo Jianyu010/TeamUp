@@ -1,10 +1,6 @@
-# Operator Maintenance Console Contract Proposal
+# Operator Maintenance Console
 
-**Design proposal for TeamUp #32, part of #17.** Related to the [#5 Control Console](https://github.com/Jianyu010/TeamUp/pull/12) and the #6 conversation-history boundary. Base revision: `94261a7`.
-
-This is a contract proposal only. It adds no production code, routes, dependencies, telemetry exporters, or deployment changes. The repository has no approved telemetry endpoints today, so every endpoint and metric below requires owner review before implementation. The proposal deliberately uses the existing JSON API style and existing operator identity rather than introducing Prometheus, OpenTelemetry, StatsD, or another side channel.
-
-The #5 Control Console is not present at the base revision. This proposal assumes the #5 operator boundary described in [Control Console product behavior](../specs/collaboration-surfaces.md#control-console): an account login session with `purpose:"console"`, server-side grants, and read-only console routes. Until #5 lands, this document remains a dependency-aware proposal and must not be implemented ahead of it. See [Sequencing](#sequencing-and-open-review).
+The operator view for [#32](https://github.com/Jianyu010/TeamUp/issues/32) adds health, room load, and redacted events alongside the [#5 room console](control-console.md). It uses the published console-purpose session and Collaboration-owned grants. The repository maintainer approved this scope for implementation and review.
 
 ## Scope
 
@@ -24,7 +20,7 @@ Every quantity in this contract comes from the component that owns it. The maint
 | Source | Owner | Public read port | Authoritative data |
 | --- | --- | --- | --- |
 | Operator identity and grants | Collaboration, through the #5 account boundary | Existing login route and server-local account CLI | Accounts, sessions, `console_read`, `transcript_read`, and the new maintenance grants |
-| Maintenance API | Gateway | The read-only `/v1/console/...` routes in this proposal | No state; it rechecks the session and grants through Collaboration and forwards owner-provided observations |
+| Maintenance API | Gateway | The read-only `/v1/console/...` routes below | It rechecks the session and grants through Collaboration and forwards owner-provided observations |
 | Host observations | Deployment host probe | Host metrics read port | Process and host operating-system counters only |
 | Gateway observations | Gateway | Gateway metrics read port | Request, error, latency, and active-stream counters from its own process |
 | Collaboration observations | Collaboration | Collaboration metrics read port | Database health and aggregate domain counts from the business database |
@@ -52,13 +48,13 @@ All maintenance routes live under the existing `/v1/console/` family. They there
 | `transcript_read` | Account × room (#5, unchanged) | Reading the selected room's transcript through the #5 transcript route only | Maintenance metrics, logs, DM, or any other room |
 | DM transcript grant | Out of scope | Nothing in this proposal | A future DM grant must be account × conversation and separately approved; it is never implied by any room or maintenance grant |
 
-Grant management remains server-local, following the #5 pattern. The proposal adds, for later review, `grant-maintenance`, `revoke-maintenance`, `grant-logs`, and `revoke-logs` subcommands on the existing account CLI. The network API has no grant-write route. Grants are stored and checked by Collaboration; names and storage shape require review with the #5 owner.
+Grant management remains server-local, following the #5 pattern. The accounts CLI provides `grant-maintenance`, `revoke-maintenance`, `grant-logs`, and `revoke-logs` subcommands on the existing account CLI. The network API has no grant-write route. Collaboration creates the maintenance grants and log audit tables additively in the existing schema family. Existing account sessions and room grants remain valid.
 
 Room transcript access and DM access are intentionally separate:
 
 - A maintenance operator with `transcript_read` for one room still sees no transcript through a maintenance route. Transcript reads continue through the #5 route and its audit.
 - A maintenance operator without `transcript_read` can still see aggregate room load. The load response contains no message text, sender identity, role description, board text, or transcript cursor.
-- No route in this proposal can discover or read a DM. DM counts and DM activity are not exposed as aggregate metrics, because even their existence is participant-scoped.
+- Every room load is scoped to the existing team room set. DM conversations and their activity remain participant-scoped.
 
 Error semantics reuse #5 and [Client–Server v1](client-server-v1.md): an invalid, expired, revoked, or wrong-purpose session is 401 `unauthorized`; a valid console session missing the required grant is 403 `forbidden`; an unknown or non-team room is 404 `not_found`; bounded query misuse is 422 `invalid_request`; login rate limiting keeps 429 `rate_limited`.
 
@@ -70,9 +66,9 @@ The console presents point-in-time observations, not a monitoring system. Each s
 | --- | --- |
 | `source` | `host`, `gateway`, or `collaboration` |
 | `sampled_at` | UTC RFC 3339 time when the owner collected the values, not when the maintenance API served them |
-| `sample_interval_seconds` | Expected refresh interval; proposed default 15 seconds |
-| `stale_after_seconds` | Age above which the sample is stale; proposed default 45 seconds |
-| `unavailable_after_seconds` | Age above which the sample is unavailable; proposed default 90 seconds |
+| `sample_interval_seconds` | 15 seconds |
+| `stale_after_seconds` | 45 seconds |
+| `unavailable_after_seconds` | 90 seconds |
 | `state` | `fresh`, `stale`, or `unavailable` |
 | `values` | Counters and gauges for that source |
 | `rates` | Optional derived rates, or null when they cannot be computed honestly |
@@ -91,7 +87,7 @@ Counters and rates:
 - **Gauges** are values at the sample instant. Examples: resident memory, open file descriptors, active SSE streams, current stored messages, pending inbox events.
 - **Rates are derived, never authoritative.** The maintenance API may expose a rate only when it has two fresh samples from the same source instance with a known positive interval. The response includes `window_seconds` and the number of samples. A rate is null on the first sample, after a source restart, when either sample is stale, or when the counter decreased.
 - **Restart detection.** Counters reset when a process restarts. A lower counter value starts a new baseline and never produces a negative rate. Collaboration totals that can shrink because of retention are gauges, not counters.
-- **No precomputed history.** The console does not store a time series. It may show the latest rate or a short in-memory comparison, but it does not become a monitoring database or an audit record.
+- Owners refresh health observations on demand, at most once per 15 seconds per process. A failed collection preserves the previous sample until it ages out. Rates are null in this version. Gateway totals and duration counts support a lifetime mean without computing a rate.
 
 ## Minimal metric set
 
@@ -121,7 +117,7 @@ Owner: Gateway. These values come from its own request and connection state. Lab
 
 | Metric | Type | Notes |
 | --- | --- | --- |
-| `http_requests_total` | Counter | By route template, method, and status class (`2xx`, `4xx`, `5xx`) |
+| `http_requests_total` | Counter | By route template, method, and status class |
 | `http_request_duration_seconds_total` | Counter | Sum of handler durations by route template |
 | `http_request_duration_count` | Counter | Handler count corresponding to the duration sum. The pair supports an average. A p95 requires bounded duration histograms and a minimum sample count. |
 | `http_error_responses_total` | Counter | By published error code, including authentication, authorization, validation, conflict, rate-limit, and internal categories |
@@ -129,7 +125,7 @@ Owner: Gateway. These values come from its own request and connection state. Lab
 | `active_sse_streams` | Gauge | SSE responses currently open |
 | `sse_connections_total` | Counter | SSE subscriptions opened since process start |
 
-The Gateway must not classify by raw path, query string, room ID, member ID, client IP, or user agent. Search terms and message text never become metric labels.
+The Gateway uses registered route templates. Traffic is an array of `{route, method, status_class, count}` rows. Duration and duration count are arrays of `{route, seconds}` and `{route, count}` rows. Error totals are an array of `{code, count}` rows. Requests to the DM and inbox families are excluded before recording transport samples or events. An unmatched request uses a fixed label. Search terms and message text never become metric labels.
 
 ### Collaboration
 
@@ -169,11 +165,11 @@ Owner: Collaboration. Each response is scoped to exactly one team room named in 
 | `last_activity_at` | UTC RFC 3339 or null | Latest Server-recorded room activity; null when the room has no timestamp yet |
 | `load_rates` | Object or null | Optional derived rates from two fresh Collaboration samples; null otherwise |
 
-The load response must not include any sender or member identity, role description, board text, message text, message ID, search snippet, transcript cursor, or DM. A room with a DM identifier or a non-team identifier is not a valid target and returns 404 `not_found`, matching the #5 room set. The Client can use a page from the #5 room list and read load for its visible rows. A bounded batch route can be reviewed if per-row reads become a measurable bottleneck.
+The load response must not include any sender or member identity, role description, board text, message text, message ID, search snippet, transcript cursor, or DM. A room with a DM identifier or a non-team identifier is not a valid target and returns 404 `not_found`, matching the #5 room set. The dashboard reads load for the room the operator selects from the existing Room list. Each room load is an authorized point-in-time read and does not reuse an old room result.
 
 ## Routes and shapes
 
-These routes are proposed for the same Gateway provider and `/v1/console/` family as #5. None is implemented by this change.
+Gateway publishes the maintenance reads in the existing console family. All successful API responses use `Cache-Control: no-store`.
 
 | Method and path | Required grants | Success result |
 | --- | --- | --- |
@@ -183,13 +179,13 @@ These routes are proposed for the same Gateway provider and `/v1/console/` famil
 
 `SourceSnapshot` carries the common envelope and a `values` object; optional `rates` is null unless it satisfies the two-sample rule. `generated_at` is the maintenance API response time, not a new sample. Health and per-room load are not audited because they contain no message or board content. Unknown routes remain 404, non-GET methods remain 405, and no route is added to the member API.
 
-The log query is a bounded time window, proposed maximum one hour per request and at most 500 entries. It has no free-text search, no regular expression, and no cross-component content join. If the requested window predates retention, the response reports `truncated` rather than reconstructing old entries.
+The log query takes RFC 3339 timestamps with an explicit offset. The window includes `since` and excludes `until`. It must be positive and no longer than one hour. Choose an optional component from `host`, `gateway`, and `collaboration` and a limit from 1 to 500 (default 100). Results are newest first. The process-local sink keeps up to 2,000 events from the past hour. A restart, retention, capacity, or a query limit can truncate coverage. The response reports `truncated` when the requested window starts before retained coverage or contains more entries than the limit.
 
 ## Redacted logs
 
-Logs are the most sensitive maintenance surface because ordinary application logs can accidentally capture request content. The proposal uses both source-side redaction and a second allowlist pass at query time.
+Gateway generates operational events from its own transport observations. The sink projects a fixed set of fields at query time.
 
-Allowed fields are deliberately narrow: timestamp, severity, component, stable event code, route template, method, status class, error code, duration in milliseconds, opaque request or correlation identifier, count, and an opaque room ID only when a per-room operational event cannot be expressed otherwise.
+Events contain `at`, `severity`, `component`, and `event_code`. Gateway errors also contain `route`, `method`, `status_class`, `error_code`, and `duration_ms`, with stable values chosen by Gateway. The sink accepts typed operational events and projects those fields on read. It does not ingest existing application or access logs.
 
 Forbidden fields include all message text, DM bodies, board rules or protocol text, search queries, sender or member names, role descriptions, tokens, passwords, authorization headers, cookies, session identifiers, token digests, raw request or response bodies, raw paths with room identifiers, query strings, client IP addresses, user agents, filesystem paths, environment variables, and process command lines.
 
@@ -197,7 +193,7 @@ Additional rules:
 
 - Components redact before emission; the log sink never receives a raw body and the maintenance API never reads a component log file directly.
 - The query-time allowlist drops unknown fields instead of forwarding them.
-- Log queries are audited by Collaboration or the log owner with operator `owner_id`, requested window, component filter, result count, and time. The audit does not copy log entries or any redacted content.
+- Collaboration rechecks the logs grant when it writes the audit row for a successful query. The row records operator `owner_id`, requested window, component filter, result count, and time. Gateway returns the entries only after that write succeeds.
 - A log source that is not deployed or not readable returns `state:"unavailable"` and no entries.
 - Logs are not a transcript substitute. A `transcript_read` grant does not grant logs, and `logs_read` does not grant transcript access.
 
@@ -225,29 +221,13 @@ Additional rules:
 | L3 | Log bounds | Request a window over the maximum span or over the limit | 422 `invalid_request`; no unbounded read |
 | R1 | Per-room scope | Query load for one team room | Response contains only that `room_id`; no transcript, roster, member IDs, message IDs, or DM fields |
 | R2 | Non-team target | Query load for a nonexistent room, a DM, or an arbitrary UUID | 404 `not_found`; no aggregate or existence leak |
-| R3 | Bounded room loading | View a paginated room list and request load for the visible rows | Each load response is checked separately and represents one room |
+| R3 | Bounded room loading | Select a room in the dashboard | Each load response is checked separately and represents one room |
 | B1 | No bypass | Static dependency check and contract test against the maintenance provider | No import of Collaboration internals, direct business-SQLite access, direct log-file read, or Gateway table access from the maintenance API |
 | B2 | Owner recheck | Revoke `maintenance_read` or `logs_read` between two requests with a valid session | The next owner check returns 403; no cached grant or projection authorizes the read |
-| S1 | #5 sequencing | Base revision has no #5 console identity or grants | This proposal is not implemented; #5 must land its purpose, grants, route family, and room set first, then this contract is reviewed against that code |
-| S2 | No new dependency | Inspect the implementation proposal | No Prometheus, OpenTelemetry, StatsD, log shipper, or other new production dependency is required or approved by this document |
+| S2 | No new dependency | Inspect the deployed dependencies | The telemetry providers use the standard library and existing Server stack |
 
-## Sequencing and open review
+## Browser and desktop entry points
 
-The following order is required:
+Gateway serves the existing operator sign-in at `GET /dashboard/` with Maintenance selected after sign-in. `GET /console/` opens the same shell with Rooms selected. The operator can switch between views within that session. The page refreshes health on a 15-second interval while Maintenance is open. Loading redacted events is an explicit action. HTTP 401 ends the session and HTTP 403 shows the missing scope for the affected view.
 
-1. **#5 identity and console foundation.** Land the account login purpose, account lifecycle, server-local grants, `console_read`, room-scoped `transcript_read`, 403 semantics, and the team-room metadata route. This proposal reuses that boundary and must not create a second operator identity.
-2. **This contract review.** Approve the new `maintenance_read` and `logs_read` grants, route shapes, metric names, sample and staleness thresholds, redaction allowlist, and per-room load scope with the Gateway, Collaboration, host/deployment, and log owners.
-3. **Owner telemetry ports.** Each owner exposes only its own read port. No aggregator may read another owner's tables, sockets, files, or process internals.
-4. **Implementation and contract tests.** Add the routes, redaction, audit, dependency checks, and the acceptance matrix above in a separate change after approval.
-
-Because #5 is pending at base `94261a7`, references to #5 reuse are conditional. If #5 changes the console purpose, route family, `console_read` semantics, or grant configuration, this proposal must be reconciled before coding. If #5 is not accepted, this proposal is blocked rather than creating a parallel operator boundary.
-
-Open choices for review, with proposed defaults only:
-
-- Final staleness thresholds. Proposed: 15-second sampling, 45-second stale boundary, 90-second unavailable boundary, aligned with the MVP heartbeat shape in [MVP design](../specs/mvp.md).
-- Final grant names and CLI subcommand spelling. Proposed: `maintenance_read`, `logs_read`, `grant-maintenance`, `revoke-maintenance`, `grant-logs`, `revoke-logs`.
-- Whether rate computation belongs in the owner snapshot or the maintenance API. Proposed: owner supplies counters and gauges; the API derives and labels a rate only when two fresh same-instance samples exist.
-- Log retention and maximum window. Proposed: deployment-owned retention with a one-hour query cap and a 500-entry cap.
-- Whether host load averages are included when the host is shared. Proposed: include only with an explicit host-wide label; omit if attribution would be misleading.
-
-Review owners: Gateway for routes, errors, and transport metrics; Collaboration for identity reuse, grants, database and per-room aggregates, audit, and transcript/DM separation; deployment/host owner for the host probe; deployment/log owner for redacted log storage and query. Per the [development protocol](../protocols/README.md), new fields, permissions, and failure semantics require owner agreement before code. These fields remain proposals under [AGENTS.md](../../AGENTS.md).
+TeamUp.app opens the configured Server’s [Admin Console](admin-console.md). CI Dashboards uses a sandboxed frame from the public GitHub Pages origin. The Server credential stays in the Admin page’s memory.

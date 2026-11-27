@@ -176,6 +176,7 @@ jobs:
             reason=$(grep '^::error::' status.txt | sed 's/^::error:://' | head -8)
             python3 -E -s -m scripts.ci.freeze set --source nightly --url "$URL" \
               --reason "Nightly on \`${TEAMUP_SHA:0:7}\` is red: ${reason:-the suite did not report}"
+            exit 1
           fi
       - name: Patch release
         if: ${{ steps.judge.outputs.green == 'true' && inputs.release != false }}

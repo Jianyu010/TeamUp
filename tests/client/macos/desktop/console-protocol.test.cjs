@@ -1,7 +1,8 @@
 const assert = require("node:assert/strict");
 const { once } = require("node:events");
+const { mkdtemp, rm } = require("node:fs/promises");
 const http = require("node:http");
-const { resolve } = require("node:path");
+const { join, resolve } = require("node:path");
 const test = require("node:test");
 const { CONSOLE_URL, createConsoleHandler, parseConsoleEndpoint } = require("../../../../client/macos/desktop/console-protocol.cjs");
 
@@ -164,6 +165,50 @@ test("relays named reads and writes with the main process credential", async (t)
   })));
 });
 
+test("relays sign-in from the local console to the private socket only", async (t) => {
+  let calls = 0;
+  const directory = await mkdtemp("/tmp/teamup-console-");
+  const loginSocket = join(directory, "login.sock");
+  const server = http.createServer((request, response) => {
+    assert.equal(request.url, "/api/login");
+    assert.equal(request.method, "GET");
+    response.setHeader("Content-Type", "application/json");
+    response.end(JSON.stringify({state: "sign_in_required"}));
+  });
+  const login = http.createServer(async (request, response) => {
+    calls += 1;
+    assert.equal(request.url, "/api/login");
+    assert.equal(request.headers.authorization, `Bearer ${token}`);
+    assert.equal(request.headers.origin, `http://127.0.0.1:${server.address().port}`);
+    response.setHeader("Content-Type", "application/json");
+    assert.equal(request.method, "POST");
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    assert.equal(Buffer.concat(chunks).toString(), body);
+    response.writeHead(401);
+    response.end(JSON.stringify({state: "wrong_credentials"}));
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  login.listen(loginSocket);
+  await once(login, "listening");
+  t.after(async () => {
+    server.close();
+    login.close();
+    await rm(directory, {recursive: true});
+  });
+  const handle = createConsoleHandler(assets, () => ({port: server.address().port, token, loginSocket}));
+  const body = JSON.stringify({username: "alice", password: "example password"});
+  const options = {method: "POST", headers: {"Content-Type": "application/json"}, body};
+
+  assert.equal((await handle(consoleRequest("/api/login", options, "https://example.com"))).status, 403);
+  assert.deepEqual(await (await handle(consoleRequest("/api/login"))).json(), {state: "sign_in_required"});
+  const rejected = await handle(consoleRequest("/api/login", options));
+  assert.equal(rejected.status, 401);
+  assert.deepEqual(await rejected.json(), {state: "wrong_credentials"});
+  assert.equal(calls, 1);
+});
+
 for (const route of ["/api/workspace", "/api/versions"]) {
   test(`reacquires the console endpoint for ${route} after a stale launch credential`, async (t) => {
     let accepted = false;
@@ -186,3 +231,152 @@ for (const route of ["/api/workspace", "/api/versions"]) {
     assert.equal((await handle(consoleRequest(route))).status, 200);
   });
 }
+
+test("remembered sign-in stays on the desktop side of the bridge", async (t) => {
+  const nativeLogin = require("../../../../client/macos/desktop/console-login.cjs");
+  const profile = "/private/test/teamup.json";
+  let remember_scope = "b".repeat(64);
+  const credentials = {username: "alice", password: "desktop test password"};
+  const writes = [];
+  let saved = null;
+  const store = {
+    get: async (path) => {
+      assert.equal(path, profile);
+      return saved;
+    },
+    put: async (path, value) => {
+      assert.equal(path, profile);
+      writes.push("put");
+      saved = value;
+    },
+    forget: async (path) => {
+      assert.equal(path, profile);
+      writes.push("forget");
+      saved = null;
+    },
+  };
+  let state = "sign_in_required";
+  let loginStatus = 401;
+  const calls = [];
+  const directory = await mkdtemp("/tmp/teamup-console-");
+  const loginSocket = join(directory, "login.sock");
+  const login = http.createServer(async (request, response) => {
+    response.setHeader("Content-Type", "application/json");
+    assert.equal(request.headers.authorization, `Bearer ${token}`);
+    if (request.method === "GET") {
+      response.end(JSON.stringify({state, remember_scope}));
+      return;
+    }
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    calls.push(JSON.parse(Buffer.concat(chunks)));
+    response.writeHead(loginStatus);
+    if (loginStatus === 200 && state === "sign_in_required") {
+      state = "ready";
+      response.end(JSON.stringify({state, authenticated_scope: remember_scope}));
+    } else {
+      response.end(JSON.stringify({state: loginStatus === 401 ? "wrong_credentials" : state}));
+    }
+  });
+  login.listen(loginSocket);
+  await once(login, "listening");
+  t.after(async () => {
+    login.close();
+    await rm(directory, {recursive: true});
+  });
+  const endpoint = {port: 1234, token, loginSocket};
+  const manager = nativeLogin.createDesktopLogin(store, profile);
+  const handle = createConsoleHandler(assets, () => endpoint, undefined, manager);
+  const submit = (remember, initiator) => handle(consoleRequest("/api/login", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({...credentials, remember}),
+  }, initiator));
+
+  assert.equal((await submit(true, "https://untrusted.example")).status, 403);
+  assert.equal((await submit(true)).status, 401);
+  assert.deepEqual(writes, []);
+  loginStatus = 200;
+  const accepted = await submit(true);
+  assert.equal(accepted.status, 200);
+  assert.deepEqual(await accepted.json(), {state: "ready"});
+  assert.deepEqual(saved, {...credentials, scope: remember_scope});
+  assert.deepEqual(calls, [credentials, credentials]);
+  await submit(false); // An active Client did not authenticate this submission.
+  assert.deepEqual(writes, ["put"]);
+
+  state = "sign_in_required";
+  saved = {...credentials, scope: "c".repeat(64)};
+  const attemptCount = calls.length;
+  await manager.restore(endpoint);
+  assert.equal(calls.length, attemptCount);
+  saved = {...credentials, scope: remember_scope};
+  const scope = remember_scope;
+  remember_scope = null;
+  await manager.restore(endpoint);
+  assert.equal(calls.length, attemptCount);
+  const unavailable = await handle(consoleRequest("/api/login"));
+  assert.deepEqual(await unavailable.json(), {state, remember_available: false});
+  remember_scope = scope;
+  const pending = await handle(consoleRequest("/api/login"));
+  assert.deepEqual(await pending.json(), {state, remember_available: true});
+  await manager.restore(endpoint);
+  assert.deepEqual(calls.at(-1), {...credentials, remember_scope});
+  assert.equal(state, "ready");
+
+  state = "sign_in_required";
+  loginStatus = 401;
+  await manager.restore(endpoint);
+  assert.equal(saved, null);
+
+  loginStatus = 200;
+  await submit(true);
+  await manager.forget();
+  assert.equal(saved, null);
+
+  state = "sign_in_required";
+  saved = {...credentials, scope};
+  remember_scope = null;
+  const manual = await submit(false);
+  assert.deepEqual(await manual.json(), {state: "ready"});
+  assert.equal(saved, null);
+});
+
+test("opens only the current operator's configured console and forwards no renderer URL", async (t) => {
+  let destination = "https://teamup.example/console/";
+  let launchFails = false;
+  const server = http.createServer((request, response) => {
+    assert.equal(request.url, "/api/access");
+    assert.equal(request.method, "GET");
+    assert.equal(request.headers.authorization, `Bearer ${token}`);
+    response.writeHead(200, {"Content-Type": "application/json"});
+    response.end(JSON.stringify(destination ? {admin_url: destination} : {}));
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => server.close());
+  const opened = [];
+  const visibility = [];
+  const handle = createConsoleHandler(assets, () => ({port: server.address().port, token}),
+    undefined, undefined, {
+      show: (visible) => visibility.push(visible),
+      open: async ({url}) => {
+        if (launchFails) throw new Error("Server Console did not load");
+        opened.push(url);
+      },
+    });
+  const open = {method: "POST"};
+  assert.equal((await handle(consoleRequest("/api/admin/session", open))).status, 404);
+  assert.equal((await handle(consoleRequest("/api/open-admin", open, "https://example.com"))).status, 403);
+  assert.equal((await handle(consoleRequest("/api/open-admin", {...open, body: "{}"}))).status, 400);
+  assert.deepEqual(await (await handle(consoleRequest("/api/access"))).json(), {admin_url: destination});
+  assert.deepEqual(await (await handle(consoleRequest("/api/open-admin", open))).json(), {state: "opened"});
+  assert.deepEqual(opened, [destination]);
+  launchFails = true;
+  assert.equal((await handle(consoleRequest("/api/open-admin", open))).status, 503);
+  assert.equal(visibility.at(-1), true);
+  destination = "http://not-loopback.example/console/";
+  assert.equal((await handle(consoleRequest("/api/open-admin", open))).status, 403);
+  destination = undefined;
+  assert.deepEqual(await (await handle(consoleRequest("/api/access"))).json(), {});
+  assert.deepEqual(visibility, [true, true, true, false, false]);
+});
