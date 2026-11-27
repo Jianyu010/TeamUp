@@ -3,6 +3,7 @@ import {roomBoard} from "/console-board.js";
 import {memberNames, roomMembers, renderSessionChoices, renderTeam} from "/console-members.js";
 import {taskPanel} from "/console-tasks.js";
 import {sessionControls} from "/console-sessions.js";
+import {sessionPage} from "/console-sessions.mjs";
 
 const get = (id) => document.getElementById(id);
 const svg = (name) => document.createElementNS("http://www.w3.org/2000/svg", name);
@@ -11,6 +12,7 @@ const state = {
   workspace: {sessions: [], rooms: []},
   page: "workspace",
   focused: null,
+  sessionView: {all: false, query: "", page: 0},
   room: null,
   reader: null,
   teamReader: null,
@@ -340,20 +342,32 @@ function renderWorkspace() {
   const positions = animate ? new Map(Array.from(get("rooms").querySelectorAll("button"), (button) =>
     [button.dataset.room, button.getBoundingClientRect().top])) : new Map();
   const sessions = state.workspace.sessions;
+  const view = sessionPage(state.workspace, {...state.sessionView, focused: state.focused});
+  state.sessionView.page = view.page;
+  if (!view.sessions.some((session) => session.id === state.focused)) state.focused = null;
   const rooms = [...state.workspace.rooms];
   if (state.focused && state.page === "workspace") {
     rooms.sort((a, b) => Number(related(b)) - Number(related(a)));
   }
-  get("sessions-title").textContent = "My sessions (" + sessions.length + ")";
+  get("sessions-title").textContent = (state.sessionView.all ? "All sessions (" : "My sessions (") + view.count + ")";
+  get("all-sessions").textContent = state.sessionView.all ? "My sessions (" + view.registered + ")"
+    : "All sessions (" + view.total + ")";
+  get("all-sessions").hidden = view.registered === view.total;
+  get("all-sessions").setAttribute("aria-pressed", String(state.sessionView.all));
+  get("session-pages").hidden = view.pages < 2;
+  get("session-range").textContent = view.start + "–" + view.end + " of " + view.count;
+  get("previous-sessions").disabled = view.page === 0;
+  get("next-sessions").disabled = view.page === view.pages - 1;
   get("rooms-title").textContent = "Rooms (" + rooms.length + ")";
   lifecycle.workspace(sessionFor(state.focused), state.workspace.retired_sessions ?? []);
   const names = memberNames(sessions.map(({id, member_id, label}) => ({
     id: member_id ?? id, name: label,
   })), "strong");
-  const sessionButtons = sessions.map((session, index) => {
+  const namesBySession = new Map(sessions.map((session, index) => [session.id, names[index]]));
+  const sessionButtons = view.sessions.map((session) => {
     const label = session.state === "ready" ? session.harness
       : session.harness + " · " + (session.state === "not_registered" ? "Unregistered" : "Unavailable");
-    const name = names[index];
+    const name = namesBySession.get(session.id);
     name.view.title = name.label;
     const button = card(name.view, label);
     button.classList.toggle("session-ready", session.state === "ready");
@@ -379,7 +393,9 @@ function renderWorkspace() {
     button.classList.toggle("dimmed", Boolean(state.focused && state.page === "workspace" && !related(room)));
     return button;
   });
-  get("sessions").replaceChildren(...(sessionButtons.length ? sessionButtons : [node("p", "No approved sessions", "empty")]));
+  const empty = state.sessionView.query.trim() ? "No matching sessions"
+    : state.sessionView.all ? "No approved sessions" : "No registered sessions";
+  get("sessions").replaceChildren(...(sessionButtons.length ? sessionButtons : [node("p", empty, "empty")]));
   const roomRows = [...roomButtons];
   if (!state.workspace.directory_available && sessions.some((session) => session.state === "ready")) {
     const status = node("p", "Room directory unavailable", "empty");
@@ -416,11 +432,11 @@ function drawWires() {
   const layer = get("links");
   layer.replaceChildren();
   if (state.page !== "workspace") return;
-  const count = state.workspace.rooms.reduce((total, room) => total + room.memberships.length, 0);
-  if (count > wireLimit) return;
-
   const from = new Map(Array.from(get("sessions").querySelectorAll("button"), (button) =>
     [button.dataset.session, button.getBoundingClientRect()]));
+  const count = state.workspace.rooms.reduce((total, room) => total +
+    room.memberships.filter((item) => from.has(item.session)).length, 0);
+  if (count > wireLimit) return;
   const to = new Map(Array.from(get("rooms").querySelectorAll("button"), (button) =>
     [button.dataset.room, button.getBoundingClientRect()]));
   const origin = stage.getBoundingClientRect();
@@ -941,6 +957,21 @@ archiveDialog.addEventListener("close", () => {
   archiveDetailRequest += 1;
 });
 get("back").addEventListener("click", () => show("workspace"));
+function changeSessionView(update) {
+  Object.assign(state.sessionView, update);
+  state.focused = null;
+  get("session-scroll").scrollTop = 0;
+  renderWorkspace();
+}
+
+get("all-sessions").addEventListener("click", () =>
+  changeSessionView({all: !state.sessionView.all, page: 0}));
+get("session-search").addEventListener("input", (event) =>
+  changeSessionView({query: event.target.value, page: 0}));
+get("previous-sessions").addEventListener("click", () =>
+  changeSessionView({page: state.sessionView.page - 1}));
+get("next-sessions").addEventListener("click", () =>
+  changeSessionView({page: state.sessionView.page + 1}));
 get("sessions").addEventListener("click", (event) => {
   const clicked = event.target.closest("[data-session]");
   if (!clicked) return;

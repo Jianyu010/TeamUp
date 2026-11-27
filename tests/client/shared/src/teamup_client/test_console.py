@@ -890,7 +890,11 @@ def test_loopback_listener_requires_its_credential_and_serves_bundled_assets():
                 assert "TeamUp" in home.text
                 assert token not in home.text
                 assert (await client.get(origin + "console.js")).status_code == 200
-                for asset in ("console-members.js", "console-history.mjs"):
+                for asset in (
+                    "console-members.js",
+                    "console-history.mjs",
+                    "console-sessions.mjs",
+                ):
                     script = await client.get(origin + asset)
                     assert script.status_code == 200
                     assert (

@@ -1,0 +1,21 @@
+{
+  "name": "teamup-desktop-windows-wsl",
+  "productName": "TeamUp",
+  "version": "0.2.1",
+  "private": true,
+  "description": "Windows desktop console for the TeamUp Client in WSL2",
+  "license": "Apache-2.0",
+  "main": "main.cjs",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test \"../../../tests/client/windows-wsl/desktop/**/*.test.*\" \"../../../tests/client/shared/src/teamup_client/console/**/*.test.*\"",
+    "package:win": "node package-win.mjs"
+  },
+  "devDependencies": {
+    "@electron/packager": "20.3.0",
+    "electron": "45.5.0"
+  }
+}

@@ -25,7 +25,7 @@ test("serves the bundled console without a running Client", async () => {
   assert.match(html, /id="board-toggle"[^>]*aria-controls="board-panel"[^>]*aria-expanded="false"/);
   assert.match(html, /id="room-id"[\s\S]*id="board-panel"[^>]*hidden/);
   assert.doesNotMatch(html, /id="room-session-actions"/);
-  for (const asset of ["/console-members.js", "/console-history.mjs", "/console-board.js", "/console-sessions.js"]) {
+  for (const asset of ["/console-members.js", "/console-history.mjs", "/console-sessions.mjs", "/console-board.js", "/console-sessions.js"]) {
     const script = await handle(new Request(origin + asset));
     assert.equal(script.status, 200);
     assert.equal(script.headers.get("Content-Type"), "text/javascript; charset=utf-8");

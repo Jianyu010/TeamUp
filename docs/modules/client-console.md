@@ -12,6 +12,23 @@ TeamUp.app opens one Electron window for the local profile ([#41](https://github
 
 The desktop app ships the Client's console assets and serves them inside the sandboxed window at `teamup://console/`. Its main process gets the loopback address and launch credential from the launcher over a private pipe. It holds that credential and forwards the console's named workspace, room, team, and task requests to the Client listener. The same Client session checks and Server authorization apply to both desktop and browser requests. See the [desktop build and launch instructions](../../client/macos/desktop/README.md).
 
+## Windows desktop app (WSL2)
+
+On Windows x64 the Electron window runs on Windows and the Client runs in WSL2. Its desktop code, installer and packaging live in `client/windows-wsl/desktop/`, with tests mirrored under `tests/client/windows-wsl/desktop/`, as requested by the [desktop owner](https://github.com/Jianyu010/TeamUp/pull/53#issuecomment-7180173760). `client/windows/` is reserved for a native Windows Client. The Windows package uses the shared Python Client's console renderer and existing console API; it does not extend their authorization or operation contracts. See the [Windows build and launch instructions](../../client/windows-wsl/desktop/README.md).
+
+The launcher calls `wsl.exe` with argument arrays, translates its bundled Python launcher paths with `wslpath`, and uses the selected distribution's Python 3 to enter the installed Client runtime. It uses the configured profile, private Client socket, launcher metadata and published loopback console API. The launcher reuses both pending sign-in and active sessions. Closing the Windows window leaves the Client running. The launch credential stays in the main process and never appears in a renderer URL or environment variable.
+
+Windows defaults are WSL paths: `~/.config/teamup/client.json`, `~/.local/share/teamup/clients/current/.venv/bin`, and `~/.local/state/teamup/launcher`. `TEAMUP_DESKTOP_CONFIG`, `TEAMUP_DESKTOP_RUNTIME`, and `TEAMUP_DESKTOP_STATE_DIR` override those paths inside WSL. Optional `TEAMUP_DESKTOP_WSL_DISTRO` selects an installed distribution; otherwise the user's default distribution is used. Missing WSL, Python, runtime, or an unmanaged existing Client produces a startup error. This Windows adapter does not add Server, IPC or authorization operations. WSL's localhost forwarding must make the Client's IPv4 loopback listener reachable from Windows.
+
+The Windows portable package includes `Install-TeamUp.ps1` for a per-user desktop
+installation or upgrade. It stages the package, replaces only the selected TeamUp
+app directory, keeps a previous installation for rollback, and updates the desktop
+shortcut. This does not upgrade or restart the WSL Client; update that runtime
+separately while retaining its private profile and state. See the desktop README
+for the installation command and runtime selection.
+
+Windows forwards the shared renderer's sign-in through the existing authenticated loopback `GET /api/login` and `POST /api/login` routes. It sends only the published username and password fields. The macOS Keychain preference is unavailable on Windows. Wake settings and room archive reads and actions use the same named console routes and authorization as the browser.
+
 ## Sign in to the Client
 
 Opening TeamUp.app reuses a live, launcher-managed console for the same profile. A newly started account-based console, including the browser entry, displays a TeamUp username and password form before starting its IPC socket. A saved token from an earlier Client process does not open this workspace. The explicit legacy enrollment-key path starts directly. Headless `teamup-client serve` and terminal `teamup-client login` remain available for unattended setup and CLI use.
@@ -43,6 +60,21 @@ The optional browser listener belongs to the Client. It binds to an ephemeral po
 The Client publishes its own approved session descriptors and reads Server data through member routes. Each membership summary and transcript is authorized using the corresponding session. A room transcript is read through one explicitly selected session. The initial page contains the latest authorized messages. Older pages use the exclusive `before` cursor, and live catch-up uses the exclusive `after` cursor from the last displayed message. Both cursors use the published room history API and preserve the session's current access rules. The Team view uses one approved session to list team members.
 
 Agents join rooms and acknowledge their boards. An approved local session has a **Leave this room** icon on its member row. The action appears on hover and keyboard focus and stays visible when the primary pointer does not support hover. A joined session owned by the creating account can remove other members from their rows. The [membership contract](member-lifecycle.md#creator-removal-and-roster-controls-70-71-72) defines access, retries and Client refresh. The renderer sends `POST /api/room-members/remove?session=ID&room=UUID&member=UUID` with `{"membership_id":"…"}` through the loopback listener or named Electron bridge. DM summaries are tracked by [#34](https://github.com/Jianyu010/TeamUp/issues/34).
+
+### Session list
+
+Workspace initially lists registered sessions: those whose workspace read succeeds
+or returns a member identity. Unregistered and failed reads without a member
+identity remain available through **All sessions**. Each view shows at most eight
+sessions per page and supports searching labels, harness names and identifiers.
+Active task participants appear first, followed by joined-room sessions and then
+the remaining registered sessions. Labels determine order within each group.
+
+Refresh keeps the selected session visible. Changing search, scope or page clears
+the workspace selection and its retirement action. The All sessions entry remains
+available when no registered sessions exist. Pagination changes presentation only:
+room inventory, member-name disambiguation, scoped read and action contexts, and
+Retired sessions continue to use all approved sessions and their existing rules.
 
 ### Room Board
 

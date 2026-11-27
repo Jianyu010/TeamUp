@@ -31,6 +31,7 @@ STATIC = {
     "/console.css": ("console.css", "text/css; charset=utf-8"),
     "/console.js": ("console.js", "text/javascript; charset=utf-8"),
     "/console-history.mjs": ("console-history.mjs", "text/javascript; charset=utf-8"),
+    "/console-sessions.mjs": ("console-sessions.mjs", "text/javascript; charset=utf-8"),
     "/console-members.js": ("console-members.js", "text/javascript; charset=utf-8"),
     "/console-board.js": ("console-board.js", "text/javascript; charset=utf-8"),
     "/console-tasks.js": ("console-tasks.js", "text/javascript; charset=utf-8"),
