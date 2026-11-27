@@ -30,6 +30,17 @@ function localDate(value) {
   return Number.isNaN(date.valueOf()) ? value : date.toLocaleString();
 }
 
+function recentWork(candidate) {
+  const work = candidate.recent_work;
+  if (work?.kind === "task") {
+    return `Task #${work.task_number} ${work.title} ${work.event} · ${localDate(work.created_at)}`;
+  }
+  if (work?.kind === "message") {
+    return `Message msg-${work.message_id} · ${localDate(work.created_at)}`;
+  }
+  return candidate.last_active_at && "Last active " + localDate(candidate.last_active_at);
+}
+
 function duration(milliseconds) {
   const seconds = Math.max(1, Math.ceil(milliseconds / 1000));
   if (seconds < 60) return seconds + "s";
@@ -90,7 +101,7 @@ export function leadershipDialog({get, node, request, departed, refresh}) {
     auto.disabled = defer.disabled = !available;
     dismiss.disabled = subject?.busy === true;
     detail.textContent = candidate
-      ? [reasons[candidate.reason], candidate.last_active_at && "Last active " + localDate(candidate.last_active_at)]
+      ? [reasons[candidate.reason], candidate.owner_username, candidate.description, recentWork(candidate)]
         .filter(Boolean).join(" · ")
       : "";
   }

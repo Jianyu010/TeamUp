@@ -84,6 +84,26 @@ test("choosing a successor submits the selected membership and candidate epoch",
   assert.deepEqual(controls.departures, [[leader, room, receipt, "leader-join"]]);
 });
 
+test("selecting a candidate shows their account, responsibility and latest work", async () => {
+  const candidate = {
+    ...candidates[0], reason: "leader_profile", owner_username: "alice",
+    description: "Verifies releases.", recent_work: {
+      kind: "task", task_number: 4, title: "Check smoke results", event: "finished",
+      created_at: "2026-11-28T03:00:00Z",
+    },
+  };
+  const controls = dialog(null, {state: "ready", leadership_epoch: 4, candidates: [candidate]});
+  await controls.open();
+  const choice = controls.get("leadership-candidate");
+  choice.value = candidate.member_id;
+  choice.listeners.get("change")();
+  const detail = controls.get("leadership-detail").textContent;
+  assert.match(detail, /Leadership role/);
+  assert.match(detail, /alice/);
+  assert.match(detail, /Verifies releases\./);
+  assert.match(detail, /Task #4 Check smoke results finished/);
+});
+
 test("automatic selection uses ranking even when the candidate list is empty", async () => {
   const controls = dialog({state: "ready", pending: false, left: true},
     {state: "ready", leadership_epoch: 4, candidates: []});
