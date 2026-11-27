@@ -86,6 +86,8 @@ def test_stdio_passes_approved_binding_and_surfaces_ipc_error():
             seen.append(request)
             if request["method"] == "mention_status":
                 result = {"unread_mentions": next(unread)}
+                if seen[-2]["method"] == "list_rooms":
+                    result["unread_room_notices"] = 1
             else:
                 calls = [item for item in seen if item["method"] != "mention_status"]
                 result = requests[len(calls) - 1][2]
@@ -176,6 +178,13 @@ def test_stdio_passes_approved_binding_and_surfaces_ipc_error():
                 "teamup_list_archived_rooms",
                 "teamup_archive_room",
                 "teamup_create_room",
+                "teamup_create_linked_room",
+                "teamup_list_child_rooms",
+                "teamup_extend_room_lease",
+                "teamup_invite_to_room",
+                "teamup_room_leadership_candidates",
+                "teamup_handoff_room_leadership",
+                "teamup_confirm_room_leadership",
                 "teamup_join_room",
                 "teamup_leave_room",
                 "teamup_list_room_members",
@@ -230,7 +239,7 @@ def test_stdio_passes_approved_binding_and_surfaces_ipc_error():
                 [],
                 [],
                 [],
-                [],
+                ["TeamUp: 1 unread room notice. Call teamup_notifications to read them."],
                 [],
             ]
 

@@ -32,9 +32,11 @@ LIMIT = partial(is_integer, minimum=1, maximum=100)
 PAGE = {"after": AFTER, "limit": LIMIT}
 HISTORY = {"after": AFTER, "before": BEFORE, "limit": LIMIT}
 ROOM = {"room_id": is_uuid}
+LEADERSHIP = {**ROOM, "leadership_epoch": POSITIVE}
 TASK = {**ROOM, "task_id": is_uuid}
 DM = {"dm_id": is_uuid}
 HISTORY_POLICIES = ("retained", "since_joining")
+HANDOFF_MODES = ("choose", "auto", "defer")
 TASK_STATUSES = ("open", "finished")
 PRESENCE_INTERVAL = 15
 
@@ -120,6 +122,41 @@ OPERATIONS = {
             "protocol": BOARD_TEXT,
             "history_policy": _history_policy,
         },
+    ),
+    "create_linked_room": Operation(
+        "POST",
+        "/rooms/{parent_room_id}/children",
+        {"parent_room_id": is_uuid, "name": ROLE, "client_request_id": MESSAGE_KEY},
+        {"rules": BOARD_TEXT, "protocol": BOARD_TEXT, "history_policy": _history_policy},
+    ),
+    "list_child_rooms": Operation(
+        "GET", "/rooms/{room_id}/children", ROOM, {"after": is_uuid, "limit": LIMIT}
+    ),
+    "invite_to_room": Operation(
+        "POST",
+        "/rooms/{room_id}/invitations",
+        {**ROOM, "member_id": is_uuid, "client_request_id": MESSAGE_KEY},
+    ),
+    "extend_room_lease": Operation(
+        "POST",
+        "/rooms/{room_id}/lease/extend",
+        {
+            **ROOM,
+            "seconds": partial(is_integer, minimum=1, maximum=3600),
+            "expected_expires_at": MESSAGE_KEY,
+        },
+    ),
+    "room_leadership_candidates": Operation(
+        "GET", "/rooms/{room_id}/leadership/candidates", ROOM
+    ),
+    "handoff_room_leadership": Operation(
+        "POST",
+        "/rooms/{room_id}/leadership/handoff",
+        {**LEADERSHIP, "mode": lambda value: value in HANDOFF_MODES},
+        {"member_id": is_uuid, "membership_id": _membership_id, "leave": lambda value: type(value) is bool},
+    ),
+    "confirm_room_leadership": Operation(
+        "POST", "/rooms/{room_id}/leadership/confirm", LEADERSHIP
     ),
     "join_room": Operation("POST", "/rooms/{room_id}/join", ROOM),
     "leave_room": Operation("POST", "/rooms/{room_id}/leave", ROOM),
@@ -513,7 +550,7 @@ class Coordinator:
             raise self._retired_error()
         if method == "ack_board":
             session.inbox_changed.set()
-        elif method in ("create_room", "join_room"):
+        elif method in ("create_room", "create_linked_room", "join_room"):
             self._remember_room(session.scope, result)
         elif method == "find_members" and isinstance(result.get("members"), list):
             self._remember_members(session.scope, result["members"])

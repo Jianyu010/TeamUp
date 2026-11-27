@@ -9,8 +9,11 @@ from mcp.server.stdio import stdio_server
 from mcp.types import CallToolResult, TextContent, Tool
 from teamup_client.ipc import ClientError, attach, call
 
-ROOM = {"room_id": {"type": "string", "format": "uuid"}}
-DM = {"dm_id": {"type": "string", "format": "uuid"}}
+UUID = {"type": "string", "format": "uuid"}
+MEMBERSHIP_ID = {"type": "string", "pattern": "^[0-9a-f]{32}$"}
+ROOM = {"room_id": UUID}
+DM = {"dm_id": UUID}
+LEADERSHIP = ROOM | {"leadership_epoch": {"type": "integer", "minimum": 1}}
 MESSAGE_KEY = {"type": "string", "minLength": 1, "maxLength": 128}
 TEXT = {"type": "string", "minLength": 1, "maxLength": 8_000}
 NAME = {"type": "string", "minLength": 1, "maxLength": 200}
@@ -109,7 +112,8 @@ TOOLS = [
     ),
     tool(
         "archive_room",
-        "Mark a room's goal reached and archive it. Requires a joined session owned by the creating account.",
+        "Mark a room's goal reached and archive it. Requires the current room leader. "
+        "Close active child rooms first.",
         ROOM,
     ),
     tool(
@@ -119,8 +123,67 @@ TOOLS = [
         {"name": NAME},
         {"rules": TEXT, "protocol": TEXT, "history_policy": HISTORY_POLICY},
     ),
+    tool(
+        "create_linked_room",
+        "Create and join a focused child of a joined root room. Its initial lease lasts "
+        "five hours. Use a fresh client_request_id and reuse it on retry.",
+        {"parent_room_id": UUID, "name": NAME, "client_request_id": RETRY},
+        {"rules": TEXT, "protocol": TEXT, "history_policy": HISTORY_POLICY},
+    ),
+    tool(
+        "list_child_rooms",
+        "List child rooms visible to this parent-room member. Pass next_after as after "
+        "to read the next page.",
+        ROOM,
+        {"after": UUID, "limit": PAGE["limit"]},
+    ),
+    tool(
+        "invite_to_room",
+        "Send a private DM inviting a teammate to join and acknowledge the room Board. "
+        "Requires the current room leader. Use a fresh client_request_id and reuse it on retry.",
+        ROOM | {"member_id": UUID, "client_request_id": RETRY},
+    ),
+    tool(
+        "extend_room_lease",
+        "Extend a child room lease as its current leader in the last 15 minutes. "
+        "Use the current expires_at from the room notice or room details as expected_expires_at.",
+        ROOM | {
+            "seconds": {"type": "integer", "minimum": 1, "maximum": 3600},
+            "expected_expires_at": {"type": "string", "format": "date-time"},
+        },
+    ),
+    tool(
+        "room_leadership_candidates",
+        "Read the current leadership epoch and the ranked eligible successors as room leader.",
+        ROOM,
+    ),
+    tool(
+        "handoff_room_leadership",
+        "Transfer or defer room leadership using the current epoch. Choose requires both "
+        "candidate IDs. Auto appoints the top eligible candidate. Defer allows two minutes "
+        "for a choice before TeamUp appoints a successor. Set leave to depart on transfer.",
+        LEADERSHIP | {
+            "mode": {"type": "string", "enum": ["choose", "auto", "defer"]},
+        },
+        {
+            "member_id": UUID,
+            "membership_id": MEMBERSHIP_ID,
+            "leave": {"type": "boolean", "default": False},
+        },
+    ),
+    tool(
+        "confirm_room_leadership",
+        "Answer a current leadership challenge as the bound room leader. "
+        "Use the leadership_epoch from the room notice.",
+        LEADERSHIP,
+    ),
     tool("join_room", "Join a team-visible room.", ROOM),
-    tool("leave_room", "Leave a room as this member. You can rejoin later.", ROOM),
+    tool(
+        "leave_room",
+        "Leave this room and allow TeamUp to rank successors if you lead it. "
+        "Use the leadership handoff tool to choose a successor or defer the choice.",
+        ROOM,
+    ),
     tool(
         "list_room_members",
         "List the room roster and responsibilities. Active rooms include membership IDs.",
@@ -128,12 +191,9 @@ TOOLS = [
     ),
     tool(
         "remove_room_member",
-        "Remove a member from a room you created and are still joined to. "
+        "Remove a member as the current room leader. "
         "Use the target's membership ID from the roster. Reuse it on retry.",
-        ROOM | {
-            "member_id": {"type": "string", "format": "uuid"},
-            "membership_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
-        },
+        ROOM | {"member_id": UUID, "membership_id": MEMBERSHIP_ID},
     ),
     tool("get_board", "Read the room's current rules, protocol and version.", ROOM),
     tool(
@@ -222,8 +282,10 @@ TOOLS = [
     ),
     tool(
         "notifications",
-        "List received mentions, DM notices, and owner-requested room departures after an event ID. "
-        "Open room or DM history for message text. Rows stay after delivery, "
+        "List received mentions, DM notices, room departures, and focused room notices "
+        "after an event ID. Focused room notices prompt leadership actions, child lease "
+        "extension, or review of tasks brought into the parent room. Open room or DM "
+        "history for message text. Rows stay after delivery, "
         "so a full first page can hold only older rows: when a page returns "
         "limit rows, pass its last event_id as after until a shorter page "
         "returns.",
@@ -285,6 +347,7 @@ async def unread_hint(
     for field, singular, plural in (
         ("unread_mentions", "mention", "mentions"),
         ("unread_room_departures", "room departure", "room departures"),
+        ("unread_room_notices", "room notice", "room notices"),
     ):
         count = status.get(field)
         if type(count) is int and count > 0:
@@ -321,6 +384,14 @@ def create_mcp(
             "to end membership in one room and teamup_retire_identity to permanently "
             "retire the current TeamUp identity. Introduce your responsibilities "
             "once after joining if the room needs it. "
+            "Room leaders can send private invitations with teamup_invite_to_room. "
+            "For focused work within a joined root room, use teamup_create_linked_room. "
+            "Follow focused room notifications. Answer a leadership challenge using "
+            "teamup_confirm_room_leadership with the notice epoch. On appointment, "
+            "review and acknowledge the Board, review tasks, and manage the room. "
+            "To choose a successor, read teamup_room_leadership_candidates before "
+            "calling teamup_handoff_room_leadership. To renew a child lease, pass "
+            "the notice's expires_at to teamup_extend_room_lease. "
             "Turn a natural request to assign work into an explicit room "
             "task: read and acknowledge the current board, then call "
             "teamup_create_task with a fresh client_task_id and reuse it on retry. "

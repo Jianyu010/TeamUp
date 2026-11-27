@@ -1739,6 +1739,113 @@
         "summary": "Room Directory"
       }
     },
+    "/v1/room-notices": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "After",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Room Notices V1 Room Notices Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Room Notices"
+      }
+    },
+    "/v1/room-notices/{notice_id}/ack": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "notice_id",
+            "required": true,
+            "schema": {
+              "exclusiveMinimum": 0,
+              "title": "Notice Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Ack Room Notice V1 Room Notices  Notice Id  Ack Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Ack Room Notice"
+      }
+    },
     "/v1/rooms": {
       "get": {
         "parameters": [
@@ -2190,6 +2297,190 @@
         "summary": "View Board"
       }
     },
+    "/v1/rooms/{room_id}/children": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "room_id",
+            "required": true,
+            "schema": {
+              "title": "Room Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Child Rooms V1 Rooms  Room Id  Children Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Child Rooms"
+      },
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "room_id",
+            "required": true,
+            "schema": {
+              "title": "Room Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/_LinkedRoom"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Create Linked Room V1 Rooms  Room Id  Children Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Create Linked Room"
+      }
+    },
+    "/v1/rooms/{room_id}/invitations": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "room_id",
+            "required": true,
+            "schema": {
+              "title": "Room Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/_RoomInvitation"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Invite To Room V1 Rooms  Room Id  Invitations Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Invite To Room"
+      }
+    },
     "/v1/rooms/{room_id}/join": {
       "post": {
         "parameters": [
@@ -2234,6 +2525,220 @@
           }
         },
         "summary": "Join Room"
+      }
+    },
+    "/v1/rooms/{room_id}/leadership/candidates": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "room_id",
+            "required": true,
+            "schema": {
+              "title": "Room Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Room Leadership Candidates V1 Rooms  Room Id  Leadership Candidates Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Room Leadership Candidates"
+      }
+    },
+    "/v1/rooms/{room_id}/leadership/confirm": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "room_id",
+            "required": true,
+            "schema": {
+              "title": "Room Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/_LeadershipEpoch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Confirm Room Leadership V1 Rooms  Room Id  Leadership Confirm Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Confirm Room Leadership"
+      }
+    },
+    "/v1/rooms/{room_id}/leadership/handoff": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "room_id",
+            "required": true,
+            "schema": {
+              "title": "Room Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/_LeadershipHandoff"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Handoff Room Leadership V1 Rooms  Room Id  Leadership Handoff Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Handoff Room Leadership"
+      }
+    },
+    "/v1/rooms/{room_id}/lease/extend": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "room_id",
+            "required": true,
+            "schema": {
+              "title": "Room Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/_ExtendRoomLease"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Extend Room Lease V1 Rooms  Room Id  Lease Extend Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Extend Room Lease"
       }
     },
     "/v1/rooms/{room_id}/leave": {
@@ -3440,6 +3945,150 @@
       "title": "_Enrollment",
       "type": "object"
     },
+    "_ExtendRoomLease": {
+      "additionalProperties": false,
+      "properties": {
+        "expected_expires_at": {
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,6})?(?:Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])$",
+          "title": "Expected Expires At",
+          "type": "string"
+        },
+        "seconds": {
+          "maximum": 3600.0,
+          "minimum": 1.0,
+          "title": "Seconds",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "seconds",
+        "expected_expires_at"
+      ],
+      "title": "_ExtendRoomLease",
+      "type": "object"
+    },
+    "_LeadershipEpoch": {
+      "additionalProperties": false,
+      "properties": {
+        "leadership_epoch": {
+          "exclusiveMinimum": 0.0,
+          "title": "Leadership Epoch",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "leadership_epoch"
+      ],
+      "title": "_LeadershipEpoch",
+      "type": "object"
+    },
+    "_LeadershipHandoff": {
+      "additionalProperties": false,
+      "properties": {
+        "leadership_epoch": {
+          "exclusiveMinimum": 0.0,
+          "title": "Leadership Epoch",
+          "type": "integer"
+        },
+        "leave": {
+          "default": false,
+          "title": "Leave",
+          "type": "boolean"
+        },
+        "member_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Member Id"
+        },
+        "membership_id": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{32}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Membership Id"
+        },
+        "mode": {
+          "enum": [
+            "choose",
+            "auto",
+            "defer"
+          ],
+          "title": "Mode",
+          "type": "string"
+        }
+      },
+      "required": [
+        "leadership_epoch",
+        "mode"
+      ],
+      "title": "_LeadershipHandoff",
+      "type": "object"
+    },
+    "_LinkedRoom": {
+      "additionalProperties": false,
+      "properties": {
+        "client_request_id": {
+          "maxLength": 128,
+          "title": "Client Request Id",
+          "type": "string"
+        },
+        "history_policy": {
+          "default": "since_joining",
+          "enum": [
+            "retained",
+            "since_joining"
+          ],
+          "title": "History Policy",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 200,
+          "title": "Name",
+          "type": "string"
+        },
+        "protocol": {
+          "anyOf": [
+            {
+              "maxLength": 8000,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Protocol"
+        },
+        "rules": {
+          "anyOf": [
+            {
+              "maxLength": 8000,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Rules"
+        }
+      },
+      "required": [
+        "name",
+        "client_request_id"
+      ],
+      "title": "_LinkedRoom",
+      "type": "object"
+    },
     "_Login": {
       "additionalProperties": false,
       "properties": {
@@ -3669,6 +4318,26 @@
         "name"
       ],
       "title": "_Room",
+      "type": "object"
+    },
+    "_RoomInvitation": {
+      "additionalProperties": false,
+      "properties": {
+        "client_request_id": {
+          "maxLength": 128,
+          "title": "Client Request Id",
+          "type": "string"
+        },
+        "member_id": {
+          "title": "Member Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "member_id",
+        "client_request_id"
+      ],
+      "title": "_RoomInvitation",
       "type": "object"
     },
     "_RoomResponsibility": {
