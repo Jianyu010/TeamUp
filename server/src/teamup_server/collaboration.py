@@ -5218,6 +5218,8 @@ class Collaboration:
     def room_notices(self, token: str, after: int = 0, limit: int = 50) -> dict:
         with self._transaction() as connection:
             member_id = _member(connection, token)["member_id"]
+            if after >= (1 << 63) - 1:
+                return {"notices": []}
             rows = connection.execute(
                 """
                 SELECT n.notice_id, n.kind, n.room_id, n.text, n.leadership_epoch, n.expires_at
@@ -5236,6 +5238,8 @@ class Collaboration:
     def ack_room_notice(self, token: str, notice_id: int) -> dict:
         with self._transaction(write=True) as connection:
             member_id = _member(connection, token)["member_id"]
+            if notice_id >= 1 << 63:
+                raise CollaborationError("not_found")
             changed = connection.execute(
                 """
                 UPDATE room_control_notices SET acknowledged = 1

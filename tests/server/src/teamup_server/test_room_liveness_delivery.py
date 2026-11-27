@@ -1,6 +1,7 @@
 from datetime import timedelta
 
 import pytest
+from teamup_server.collaboration import CollaborationError
 from test_room_leadership import Team
 
 
@@ -45,3 +46,10 @@ def test_leadership_challenge_does_not_duplicate_a_lease_offer(tmp_path):
         if row["kind"] == "child_lease_due" and row["room_id"] == child["room_id"]
     ]
     assert len(offers) == 1
+
+
+def test_room_notice_positions_above_sqlite_range(tmp_path):
+    team = Team(tmp_path / "large-cursor.sqlite3")
+    assert team.db.room_notices(team.leader, after=1 << 63) == {"notices": []}
+    with pytest.raises(CollaborationError, match="not_found"):
+        team.db.ack_room_notice(team.leader, 1 << 63)
