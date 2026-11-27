@@ -100,7 +100,7 @@ The main window shows **Client** and **Server** at the bottom left. Client ident
 
 The Tasks tab uses `GET /api/tasks?room=UUID&status=open|finished&after=N` to aggregate pages through the owner's current approved room sessions. The task records include their visible session IDs and the cursor is serialized as a decimal string. It uses `GET /api/task-events?session=ID&room=UUID&task=UUID&after=N` to read one session's authorized task history. Failed scoped reads retain their status in the browser.
 
-**Ongoing** lists all open tasks returned by the aggregate read. **Taken** lists open tasks joined by the session selected in **Acting as**. **Finished** lists completed tasks.
+**Available** lists all unjoined tasks returned by the authorized open-task read. It groups them by whether they are addressed to a local session with access, waiting for other addressed members, or unassigned. The selected session still needs access and eligibility to join. **Ongoing** lists open tasks with participants. **Taken** lists ongoing tasks visible to the session selected in **Acting as** that it has joined. **Finished** lists completed tasks.
 
 Task cards and history show role names from the current authorized room roster. Shared role names use the same identifier qualifiers as Members. Before a role is available in the roster, the console uses a known local session label or displays **Unknown member**, with the member ID available on hover. Roster refreshes update names in open cards and history. A Board refresh within the same room and reader scope keeps known names while the roster reloads.
 
@@ -122,7 +122,7 @@ With the room board acknowledged, post a task through `teamup_create_task`. Open
 
 Resize a joined room from desktop to compact width with a long local session label. Open Tasks, Chats, and the Board, and confirm the room controls and task lanes stay clear of Members. Expand an ongoing or finished task joined by a member from another Client and confirm the participant and task history show the member's room role.
 
-With two approved local sessions, join a different task from each session. Include an unjoined task and a task joined by a remote member. Verify that all four appear in Ongoing and that Taken switches to the corresponding joined task when Acting as changes.
+With two approved local sessions, join a different task from each session. Include two unjoined tasks, one unaddressed and one addressed to a remote member by a local creator. Include a task joined by a remote member. Verify that the two unjoined tasks appear in Available, the remote-addressed task has no Join task action for the creator, and the three joined tasks appear in Ongoing. Verify that Taken switches to the corresponding joined task when Acting as changes.
 
 ## Open Admin
 

@@ -328,3 +328,71 @@ def test_browser_client_publishes_board(client_workspace):
         expect(page.locator("#messages")).to_contain_text(
             "Review is in progress", timeout=12000
         )
+
+
+@pytest.mark.scenario("NS-15.07", "Browser task lanes track first join and finish")
+def test_browser_client_moves_tasks_between_lanes(client_workspace):
+    api, _, console, url, password, local, peer = client_workspace
+    console_login(console, "alice", password)
+    room = api.create_room(peer, "Task lane verification", rules="Join before work.")
+    api.join(local, room)
+    for member in (local, peer):
+        api.read_and_ack_board(member, room)
+
+    tasks = f"/v1/rooms/{room}/tasks"
+    open_title = "Verify client release"
+    assigned_title = "Review the release notes"
+    api.call(
+        "POST",
+        tasks,
+        peer.token,
+        json={"client_task_id": "unclaimed", "title": open_title},
+    )
+    api.call(
+        "POST",
+        tasks,
+        local.token,
+        json={
+            "client_task_id": "addressed",
+            "title": assigned_title,
+            "addressed_member_ids": [peer.member_id],
+        },
+    )
+
+    with browser_page(
+        str(console.base_url), redact=(password, url.split("#", 1)[1])
+    ) as (page, expect):
+        page.goto(url, wait_until="domcontentloaded")
+        page.locator(f'#rooms button[data-room="{room}"]').click()
+        page.get_by_role("button", name="Tasks", exact=True).click()
+        available = page.get_by_role("region", name="Available tasks")
+        taken = page.get_by_role("region", name="Taken tasks")
+        ongoing = page.get_by_role("region", name="Ongoing tasks")
+
+        expect(ongoing.get_by_role("heading")).to_have_text("Ongoing (0)")
+        expect(available.get_by_role("heading")).to_have_text("Available (2)")
+        expect(taken.get_by_role("heading")).to_have_text("Taken (0)")
+        expect(available.get_by_text("Waiting for addressed members")).to_be_visible()
+        assigned = available.locator("details").filter(has_text=assigned_title)
+        assigned.get_by_text(assigned_title, exact=True).click()
+        expect(assigned.get_by_text("None yet")).to_be_visible()
+        expect(assigned.get_by_role("button", name="Join task")).to_have_count(0)
+
+        unclaimed = available.locator("details").filter(has_text=open_title)
+        unclaimed.get_by_text(open_title, exact=True).click()
+        expect(unclaimed.get_by_text("None yet")).to_be_visible()
+        unclaimed.get_by_role("button", name="Join task").click()
+
+        expect(available.get_by_role("heading")).to_have_text("Available (1)")
+        expect(taken.get_by_text(open_title, exact=True)).to_be_visible()
+        expect(ongoing.get_by_role("heading")).to_have_text("Ongoing (1)")
+        ongoing.get_by_text(open_title, exact=True).click()
+        expect(ongoing.get_by_text("Local reviewer", exact=True)).to_be_visible()
+        ongoing.get_by_role("button", name="Finish task").click()
+
+        expect(taken.get_by_role("heading")).to_have_text("Taken (0)")
+        expect(ongoing.get_by_role("heading")).to_have_text("Ongoing (0)")
+        page.get_by_role("button", name="Finished", exact=True).click()
+        finished = page.get_by_role("region", name="Finished tasks")
+        expect(finished.get_by_role("heading")).to_have_text("Finished (1)")
+        expect(finished.get_by_text(open_title, exact=True)).to_be_visible()
