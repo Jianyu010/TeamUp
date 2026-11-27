@@ -85,6 +85,18 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
   display: grid; grid-template-rows: 30px minmax(0,1fr); gap: 8px; padding: 13px;
 }
 .session-panel { left: 0; width: 43%; transition: transform 440ms var(--ease), opacity 280ms var(--ease); }
+.session-heading { display: grid; gap: 8px; }
+.session-heading h2 { min-height: 30px; align-content: center; }
+.session-tools { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 6px; }
+#session-search {
+  min-width: 0; width: 100%; padding: 5px 8px; border: 1px solid var(--edge);
+  border-radius: 6px; background: var(--panel);
+}
+#session-search::placeholder { color: var(--muted); }
+#all-sessions { border-color: var(--edge); }
+.session-pages { display: flex; align-items: center; justify-content: space-between; gap: 4px; }
+#session-range { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.session-pages button:disabled { cursor: default; opacity: .4; }
 .room-panel {
   left: 66%; width: 34%; transition: left 440ms var(--ease), width 440ms var(--ease), background 220ms var(--ease);
 }
@@ -295,6 +307,9 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
 @media (max-width: 650px) {
   .stage { --rail: 0%; }
   .session-panel { width: 48%; }
+  .session-tools { grid-template-columns: minmax(0,1fr); }
+  .session-pages { flex-wrap: wrap; justify-content: center; }
+  #session-range { order: -1; width: 100%; text-align: center; }
   .room-panel { left: 53%; width: 47%; }
   .stage[data-page="room"] .room-panel { left: 0; width: 100%; height: 43px; padding-block: 5px; }
   .stage[data-page="room"] .room-panel .scroll-frame { display: none; }
@@ -357,7 +372,7 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
   .task-lane[data-selected="false"] { display: none; }
 }
 
-.session-panel { grid-template-rows: 30px minmax(0, 1fr) auto auto auto; }
+.session-panel { grid-template-rows: auto minmax(0, 1fr) auto auto auto auto; }
 .retire-action {
   justify-self: end; color: #efb095; border-color: #80584d;
   background: #332825; white-space: normal;
