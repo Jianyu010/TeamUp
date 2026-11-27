@@ -366,4 +366,3 @@ def test_browser_client_publishes_board(client_workspace):
         expect(page.locator("#messages")).to_contain_text(
             "Review is in progress", timeout=12000
         )
-
