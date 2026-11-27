@@ -28,3 +28,20 @@ def test_connected_incumbent_survives_challenge_without_delivery_or_successor(
     team.db.sweep_room_leadership()
 
     assert team.db.view_board(team.leader, team.room)["can_edit"]
+
+
+def test_leadership_challenge_does_not_duplicate_a_lease_offer(tmp_path):
+    team = Team(tmp_path / "live-lease.sqlite3")
+    child = team.db.create_linked_room(
+        team.leader, team.room, "Short work", None, None, "since_joining", "lease"
+    )
+    team.now += timedelta(hours=4, minutes=45)
+    team.db.record_leadership_heartbeat(team.leader)
+    team.db.sweep_child_rooms()
+    team.db.sweep_room_leadership()
+    team.db.sweep_child_rooms()
+    offers = [
+        row for row in team.db.room_notices(team.leader)["notices"]
+        if row["kind"] == "child_lease_due" and row["room_id"] == child["room_id"]
+    ]
+    assert len(offers) == 1

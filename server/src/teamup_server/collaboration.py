@@ -3706,17 +3706,26 @@ class Collaboration:
             for offer in offers:
                 leader, room_id = offer["leader_member_id"], offer["room_id"]
                 expires = _child_metadata(offer)["expires_at"]
-                self._add_room_notice(
-                    connection, leader, room_id, "child_lease_due",
-                    f"Room {room_id} closes at {expires}. To continue, call teamup_extend_room_lease "
-                    f"with expected_expires_at {expires} and 1 to 3600 seconds.",
-                    leadership_epoch=offer["leadership_epoch"], expires_at=expires,
-                )
                 connection.execute(
                     "UPDATE child_rooms SET offered_epoch = ? WHERE room_id = ?",
                     (offer["leadership_epoch"], room_id),
                 )
-                notified.add(leader)
+                prior_offer = connection.execute(
+                    """
+                    SELECT 1 FROM room_control_notices
+                    WHERE room_id = ? AND kind = 'child_lease_due' AND member_id = ?
+                        AND expires_at = ?
+                    """,
+                    (room_id, leader, expires),
+                ).fetchone()
+                if prior_offer is None:
+                    self._add_room_notice(
+                        connection, leader, room_id, "child_lease_due",
+                        f"Room {room_id} closes at {expires}. To continue, call teamup_extend_room_lease "
+                        f"with expected_expires_at {expires} and 1 to 3600 seconds.",
+                        leadership_epoch=offer["leadership_epoch"], expires_at=expires,
+                    )
+                    notified.add(leader)
         self._notify(notified)
         return max(len(expired), len(offers)) == _ROOM_ARCHIVE_BATCH
 
