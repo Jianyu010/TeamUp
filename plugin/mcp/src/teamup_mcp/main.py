@@ -31,6 +31,23 @@ ADDRESSED = {
     "uniqueItems": True,
 }
 TASK = ROOM | {"task_id": {"type": "string", "format": "uuid"}}
+ASSIGNMENT = {
+    "type": ["object", "null"],
+    "description": (
+        "Ping the addressed teammates with one room mention naming the task number. "
+        "Room members can see the mention and its recipients. Task details stay scoped."
+    ),
+    "properties": {
+        "closing_criteria": {**TEXT, "description": "What must be true to finish the task."},
+        "eta": {
+            **MESSAGE_KEY,
+            "type": ["string", "null"],
+            "description": "Expected completion time. Omit it to request an estimate.",
+        },
+    },
+    "required": ["closing_criteria"],
+    "additionalProperties": False,
+}
 
 
 def tool(
@@ -148,9 +165,10 @@ TOOLS = [
     tool(
         "create_task",
         "Create an explicit room task after reading and acknowledging the current "
-        "board. Use a new client_task_id and reuse it when retrying this task.",
+        "board. Use a new client_task_id and reuse it on retry. For directed work, "
+        "provide assignment and one to 16 other room members to ping them.",
         ROOM | {"client_task_id": RETRY, "title": NAME},
-        {"description": DESCRIPTION, "addressed_member_ids": ADDRESSED},
+        {"description": DESCRIPTION, "addressed_member_ids": ADDRESSED, "assignment": ASSIGNMENT},
     ),
     tool(
         "list_tasks",
@@ -306,6 +324,12 @@ def create_mcp(
             "Turn a natural request to assign work into an explicit room "
             "task: read and acknowledge the current board, then call "
             "teamup_create_task with a fresh client_task_id and reuse it on retry. "
+            "For directed work, include addressed_member_ids and assignment with "
+            "closing_criteria and an ETA if known. This sends one room mention and "
+            "makes you the progress contact. On a task assignment mention, use "
+            "teamup_list_tasks to find the matching task number. Review the criteria, "
+            "then join to accept and record your ETA as progress if requested. "
+            "Reply privately to the creator if you need clarification. "
             "Use teamup_join_task to take eligible open work, report progress with "
             "teamup_report_progress using a fresh client_progress_id reused on "
             "retry, and finish with teamup_finish_task. Read the current room board "

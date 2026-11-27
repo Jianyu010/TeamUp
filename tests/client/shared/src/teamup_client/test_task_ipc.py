@@ -433,7 +433,11 @@ def test_mcp_task_schemas_and_guidance():
         "title",
         "description",
         "addressed_member_ids",
+        "assignment",
     }
+    assignment = create["properties"]["assignment"]
+    assert assignment["required"] == ["closing_criteria"]
+    assert assignment["additionalProperties"] is False
     assert create["properties"]["description"]["type"] == ["string", "null"]
     assert create["properties"]["description"]["maxLength"] == 8_000
     addressed = create["properties"]["addressed_member_ids"]
@@ -474,3 +478,29 @@ def test_mcp_task_schemas_and_guidance():
     assert "never invent task tools" not in instructions
     for text in ("teamup_create_task", "client_task_id", "teamup_join_task"):
         assert text in instructions
+
+
+def test_assignment_metadata_passes_through_ipc():
+    async def scenario():
+        client, upstream = coordinator()
+        assignment = {"closing_criteria": "Checks pass", "eta": "By Friday"}
+        body = {
+            "client_task_id": "assigned",
+            "title": "Check API mapping",
+            "addressed_member_ids": [MEMBERS[1]],
+            "assignment": assignment,
+        }
+        task = {"task_id": TASK, "assignment": assignment}
+        upstream.results[("POST", f"/rooms/{ROOM}/tasks")] = task
+        assert await client.execute("key-a", "create_task", {"room_id": ROOM, **body}) == task
+        assert upstream.calls[-1] == ("POST", f"/rooms/{ROOM}/tasks", "token-a", None, body)
+        with pytest.raises(ClientError) as error:
+            await client.execute(
+                "key-a",
+                "create_task",
+                {"room_id": ROOM, **body, "assignment": {"eta": "By Friday"}},
+            )
+        assert error.value.code == "invalid_request"
+        assert len(upstream.calls) == 1
+
+    asyncio.run(scenario())

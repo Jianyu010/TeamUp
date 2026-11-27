@@ -65,6 +65,17 @@ def _optional_text(value):
     return value is None or BOARD_TEXT(value)
 
 
+def _assignment(value):
+    if value is None:
+        return True
+    return (
+        isinstance(value, dict)
+        and value.keys() <= {"closing_criteria", "eta"}
+        and BOARD_TEXT(value.get("closing_criteria"))
+        and (value.get("eta") is None or MESSAGE_KEY(value["eta"]))
+    )
+
+
 def _addresses(value, *, minimum=0, maximum=100):
     return (
         isinstance(value, list)
@@ -138,7 +149,11 @@ OPERATIONS = {
         "POST",
         "/rooms/{room_id}/tasks",
         {**ROOM, "client_task_id": MESSAGE_KEY, "title": ROLE},
-        {"description": _optional_text, "addressed_member_ids": _addresses},
+        {
+            "description": _optional_text,
+            "addressed_member_ids": _addresses,
+            "assignment": _assignment,
+        },
     ),
     "list_tasks": Operation(
         "GET",
