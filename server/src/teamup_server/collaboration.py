@@ -3175,6 +3175,19 @@ class Collaboration:
         return state
 
     @staticmethod
+    def _recent_work(row: sqlite3.Row, active: int | None) -> dict | None:
+        """Reference the event behind ``last_active_at`` for the requesting leader, without content."""
+        if active is None:
+            return None
+        created_at = _rfc3339(_EPOCH + timedelta(microseconds=active))
+        if row["work_kind"] == "message":
+            return {"kind": "message", "message_id": row["work_source_id"], "created_at": created_at}
+        return {
+            "kind": "task", "task_number": row["work_task_number"], "title": row["work_title"],
+            "event": row["work_event"], "created_at": created_at,
+        }
+
+    @staticmethod
     def _rank_successors(connection: sqlite3.Connection, state: sqlite3.Row, now: int) -> list[dict]:
         room_id = state["room_id"]
         incumbent = state["leader_member_id"]
@@ -3182,7 +3195,8 @@ class Collaboration:
         rows = connection.execute(
             f"""
             WITH work AS (
-                SELECT msg.sender_member_id AS actor, msg.created_at
+                SELECT msg.sender_member_id AS actor, msg.created_at, 'message' AS kind,
+                    msg.message_id AS source_id, NULL AS task_number, NULL AS title, NULL AS event
                 FROM messages AS msg JOIN rooms AS r ON r.room_id = msg.room_id
                 LEFT JOIN room_members AS viewer ON viewer.room_id = r.room_id AND viewer.member_id = :viewer
                 WHERE r.room_id = :room AND (:automatic OR (
@@ -3190,16 +3204,27 @@ class Collaboration:
                     (r.history_policy = 'retained' OR msg.message_id > viewer.joined_after)
                 ))
                 UNION ALL
-                SELECT e.actor_member_id, e.created_at FROM task_events AS e JOIN tasks AS t USING (task_id)
+                SELECT e.actor_member_id, e.created_at, 'task', e.event_id, t.task_number, t.title, e.kind
+                FROM task_events AS e JOIN tasks AS t USING (task_id)
                 JOIN rooms AS r ON r.room_id = t.room_id
                 LEFT JOIN room_members AS viewer ON viewer.room_id = r.room_id AND viewer.member_id = :viewer
                 WHERE r.room_id = :room AND (:automatic OR viewer.acked_board_version = r.version)
                     AND NOT EXISTS (SELECT 1 FROM task_addressees AS ta WHERE ta.task_id = t.task_id)
             ), latest AS (
-                SELECT actor, MAX(teamup_expiry_micros(created_at)) AS last_active FROM work GROUP BY actor
+                SELECT actor, kind, source_id, task_number, title, event,
+                    teamup_expiry_micros(created_at) AS last_active FROM (
+                    SELECT w.*, ROW_NUMBER() OVER (
+                        PARTITION BY w.actor
+                        ORDER BY teamup_expiry_micros(w.created_at) DESC, w.kind DESC, w.source_id DESC
+                    ) AS position
+                    FROM work AS w
+                ) WHERE position = 1
             )
             SELECT {_MEMBER_PROFILE}, rm.membership_id, rm.responsibility, latest.last_active,
-                m.owner_id = (SELECT owner_id FROM members WHERE member_id = :previous) AS same_owner
+                m.owner_id = (SELECT owner_id FROM members WHERE member_id = :previous) AS same_owner,
+                latest.kind AS work_kind, latest.source_id AS work_source_id,
+                latest.task_number AS work_task_number, latest.title AS work_title,
+                latest.event AS work_event
             FROM {_PROFILE_TABLES} JOIN room_members AS rm ON rm.member_id = m.member_id
             JOIN leadership_heartbeats AS h ON h.member_id = m.member_id
             LEFT JOIN latest ON latest.actor = m.member_id
@@ -3224,6 +3249,7 @@ class Collaboration:
                 membership_id=row["membership_id"],
                 reason="leader_profile" if leadership_term else "same_owner" if same_owner else "recent_activity",
                 last_active_at=_rfc3339(_EPOCH + timedelta(microseconds=active)) if active is not None else None,
+                recent_work=Collaboration._recent_work(row, active),
             )
             ranked.append(((not leadership_term, not same_owner, active is None, -(active or 0), row["member_id"]), profile))
         return [profile for _, profile in sorted(ranked)]

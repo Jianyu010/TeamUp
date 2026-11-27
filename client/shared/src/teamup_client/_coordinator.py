@@ -14,7 +14,14 @@ from ._desktop import PREVIEW_LIMIT, TITLE_LIMIT, clean
 from ._harness import owned_socket, wake_prompt
 from ._notices import binding_scope
 from ._protocol import is_integer, is_string, is_uuid
-from ._room_control_notices import drain_room_notices
+from ._room_control_notices import (
+    LEADER_KINDS,
+    OBSOLETE_CODES,
+    drain_room_notices,
+    leadership_notice_is_current,
+    wake_text,
+    wakes_harness,
+)
 from ._task_notices import drain_task_reminders
 from ._upstream import unavailable
 from .ipc import ClientError
@@ -1220,6 +1227,9 @@ class Coordinator:
         for notice in self._notices.pending_room_notices(scope):
             event_id = notice["event_id"]
             room_id = notice["room_id"]
+            if not wakes_harness(notice["kind"]):
+                self._notices.mark_room_notice_attempted(scope, event_id)
+                continue
             wake_scope = {"room_id": room_id, "sender_member_id": None}
             if not self._wake_allowed(session, wake_scope):
                 self._notices.mark_room_notice_attempted(scope, event_id)
@@ -1239,17 +1249,28 @@ class Coordinator:
                 continue
             except OSError:
                 return True
+            guarded = notice["kind"] in LEADER_KINDS
+            ranking = None
+            if guarded:
+                try:
+                    ranking = await self._upstream.request(
+                        "GET", f"/rooms/{room_id}/leadership/candidates", binding.member_token
+                    )
+                except ClientError as exc:
+                    if exc.code not in OBSOLETE_CODES:
+                        return True
+                except OSError:
+                    return True
             if self._leases.get(session.identity) is not lease:
                 return True
             self._notices.mark_room_notice_attempted(scope, event_id)
             if room.get("archived_at") is not None or not self._wake_allowed(session, wake_scope):
                 continue
-            if any(
-                field in room and field in notice and room[field] != notice[field]
-                for field in ("leadership_epoch", "expires_at")
-            ):
+            if "expires_at" in notice and room.get("expires_at") != notice["expires_at"]:
                 continue
-            await driver(lease.address, lease.token, f"TeamUp room {room_id}: {notice['text']}")
+            if guarded and not leadership_notice_is_current(ranking, notice):
+                continue
+            await driver(lease.address, lease.token, wake_text(notice, ranking))
         return False
 
     def _wake_allowed(self, session, notice):

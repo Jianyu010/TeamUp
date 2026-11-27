@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
@@ -91,6 +92,84 @@ def test_rank_includes_only_eligible_members_and_public_work(team):
     assert team.candidates()["candidates"][2]["last_active_at"] == "2026-11-28T00:00:00Z"
     team.now += timedelta(seconds=45)
     assert team.candidates()["candidates"] == []
+
+
+def test_recent_work_references_the_latest_public_event_without_bodies(team):
+    db = team.db
+    worker = team.join("worker")
+    for token in (worker, team.leader):
+        team.ack(token)
+    db.create_task(worker, team.room, "private", "PRIVATE", None, [team.id(team.leader)])
+
+    def recent():
+        rows = team.candidates()["candidates"]
+        row, = [row for row in rows if row["member_id"] == team.id(worker)]
+        assert row["reason"] == "recent_activity"
+        return row
+
+    assert recent()["recent_work"] is None
+    task = db.create_task(worker, team.room, "public", "PUBLIC", None, None)
+    summary = {"kind": "task", "task_number": task["task_number"], "title": "PUBLIC"}
+    assert recent()["recent_work"] == {**summary, "event": "created", "created_at": "2026-11-28T00:00:00Z"}
+    task_id = task["task_id"]
+
+    def step(action, second):
+        team.now += timedelta(seconds=1)
+        db.record_leadership_heartbeat(worker)
+        return action(), {**summary, "created_at": f"2026-11-28T00:00:{second:02d}Z"}
+
+    _, work = step(lambda: db.join_task(worker, team.room, task_id), 1)
+    assert recent()["recent_work"] == {**work, "event": "joined"}
+    _, work = step(lambda: db.report_progress(worker, team.room, task_id, "p-1", "NOTE"), 2)
+    assert recent()["recent_work"] == {**work, "event": "progress"}
+    _, work = step(lambda: db.finish_task(worker, team.room, task_id), 3)
+    assert recent()["recent_work"] == {**work, "event": "finished"}
+    message, work = step(lambda: db.send_message(worker, team.room, "latest", "SECRET BODY"), 4)
+    row = recent()
+    assert row["recent_work"] == {
+        "kind": "message", "message_id": message["message_id"], "created_at": work["created_at"]
+    }
+    assert row["last_active_at"] == work["created_at"]
+    listed = json.dumps(team.candidates())
+    assert all(word not in listed for word in ("SECRET", "NOTE", "PRIVATE"))
+
+
+def test_recent_work_excludes_history_the_requesting_leader_cannot_read(team):
+    db = team.db
+    author = team.join("author")
+    successor = team.join("successor", heartbeat=False)
+
+    def acknowledge(token, room_id):
+        db.confirm_board(token, room_id, db.read_board(token, room_id)["version"])
+
+    def hand_over(history_policy):
+        room_id = db.create_room(author, "focused", None, None, history_policy)["room_id"]
+        acknowledge(author, room_id)
+        first = db.send_message(author, room_id, f"first-{history_policy}", "FIRST BODY")["message_id"]
+        db.join_room(successor, room_id)
+        db.record_leadership_heartbeat(successor)
+        row, = db.room_leadership_candidates(author, room_id)["candidates"]
+        assert row["member_id"] == team.id(successor)
+        db.handoff_room_leadership(
+            author, room_id, 1, "choose", member_id=row["member_id"], membership_id=row["membership_id"]
+        )
+        return room_id, first
+
+    def recent(room_id):
+        db.record_leadership_heartbeat(successor)
+        row, = db.room_leadership_candidates(successor, room_id)["candidates"]
+        assert row["member_id"] == team.id(author)
+        return row["recent_work"]
+
+    hidden, _ = hand_over("since_joining")
+    assert recent(hidden) is None
+    acknowledge(successor, hidden)
+    assert recent(hidden) is None
+    second = db.send_message(author, hidden, "second", "SECOND BODY")["message_id"]
+    assert recent(hidden) == {"kind": "message", "message_id": second, "created_at": "2026-11-28T00:00:00Z"}
+    shown, first = hand_over("retained")
+    acknowledge(successor, shown)
+    assert recent(shown) == {"kind": "message", "message_id": first, "created_at": "2026-11-28T00:00:00Z"}
 
 
 def test_explicit_choice_checks_membership_generation_and_transfers_only_once(team):
