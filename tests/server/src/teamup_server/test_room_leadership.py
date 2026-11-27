@@ -2,10 +2,26 @@ import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
+from threading import Barrier
+from uuid import uuid4
 
 import pytest
 from teamup_server.collaboration import Collaboration, CollaborationError
-from test_contract import KEYS, credential
+from test_contract import (
+    KEYS,
+    api,
+    candidates,
+    confirm,
+    credential,
+    enroll,
+    error,
+    get,
+    heartbeat,
+    join,
+    member,
+    post,
+    room,
+)
 
 
 class Team:
@@ -211,3 +227,394 @@ def test_migrate_v12_seeds_only_joined_enabled_creators(team):
     assert team.db.view_board(team.leader, team.room)["can_edit"]
     team.db.join_room(team.leader, other)
     assert not team.db.view_board(team.leader, other)["can_edit"]
+
+
+def race(together, action):
+    together.wait(timeout=5)
+    try:
+        return action()
+    except CollaborationError as error:
+        return error.code
+
+
+def test_disabling_an_account_recovers_every_led_room(team):
+    peer = team.join("peer")
+    rooms = [team.room]
+    for index in (2, 3):
+        room_id = team.db.create_room(team.leader, f"Room {index}", None, None)["room_id"]
+        team.db.join_room(peer, room_id)
+        rooms.append(room_id)
+    sibling = team.join("sibling", owner="alice")
+    room_id = team.db.create_room(sibling, "Sibling room", None, None)["room_id"]
+    team.db.join_room(peer, room_id)
+    rooms.append(room_id)
+    team.db.disable_account("alice")
+    for room_id in rooms:
+        assert team.db.view_board(peer, room_id)["can_edit"]
+    assert sorted(n["room_id"] for n in team.db.room_notices(peer)["notices"]) == sorted(rooms)
+
+
+def test_sweep_recovers_every_room_whose_leader_heartbeat_was_lost(team):
+    peer = team.join("peer")
+    rooms = [team.room]
+    for index in (2, 3):
+        room_id = team.db.create_room(team.leader, f"Room {index}", None, None)["room_id"]
+        team.db.join_room(peer, room_id)
+        rooms.append(room_id)
+    team.db.record_leadership_heartbeat(team.leader)
+    team.now += timedelta(minutes=2, seconds=1)
+    team.db.record_leadership_heartbeat(peer)
+    team.db.sweep_room_leadership()
+    for room_id in rooms:
+        assert team.db.view_board(peer, room_id)["can_edit"]
+    assert len(team.db.room_notices(peer)["notices"]) == len(rooms)
+
+
+def test_vacancy_recovers_on_the_join_or_heartbeat_that_restores_eligibility(team):
+    peer = team.join("peer", heartbeat=False)
+    early = team.enroll("early")
+    team.db.record_leadership_heartbeat(early)
+    team.db.leave_room(team.leader, team.room)
+    assert not team.db.view_board(peer, team.room)["can_edit"]
+    team.db.record_leadership_heartbeat(peer)
+    assert team.db.view_board(peer, team.room)["can_edit"]
+    epoch = team.candidates(peer)["leadership_epoch"]
+    assert [n["kind"] for n in team.db.room_notices(peer)["notices"]] == [
+        "leadership_assigned"
+    ]
+    team.db.record_leadership_heartbeat(peer)
+    team.db.sweep_room_leadership()
+    assert team.candidates(peer)["leadership_epoch"] == epoch
+    assert len(team.db.room_notices(peer)["notices"]) == 1
+
+    team.db.leave_room(peer, team.room)
+    team.db.join_room(early, team.room)
+    assert team.db.view_board(early, team.room)["can_edit"]
+    assert team.candidates(early)["leadership_epoch"] == epoch + 2
+
+
+def test_deposed_leader_cannot_return_by_heartbeat_but_a_peer_can(team):
+    peer = team.join("peer", heartbeat=False)
+    team.db.record_leadership_heartbeat(team.leader)
+    team.now += timedelta(minutes=30)
+    team.db.record_leadership_heartbeat(team.leader)
+    team.db.sweep_room_leadership()
+    team.now += timedelta(minutes=2)
+    team.db.sweep_room_leadership()
+    assert not team.db.view_board(team.leader, team.room)["can_edit"]
+    team.db.record_leadership_heartbeat(team.leader)
+    assert not team.db.view_board(team.leader, team.room)["can_edit"]
+    team.db.sweep_room_leadership()
+    assert not team.db.view_board(team.leader, team.room)["can_edit"]
+    team.db.record_leadership_heartbeat(peer)
+    assert team.db.view_board(peer, team.room)["can_edit"]
+    assert not team.db.view_board(team.leader, team.room)["can_edit"]
+
+
+def test_only_the_unanswered_challenge_is_delivered(team):
+    team.db.record_leadership_heartbeat(team.leader)
+    team.now += timedelta(minutes=30)
+    team.db.record_leadership_heartbeat(team.leader)
+    team.db.sweep_room_leadership()
+    challenge = team.candidates()["leadership_epoch"]
+    assert [
+        (n["kind"], n["leadership_epoch"]) for n in team.db.room_notices(team.leader)["notices"]
+    ] == [("leadership_challenge", challenge)]
+    assert team.db.confirm_room_leadership(team.leader, team.room, challenge)["pending"] is False
+    assert team.db.room_notices(team.leader)["notices"] == []
+    with pytest.raises(CollaborationError, match="conflict"):
+        team.db.confirm_room_leadership(team.leader, team.room, challenge)
+
+
+def test_timed_out_deferral_notice_is_no_longer_delivered(team):
+    pending = team.handoff(1, "defer", leave=True)
+    assert [
+        (n["kind"], n["leadership_epoch"]) for n in team.db.room_notices(team.leader)["notices"]
+    ] == [("leadership_deferred", pending["leadership_epoch"])]
+    team.now += timedelta(seconds=119)
+    team.db.sweep_room_leadership()
+    assert [n["kind"] for n in team.db.room_notices(team.leader)["notices"]] == [
+        "leadership_deferred"
+    ]
+    team.now += timedelta(seconds=1)
+    team.db.sweep_room_leadership()
+    assert team.db.view_board(team.leader, team.room)["can_edit"]
+    assert team.db.room_notices(team.leader)["notices"] == []
+    with pytest.raises(CollaborationError, match="conflict"):
+        team.handoff(pending["leadership_epoch"], "auto")
+
+
+def test_assignment_notice_expires_with_the_leadership_that_produced_it(team):
+    peer = team.join("peer")
+    third = team.join("third")
+    first, second = [
+        next(row for row in team.candidates()["candidates"] if row["member_id"] == member)
+        for member in (team.id(peer), team.id(third))
+    ]
+    chosen = {"member_id": first["member_id"], "membership_id": first["membership_id"]}
+    receipt = team.handoff(1, "choose", **chosen)
+    assert [
+        (n["kind"], n["leadership_epoch"]) for n in team.db.room_notices(peer)["notices"]
+    ] == [("leadership_assigned", receipt["leadership_epoch"])]
+    assert team.db.room_notices(third)["notices"] == []
+    moved = team.db.handoff_room_leadership(
+        peer, team.room, receipt["leadership_epoch"], "choose",
+        member_id=second["member_id"], membership_id=second["membership_id"],
+    )
+    assert team.db.room_notices(peer)["notices"] == []
+    assert moved["leader_member_id"] == team.id(third)
+    (assigned,) = team.db.room_notices(third)["notices"]
+    assert (assigned["kind"], assigned["leadership_epoch"]) == (
+        "leadership_assigned", moved["leadership_epoch"]
+    )
+    with pytest.raises(CollaborationError, match="forbidden"):
+        team.db.publish_board(peer, team.room, 1, "changed", "changed")
+    with pytest.raises(CollaborationError, match="conflict"):
+        team.handoff(receipt["leadership_epoch"], "auto")
+
+
+def test_choice_is_revalidated_at_appointment(team):
+    peer = team.join("peer")
+    (row,), epoch = team.candidates()["candidates"], team.candidates()["leadership_epoch"]
+    chosen = {"member_id": row["member_id"], "membership_id": row["membership_id"]}
+    team.now += timedelta(seconds=45)
+    assert team.candidates()["candidates"] == []
+    with pytest.raises(CollaborationError, match="conflict"):
+        team.handoff(epoch, "choose", **chosen)
+    assert team.db.view_board(team.leader, team.room)["can_edit"]
+    team.db.create_account("account", "a sufficiently long password")
+    login = team.db.login("account", "a sufficiently long password")["access_token"]
+    team.join("Lead Claimant", login)
+    team.db.record_leadership_heartbeat(peer)
+    claim = next(
+        candidate for candidate in team.candidates()["candidates"]
+        if candidate["reason"] == "leader_profile"
+    )
+    team.db.disable_account("account")
+    with pytest.raises(CollaborationError, match="conflict"):
+        team.handoff(epoch, "choose", member_id=claim["member_id"], membership_id=claim["membership_id"])
+    assert team.handoff(epoch, "choose", **chosen)["leader_member_id"] == team.id(peer)
+
+
+def test_confirm_at_the_challenge_deadline_is_stale(team):
+    peer = team.join("peer")
+    team.db.record_leadership_heartbeat(team.leader)
+    team.now += timedelta(minutes=30)
+    team.db.record_leadership_heartbeat(team.leader)
+    team.db.sweep_room_leadership()
+    first = team.candidates()["leadership_epoch"]
+    team.now += timedelta(seconds=119)
+    assert team.db.confirm_room_leadership(team.leader, team.room, first)["pending"] is False
+    team.now += timedelta(minutes=30)
+    team.db.record_leadership_heartbeat(team.leader)
+    team.db.sweep_room_leadership()
+    second = team.candidates()["leadership_epoch"]
+    with pytest.raises(CollaborationError, match="conflict"):
+        team.db.confirm_room_leadership(team.leader, team.room, first)
+    team.now += timedelta(seconds=120)
+    team.db.record_leadership_heartbeat(peer)
+    together = Barrier(2)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        confirming = pool.submit(
+            race, together, lambda: team.db.confirm_room_leadership(team.leader, team.room, second)
+        )
+        sweeping = pool.submit(race, together, team.db.sweep_room_leadership)
+        assert confirming.result() == "conflict"
+        sweeping.result()
+    assert team.db.view_board(peer, team.room)["can_edit"]
+    assert not team.db.view_board(team.leader, team.room)["can_edit"]
+    assert team.db.room_notices(team.leader)["notices"] == []
+
+
+def test_choosing_a_claimant_who_leaves_concurrently_never_appoints_a_non_member(
+    team,
+):
+    peer = team.join("peer")
+    third = team.join("third")
+    claimant, other = team.candidates()["candidates"]
+    chosen = {"member_id": claimant["member_id"], "membership_id": claimant["membership_id"]}
+    tokens = {team.id(token): token for token in (peer, third)}
+    together = Barrier(2)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        choosing = pool.submit(race, together, lambda: team.handoff(1, "choose", **chosen))
+        leaving = pool.submit(race, together, lambda: team.db.leave_room(tokens[claimant["member_id"]], team.room))
+        picked, left = choosing.result(), leaving.result()
+    (summary,) = team.db.list_rooms(tokens[other["member_id"]], include_membership=True)
+    assert summary["leader_member_id"] in {team.id(team.leader), other["member_id"]}
+    if isinstance(picked, dict):
+        assert left == {"room_id": team.room}
+        assert summary["leader_member_id"] == other["member_id"]
+        assert summary["leadership_epoch"] == picked["leadership_epoch"] + 1
+    else:
+        assert picked == "conflict" and summary["leader_member_id"] == team.id(team.leader)
+
+
+@pytest.fixture
+def routes(tmp_path):
+    with api(tmp_path / "routes.sqlite3") as client:
+        for label, owner in (("sender", "alice"), ("target", "bob"), ("reader", "bob")):
+            assert enroll(client, label, owner=owner).status_code == 200
+        yield client
+
+
+def notices(client, label, query=""):
+    response = get(client, label, f"/room-notices{query}")
+    assert response.status_code == 200, response.text
+    assert response.headers["cache-control"] == "no-store"
+    return response.json()["notices"]
+
+
+def test_leadership_routes_bind_every_write_to_the_current_epoch_and_membership(routes):
+    assert enroll(routes, "sibling").status_code == 200
+    path = room(routes)
+    room_id = path.rsplit("/", 1)[1]
+    handoff_path, confirm_path = f"{path}/leadership/handoff", f"{path}/leadership/confirm"
+    join(routes, "target", path)
+    join(routes, "sibling", path)
+    confirm(routes, "target", path)
+    target, sibling = member(routes, "target"), member(routes, "sibling")
+    view = f"{path}/board/view"
+
+    error(get(routes, "target", f"{path}/leadership/candidates"), 403, "forbidden")
+    error(get(routes, "reader", f"{path}/leadership/candidates"), 404, "not_found")
+    error(
+        get(routes, "sender", f"/rooms/{uuid4()}/leadership/candidates"),
+        404, "not_found",
+    )
+    assert candidates(routes, "sender", path) == {"leadership_epoch": 1, "candidates": []}
+    heartbeat(routes, "sibling")
+    ranking = candidates(routes, "sender", path)
+    (row,) = ranking["candidates"]
+    assert (ranking["leadership_epoch"], row["member_id"], row["reason"]) == (
+        1, sibling, "same_owner",
+    )
+    chosen = {"member_id": sibling, "membership_id": row["membership_id"]}
+    error(post(routes, "sender", handoff_path, json={"leadership_epoch": 2, "mode": "auto"}), 409, "conflict")
+    error(post(routes, "target", handoff_path, json={"leadership_epoch": 1, "mode": "auto"}), 403, "forbidden")
+    error(post(routes, "reader", handoff_path, json={"leadership_epoch": 1, "mode": "auto"}), 404, "not_found")
+    for body in (
+        {"leadership_epoch": 1, "mode": "choose"},
+        {"leadership_epoch": 1, "mode": "auto", "member_id": sibling},
+        {"leadership_epoch": 0, "mode": "auto"},
+        {"leadership_epoch": 1, "mode": "defer", "leave": "yes"},
+        {"leadership_epoch": 1, "mode": "choose", **chosen, "leave": False, "extra": 1},
+    ):
+        error(post(routes, "sender", handoff_path, json=body), 422, "invalid_request")
+    error(
+        post(routes, "sender", handoff_path, json={
+            "leadership_epoch": 1, "mode": "choose",
+            "member_id": target, "membership_id": row["membership_id"],
+        }),
+        409, "conflict",
+    )
+    assert candidates(routes, "sender", path) == ranking
+    receipt = post(routes, "sender", handoff_path, json={"leadership_epoch": 1, "mode": "choose", **chosen})
+    assert receipt.json() == {
+        "room_id": room_id, "leader_member_id": sibling, "leadership_epoch": 2,
+        "pending": False, "left": False,
+    }
+    (assigned,) = notices(routes, "sibling")
+    assert (assigned["kind"], assigned["leadership_epoch"]) == ("leadership_assigned", 2)
+    assert notices(routes, "target") == []
+    error(get(routes, "sender", f"{path}/leadership/candidates"), 403, "forbidden")
+    assert get(routes, "sender", view).json()["can_edit"] is False
+
+    deferred = post(routes, "sibling", handoff_path, json={"leadership_epoch": 2, "mode": "defer", "leave": True})
+    assert deferred.json() == {
+        "room_id": room_id, "leader_member_id": sibling, "leadership_epoch": 3,
+        "pending": True, "left": False,
+    }
+    (pending,) = notices(routes, "sibling", f"?after={assigned['notice_id']}")
+    assert (pending["kind"], pending["leadership_epoch"]) == ("leadership_deferred", 3)
+    error(
+        post(routes, "sibling", handoff_path, json={"leadership_epoch": 3, "mode": "defer"}),
+        409, "conflict",
+    )
+    error(post(routes, "target", confirm_path, json={"leadership_epoch": 3}), 403, "forbidden")
+    heartbeat(routes, "target")
+    (row,) = candidates(routes, "sibling", path)["candidates"]
+    committed = post(routes, "sibling", handoff_path, json={
+        "leadership_epoch": 3, "mode": "choose",
+        "member_id": target, "membership_id": row["membership_id"],
+    })
+    assert committed.json() == {
+        "room_id": room_id, "leader_member_id": target, "leadership_epoch": 4,
+        "pending": False, "left": True,
+    }
+    assert get(routes, "sibling", "/rooms").json() == {"rooms": []}
+    error(post(routes, "sibling", confirm_path, json={"leadership_epoch": 4}), 404, "not_found")
+    for epoch in (3, 4):
+        error(post(routes, "target", confirm_path, json={"leadership_epoch": epoch}), 409, "conflict")
+    for body in ({"leadership_epoch": "4"}, {"leadership_epoch": 0}, {"leadership_epoch": 4, "mode": "auto"}):
+        error(post(routes, "target", confirm_path, json=body), 422, "invalid_request")
+
+    (assigned,) = notices(routes, "target")
+    assert (assigned["kind"], assigned["leadership_epoch"]) == ("leadership_assigned", 4)
+    ack = f"/room-notices/{assigned['notice_id']}/ack"
+    assert post(routes, "target", ack).json() == {"notice_id": assigned["notice_id"]}
+    assert post(routes, "target", ack).json() == {"notice_id": assigned["notice_id"]}
+    error(post(routes, "sender", ack), 404, "not_found")
+    for query in ("/room-notices?limit=101", "/room-notices?limit=0", "/room-notices?after=-1"):
+        error(get(routes, "target", query), 422, "invalid_request")
+    error(post(routes, "target", "/room-notices/0/ack"), 422, "invalid_request")
+    assert notices(routes, "target") == []
+
+    assert post(routes, "target", f"{path}/leave").status_code == 200
+    assert get(routes, "sender", view).json()["can_edit"] is False
+    heartbeat(routes, "sender")
+    assert get(routes, "sender", view).json()["can_edit"] is True
+    (recovered,) = notices(routes, "sender")
+    assert recovered["kind"] == "leadership_assigned" and recovered["leadership_epoch"] > 4
+
+
+def test_child_room_routes_report_deferral_and_lease_conflicts(routes):
+    path = room(routes)
+    created = post(routes, "sender", f"{path}/children", json={"name": "Focus", "client_request_id": "focus"})
+    assert created.status_code == 200, created.text
+    linked = created.json()
+    assert set(linked) == {"room_id", "name", "history_policy", "parent_room_id", "created_at", "expires_at"}
+    child, extend = f"/rooms/{linked['room_id']}", f"/rooms/{linked['room_id']}/lease/extend"
+    retry = {"name": "Focus", "client_request_id": "focus"}
+    assert post(routes, "sender", f"{path}/children", json=retry).json() == linked
+    error(post(routes, "sender", f"{path}/children", json={**retry, "rules": "Changed"}), 409, "conflict")
+    error(post(routes, "target", f"{path}/children", json=retry), 404, "not_found")
+    error(post(routes, "sender", f"{child}/children", json=retry), 409, "conflict")
+    error(post(routes, "sender", f"{path}/children", json={"name": "Focus"}), 422, "invalid_request")
+    assert get(routes, "sender", f"{path}/children").json() == {"rooms": [linked], "next_after": None}
+    assert get(routes, "target", f"{child}").status_code == 404
+    detail = get(routes, "sender", child).json()
+    assert {key: detail[key] for key in ("parent_room_id", "created_at", "expires_at")} == {
+        key: linked[key] for key in ("parent_room_id", "created_at", "expires_at")
+    }
+    error(post(routes, "sender", f"{path}/archive"), 409, "room_has_live_children")
+    error(post(routes, "target", f"{path}/archive"), 404, "not_found")
+
+    join(routes, "target", child)
+    error(post(routes, "target", extend, json={"seconds": 60, "expected_expires_at": linked["expires_at"]}), 403, "forbidden")
+    error(post(routes, "reader", extend, json={"seconds": 60, "expected_expires_at": linked["expires_at"]}), 404, "not_found")
+    for body in (
+        {"seconds": 0, "expected_expires_at": linked["expires_at"]},
+        {"seconds": 3601, "expected_expires_at": linked["expires_at"]},
+        {"seconds": "60", "expected_expires_at": linked["expires_at"]},
+        {"seconds": 60, "expected_expires_at": "2026-01-01T00:00:00"},
+        {"seconds": 60},
+        {"seconds": 60, "expected_expires_at": linked["expires_at"], "extra": 1},
+    ):
+        error(post(routes, "sender", extend, json=body), 422, "invalid_request")
+    error(post(routes, "sender", extend, json={"seconds": 60, "expected_expires_at": linked["expires_at"]}), 409, "conflict")
+    error(post(routes, "target", f"{child}/archive"), 403, "forbidden")
+    closed = post(routes, "sender", f"{child}/archive").json()
+    assert set(closed) == {"room_id", "name", "archived_at", "archive_reason"}
+    assert (closed["room_id"], closed["archive_reason"]) == (linked["room_id"], "goal_reached")
+    assert get(routes, "sender", f"{path}/children").json() == {
+        "rooms": [
+            {
+                **linked,
+                "archived_at": closed["archived_at"],
+                "archive_reason": "goal_reached",
+            }
+        ],
+        "next_after": None,
+    }
+    assert post(routes, "sender", f"{path}/archive").json()["archive_reason"] == "goal_reached"
+    error(post(routes, "sender", f"{path}/children", json={"name": "Late", "client_request_id": "late"}), 409, "room_archived")
