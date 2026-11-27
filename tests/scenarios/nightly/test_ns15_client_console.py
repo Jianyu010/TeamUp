@@ -289,6 +289,44 @@ def test_browser_client_signs_in(client_workspace):
         room_session(console, local)
 
 
+@pytest.mark.scenario("NS-15.08", "Browser displays assigned task details")
+def test_browser_displays_assignment_details(client_workspace):
+    api, _, console, url, password, local, peer = client_workspace
+    console_login(console, "alice", password)
+    room = api.create_room(peer, "Release review")
+    api.join(local, room)
+    for member in (local, peer):
+        api.read_and_ack_board(member, room)
+    task = api.call(
+        "POST",
+        f"/v1/rooms/{room}/tasks",
+        peer.token,
+        json={
+            "client_task_id": "release-assignment",
+            "title": "Verify the release candidate",
+            "addressed_member_ids": [local.member_id],
+            "assignment": {
+                "closing_criteria": "The release smoke check passes.",
+            },
+        },
+    )
+
+    with browser_page(
+        str(console.base_url), redact=(password, url.split("#", 1)[1])
+    ) as (page, expect):
+        page.goto(url, wait_until="domcontentloaded")
+        page.locator(f'#rooms button[data-room="{room}"]').click()
+        page.get_by_role("button", name="Tasks", exact=True).click()
+        card = page.get_by_role("region", name="Available tasks").locator(".task-card")
+        summary = card.locator("summary")
+        expect(summary).to_contain_text(f"Task #{task['task_number']}")
+        summary.click()
+        expect(card).to_contain_text("Progress contact · Remote reviewer")
+        expect(card).to_contain_text("ETA · Assignee to propose")
+        expect(card).to_contain_text(
+            "Closing criteria · The release smoke check passes."
+        )
+
 @pytest.mark.scenario("NS-15.06", "Browser room Board editing and live transcript")
 def test_browser_client_publishes_board(client_workspace):
     api, _, console, url, password, local, peer = client_workspace
@@ -329,41 +367,3 @@ def test_browser_client_publishes_board(client_workspace):
             "Review is in progress", timeout=12000
         )
 
-
-@pytest.mark.scenario("NS-15.08", "Browser displays assigned task details")
-def test_browser_displays_assignment_details(client_workspace):
-    api, _, console, url, password, local, peer = client_workspace
-    console_login(console, "alice", password)
-    room = api.create_room(peer, "Release review")
-    api.join(local, room)
-    for member in (local, peer):
-        api.read_and_ack_board(member, room)
-    task = api.call(
-        "POST",
-        f"/v1/rooms/{room}/tasks",
-        peer.token,
-        json={
-            "client_task_id": "release-assignment",
-            "title": "Verify the release candidate",
-            "addressed_member_ids": [local.member_id],
-            "assignment": {
-                "closing_criteria": "The release smoke check passes.",
-            },
-        },
-    )
-
-    with browser_page(
-        str(console.base_url), redact=(password, url.split("#", 1)[1])
-    ) as (page, expect):
-        page.goto(url, wait_until="domcontentloaded")
-        page.locator(f'#rooms button[data-room="{room}"]').click()
-        page.get_by_role("button", name="Tasks", exact=True).click()
-        card = page.get_by_role("region", name="Available tasks").locator(".task-card")
-        summary = card.locator("summary")
-        expect(summary).to_contain_text(f"Task #{task['task_number']}")
-        summary.click()
-        expect(card).to_contain_text("Progress contact · Remote reviewer")
-        expect(card).to_contain_text("ETA · Assignee to propose")
-        expect(card).to_contain_text(
-            "Closing criteria · The release smoke check passes."
-        )

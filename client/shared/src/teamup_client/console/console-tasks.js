@@ -215,7 +215,9 @@ export function taskPanel(context) {
       if (item.open) expanded.add(key);
       else expanded.delete(key);
     });
-    const title = element("summary", task.title);
+    const title = element("summary", task.assignment
+      ? "Task #" + task.task_number + " · " + task.title
+      : task.title);
     title.dataset.taskKey = key;
     item.append(title);
     if (task.stalled_since) item.append(element("p", "Stalled since " + time(task.stalled_since), "stalled"));
@@ -227,6 +229,15 @@ export function taskPanel(context) {
 
     const body = element("div", "", "task-expanded");
     if (task.description) body.append(element("p", task.description));
+    if (task.assignment) {
+      const contact = element("p", "", "muted");
+      contact.append(element("strong", "Progress contact"), " · ", memberName(task.creator_member_id));
+      const eta = element("p", "", "muted");
+      eta.append(element("strong", "ETA"), " · ", task.assignment.eta ?? "Assignee to propose");
+      const criteria = element("p");
+      criteria.append(element("strong", "Closing criteria"), " · ", task.assignment.closing_criteria);
+      body.append(contact, eta, criteria);
+    }
     const people = element("p", "", "muted");
     people.append(element("strong", "Participants"), " · ");
     if (task.participant_member_ids.length) appendNames(people, task.participant_member_ids);
