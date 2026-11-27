@@ -181,6 +181,10 @@ def test_challenge_requires_bound_agent_and_survives_server_restart(team):
     team.db.sweep_room_leadership()
     with pytest.raises(CollaborationError, match="conflict"):
         team.db.confirm_room_leadership(team.leader, team.room, epoch)
+    probes = team.db.room_notices(team.leader)["notices"]
+    current_epoch = team.candidates()["leadership_epoch"]
+    [current_probe] = [probe for probe in probes if probe["leadership_epoch"] == current_epoch]
+    team.db.ack_room_notice(team.leader, current_probe["notice_id"])
     team.now += timedelta(minutes=2)
     team.restart()
     for token in (peer, team.leader):

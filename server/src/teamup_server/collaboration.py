@@ -3365,14 +3365,21 @@ class Collaboration:
             now = _utc_micros(self._now_datetime())
             if state["pending_kind"] != "challenge" or state["deadline"] <= now:
                 raise CollaborationError("conflict")
-            state = connection.execute(
-                """
-                UPDATE room_leadership SET leadership_epoch = leadership_epoch + 1, pending_kind = NULL,
-                    deadline = NULL, challenge_at = ?, next_check_at = ? WHERE room_id = ? RETURNING *
-                """,
-                (now + _CHALLENGE_INTERVAL, now + _LEADERSHIP_GRACE, room_id),
-            ).fetchone()
+            state = self._reset_leadership_challenge(connection, room_id, now)
         return self._leadership_receipt(state)
+
+    @staticmethod
+    def _reset_leadership_challenge(
+        connection: sqlite3.Connection, room_id: str, now: int
+    ) -> sqlite3.Row:
+        return connection.execute(
+            """
+            UPDATE room_leadership SET leadership_epoch = leadership_epoch + 1,
+                pending_kind = NULL, deadline = NULL, challenge_at = ?, next_check_at = ?
+            WHERE room_id = ? RETURNING *
+            """,
+            (now + _CHALLENGE_INTERVAL, now + _LEADERSHIP_GRACE, room_id),
+        ).fetchone()
 
     def _sweep_leader(
         self, connection: sqlite3.Connection, state: sqlite3.Row, now: int, notified: set[str]
@@ -3380,12 +3387,12 @@ class Collaboration:
         room_id = state["room_id"]
         incumbent = state["leader_member_id"]
         kind = state["pending_kind"]
-        if incumbent is not None and kind is None:
+        if incumbent is not None:
             heartbeat = connection.execute(
                 "SELECT observed_at FROM leadership_heartbeats WHERE member_id = ?", (incumbent,)
             ).fetchone()
             lost = heartbeat is not None and heartbeat[0] + _LEADERSHIP_GRACE <= now
-            if not lost:
+            if kind is None and not lost:
                 if now >= state["challenge_at"]:
                     self._request_leadership_decision(connection, state, "challenge", False, now, notified)
                 else:
@@ -3396,6 +3403,18 @@ class Collaboration:
                 return
         candidates = self._rank_successors(connection, state, now)
         successor = candidates[0]["member_id"] if candidates else None
+        if kind == "challenge" and incumbent is not None and not lost:
+            probe_received = connection.execute(
+                """
+                SELECT 1 FROM room_control_notices
+                WHERE room_id = ? AND kind = 'leadership_challenge' AND member_id = ?
+                    AND leadership_epoch = ? AND acknowledged = 1
+                """,
+                (room_id, incumbent, state["leadership_epoch"]),
+            ).fetchone()
+            if successor is None or probe_received is None:
+                self._reset_leadership_challenge(connection, room_id, now)
+                return
         if not successor and (kind == "defer" or incumbent is None):
             connection.execute(
                 "UPDATE room_leadership SET next_check_at = ? WHERE room_id = ?",
