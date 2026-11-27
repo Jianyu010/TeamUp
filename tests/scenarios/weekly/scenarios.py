@@ -3,7 +3,9 @@
 import asyncio
 import itertools
 import random
+import re
 from dataclasses import dataclass
+from uuid import uuid4
 
 from . import tasks
 from .agents import Spec
@@ -45,71 +47,57 @@ def roster_text(messages, names):
 
 async def we01(options) -> str:
     port = str(random.Random().randint(20000, 60000))
+    request = f"req-{uuid4().hex[:8]}"
+    question = f"Which port does the frontend dev server listen on? Request {request}."
     specs = [
-        Spec("A", "Backend", mention=None),
+        Spec("A", "Backend"),
         Spec(
             "B",
             "Frontend",
             facts=[f"The frontend dev server listens on port {port}."],
-            mention="sender",
-            wake_note="Answer the question with the facts you know.",
         ),
     ]
     async with Run("WE-01", specs, options) as run:
-        await run.phase(
-            ("A", tasks.create_room("Port check", RULES, PROTOCOL)),
-        )
-        room = run.room_id()
-        await run.phase(("B", tasks.join_room(room, "Frontend is here.")))
-        await run.phase(
-            (
-                "A",
-                tasks.ask(
-                    room,
-                    [
-                        (
-                            "Frontend",
-                            "Which port does the frontend dev server listen on?",
-                        )
-                    ],
-                ),
-            )
-        )
-        a_id, b_id = run.member_id("A"), run.member_id("B")
-        names = {a_id: "A", b_id: "B"}
-
-        async def done():
-            messages = await run.messages(room, "A")
-            asks = mention_of(messages, a_id, b_id)
-            replies = mention_of(messages, b_id, a_id)
-            if not asks:
-                return False, "A has not asked B with a mention"
-            replies = [r for r in replies if r["message_id"] > asks[0]["message_id"]]
-            if not replies:
-                return False, "B has not replied to A with a mention"
-            final = [
-                m
-                for m in messages
-                if m["sender_member_id"] == a_id
-                and m["message_id"] > replies[0]["message_id"]
-                and port in m["text"]
-            ]
-            if not final:
-                return False, f"A has not posted port {port} after B's reply"
-            return True, ""
-
-        try:
-            await run.drain(done)
-        except Failure as failure:
-            messages = await run.messages(room, "A")
+        await run.turn("B", tasks.register())
+        b_id = run.member_id("B")
+        await run.turn("A", tasks.ask_dm("Frontend", question))
+        a_id = run.member_id("A")
+        dm_id = run.dm_id()
+        messages = await run.dm_messages(dm_id, "A")
+        if [(m["sender_member_id"], m["text"]) for m in messages] != [(a_id, question)]:
             raise Failure(
-                f"{failure}. Room: {roster_text(messages, names)}. "
+                f"A did not send the expected DM question. Errors: {run.turn_errors()}"
+            )
+
+        # A DM notice is local and does not start a turn.
+        await run.turn("B", tasks.answer_dm(dm_id), kind="nudge")
+        reply = await run.dm_messages(dm_id, "A")
+        if (
+            len(reply) != 2
+            or reply[:1] != messages
+            or reply[1]["sender_member_id"] != b_id
+            or reply[1]["message_id"] <= messages[0]["message_id"]
+            or request not in reply[1]["text"]
+            or not re.search(rf"\b{port}\b", reply[1]["text"])
+        ):
+            raise Failure(
+                "B did not reply with the request code and its private port. "
                 f"Errors: {run.turn_errors()}"
-            ) from None
-        return (
-            "two-member room (no DM tool in this build): A asked B, B replied with a "
-            f"mention, A posted port {port}"
-        )
+            )
+
+        await run.turn("A", tasks.confirm_dm(dm_id), kind="nudge")
+        final = await run.dm_messages(dm_id, "B")
+        if (
+            len(final) != 3
+            or final[:2] != reply
+            or final[2]["sender_member_id"] != a_id
+            or final[2]["message_id"] <= reply[1]["message_id"]
+            or not re.search(rf"\b{port}\b", final[2]["text"])
+        ):
+            raise Failure(
+                f"A did not confirm B's port in the DM. Errors: {run.turn_errors()}"
+            )
+        return "DM history shows A's question, B's private port, and A's confirmation"
 
 
 # --- WE-02 ------------------------------------------------------------------
@@ -280,13 +268,6 @@ async def we03(options) -> str:
         )
 
 
-# --- WE-04 ------------------------------------------------------------------
-
-
-async def we04(options) -> str:
-    raise Failure("skipped scenario was run")
-
-
 # --- WE-05 ------------------------------------------------------------------
 
 CHAIN = ["Frontend", "Tester", "Docs", "Ops"]
@@ -371,8 +352,78 @@ async def we05(options) -> str:
         )
 
 
+# --- WE-06 ------------------------------------------------------------------
+
+
+async def we06(options) -> str:
+    title = "Verify the release fixture"
+    fixture = f"fixture-{uuid4().hex[:8]}"
+    specs = [
+        Spec("A", "Release Lead"),
+        Spec("B", "Tester", facts=[f"The release smoke test passed on {fixture}."]),
+        Spec("C", "Reviewer"),
+    ]
+    async with Run("WE-06", specs, options) as run:
+        await run.turn("A", tasks.create_room("Release verification", RULES, PROTOCOL))
+        room = run.room_id()
+        await run.phase(
+            ("B", tasks.join_room(room, "Tester is here.")),
+            ("C", tasks.join_room(room, "Reviewer is here.")),
+        )
+        a_id, b_id, c_id = (run.member_id(name) for name in ("A", "B", "C"))
+        contributors = {b_id, c_id}
+        await run.turn("A", tasks.assign_release_check(room, title))
+        records = (await run.read("A", "list_tasks", room_id=room))["tasks"]
+        if (
+            len(records) != 1
+            or records[0]["title"] != title
+            or records[0]["creator_member_id"] != a_id
+            or set(records[0]["addressed_member_ids"]) != contributors
+            or records[0]["status"] != "open"
+        ):
+            raise Failure(
+                f"A did not create the addressed release task. Errors: {run.turn_errors()}"
+            )
+        task_args = {"room_id": room, "task_id": records[0]["task_id"]}
+
+        await run.turn("B", tasks.record_release_check(room, title), kind="nudge")
+        evidence = (await run.read("A", "task_history", **task_args))["events"]
+        if not any(
+            e["kind"] == "progress"
+            and e["actor_member_id"] == b_id
+            and fixture in (e["note"] or "")
+            for e in evidence
+        ):
+            raise Failure(
+                f"B did not record the release evidence. Errors: {run.turn_errors()}"
+            )
+
+        await run.turn("C", tasks.review_release_check(room, title), kind="nudge")
+        task = await run.read("A", "get_task", **task_args)
+        history = (await run.read("A", "task_history", **task_args))["events"]
+        expected = [
+            ("created", a_id),
+            ("joined", b_id),
+            ("progress", b_id),
+            ("joined", c_id),
+            ("progress", c_id),
+            ("finished", c_id),
+        ]
+        if (
+            task["status"] != "finished"
+            or set(task["participant_member_ids"]) != contributors
+            or [(e["kind"], e["actor_member_id"]) for e in history] != expected
+            or fixture not in (history[4]["note"] or "")
+        ):
+            raise Failure(
+                "Durable task history does not show the expected handoff and finish. "
+                f"Errors: {run.turn_errors()}"
+            )
+        return "A assigned the room task, B recorded evidence, C reviewed and finished"
+
+
 SCENARIOS = [
-    Scenario("WE-01", "Two-agent direct exchange", 2, 10, 600, we01),
+    Scenario("WE-01", "Two-agent DM exchange", 2, 4, 600, we01),
     Scenario("WE-02", "Three-agent room with @mentions", 3, 14, 720, we02),
     Scenario("WE-03", "@mention while the Client is offline", 2, 10, 600, we03),
     Scenario(
@@ -381,9 +432,8 @@ SCENARIOS = [
         3,
         0,
         0,
-        we04,
-        skip="Server and MCP have no board-update operation; boards are fixed at "
-        "version 1 (only get_board and ack_board exist).",
+        skip="Covered by the model-free Board mid-conversation check NS-15.04.",
     ),
     Scenario("WE-05", "Five-agent stand-up hand-off chain", 5, 18, 900, we05),
+    Scenario("WE-06", "Three-agent room task handoff", 3, 6, 900, we06),
 ]

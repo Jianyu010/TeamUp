@@ -204,7 +204,11 @@ class Stack:
     """A loopback Server plus one Developer per agent, in a private temp dir."""
 
     def __init__(self, names: list[str]):
-        self.root = Path(tempfile.mkdtemp(prefix="tuw-", dir="/tmp"))
+        self.root = Path(
+            tempfile.mkdtemp(
+                prefix="tuw-", dir=os.environ.get("TEAMUP_SCENARIO_TMPDIR", "/tmp")
+            )
+        )
         self.root.chmod(0o700)
         self.port = available_port()
         self.developers = {

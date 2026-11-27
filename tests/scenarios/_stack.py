@@ -203,13 +203,19 @@ class Proc:
         return self.log.read_text(errors="replace") if self.log.exists() else ""
 
 
+def scenario_temp_dir(prefix):
+    # Keep paths short for the local Unix sockets.
+    base = os.environ.get("TEAMUP_SCENARIO_TMPDIR")
+    if base is None and Path("/tmp").is_dir():
+        base = "/tmp"
+    return Path(tempfile.mkdtemp(prefix=prefix, dir=base))
+
+
 class Workspace:
     """A short /tmp directory plus every process started inside it."""
 
     def __init__(self, prefix="tu-"):
-        # Unix socket paths are length-limited, so stay under /tmp.
-        base = "/tmp" if Path("/tmp").is_dir() else None
-        self.root = Path(tempfile.mkdtemp(prefix=prefix, dir=base))
+        self.root = scenario_temp_dir(prefix)
         self.procs = []
         self._count = 0
 
@@ -272,13 +278,16 @@ def make_certificate(directory):
 
 
 class Server:
-    def __init__(self, ws, keys, *, tls=None, bin_dir=None, db=None, port=None):
+    def __init__(
+        self, ws, keys, *, tls=None, bin_dir=None, db=None, port=None, server_args=()
+    ):
         self.ws = ws
         self.keys = keys
         self.tls = tls
         self.bin_dir = bin_dir
         self.db = Path(db) if db else ws.path("server.db")
         self.port = port or free_port()
+        self.server_args = server_args
         self.proc = None
 
     @property
@@ -291,7 +300,7 @@ class Server:
 
     def start(self):
         argv, env = command("server", self.bin_dir)
-        argv += ["--db", str(self.db), "--port", str(self.port)]
+        argv += ["--db", str(self.db), "--port", str(self.port), *self.server_args]
         if self.tls:
             argv += ["--tls-cert", str(self.tls[0]), "--tls-key", str(self.tls[1])]
         env["TEAMUP_ENROLLMENT_KEYS"] = json.dumps(self.keys)
