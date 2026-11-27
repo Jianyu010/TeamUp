@@ -11,9 +11,9 @@
 | WE-03 | 离线时被 @ | B 的 Client 停止。A @B 后再启动 B 的 Client。B 只收到一条补发通知，被唤醒一次，只回复一次 |
 | WE-04 | 公告中途变更 | 保留历史编号。由 nightly 的 NS-15.04 验证 |
 | WE-05 | 五个 Agent 站会 | Backend 发起，经 Frontend、Tester、Docs 到 Ops 逐级 @ 交接。五方都发过状态 |
-| WE-06 | 三个 Agent 交接房间任务 | Release Lead 创建并指派任务。Tester 领取任务并记录测试夹具编号。Reviewer 从任务历史读取编号，领取任务，记录核验结果并完成任务 |
+| WE-06 | 定向指派与交接房间任务 | Release Lead 设置预计完成时间和完成标准，并指派给 Tester 和 Reviewer。两人各收到一次定向通知。Tester 领取并记录测试夹具编号，Reviewer 读取记录、核验并完成任务。Observer 看不到任务内容 |
 
-WE-06 模拟三人发布核验流程，共六轮。每周负载测试由 `python -m tests.scenarios.perf --suite weekly` 单独运行，使用脚本化参与者覆盖 10、30、50、100 人的任务组。
+WE-06 模拟发布核验流程，有三名协作者和一名观察者，共七轮。每周负载测试由 `python -m tests.scenarios.perf --suite weekly` 单独运行，使用脚本化参与者覆盖 10、30、50、100 人的任务组。
 
 ## Agent 如何接入
 
@@ -36,11 +36,11 @@ TeamUp Client 只有 Claude Code 和 Codex 两种唤醒 driver，没有 opencode
 2. 编排器轮询各 Agent 的记录文件。出现新通知且该 Agent 空闲时，用 `opencode run --session <id>` 在同一会话里启动它的下一轮，提示词说明“你被 @ 了”，并要求先查看通知和房间历史，已回复过则什么也不做。
 3. 所有 Agent 都空闲且判定条件未满足时，等待数秒后判失败，不会反复催促。
 
-DM 通知只保存在 Client 本地，不会自动启动 Agent。WE-01 在问句和回复分别写入 DM 后显式启动 B 和 A 的下一轮。WE-06 在任务创建和测试记录写入后显式启动 Tester 和 Reviewer。
+DM 通知只保存在 Client 本地，不会自动启动 Agent。WE-01 在问句和回复分别写入 DM 后显式启动 B 和 A 的下一轮。WE-06 先通过 MCP 确认两名被指派者收到定向通知，再由编排器启动 Tester 并在测试记录写入后启动 Reviewer。两人通过通知中的房间消息找到任务编号。
 
 ## 判定与指标
 
-判定通过 MCP 读取 TeamUp 状态。房间聊天使用房间历史，用 `board_ack_required` 判断成员是否确认了当前公告。WE-01 以双方身份读取同一个 DM 的历史。WE-06 读取任务记录和事件，核对参与者、事件顺序和完成状态。成员 ID 取自 Agent 自己的 `teamup_register` 结果。
+判定通过 MCP 读取 TeamUp 状态。房间聊天使用房间历史，用 `board_ack_required` 判断成员是否确认了当前公告。WE-01 以双方身份读取同一个 DM 的历史。WE-06 检查通知收件人、指派重试后的消息数量、观察者的访问权限，以及任务的参与者、事件顺序和完成状态。成员 ID 取自 Agent 自己的 `teamup_register` 结果。
 
 每个场景记录以下指标，`labels` 为 `{"scenario": "WE-02", "agents": 3}`：
 

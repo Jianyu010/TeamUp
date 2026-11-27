@@ -206,7 +206,7 @@ def confirm_dm(dm_id: str) -> Task:
 # --- room tasks -------------------------------------------------------------
 
 
-def assign_release_check(room_id: str, title: str) -> Task:
+def assign_release_check(room_id: str, title: str, assignment: dict[str, str]) -> Task:
     description = (
         "Tester records the release smoke test fixture in task progress. "
         "Reviewer checks that progress and finishes the task."
@@ -215,7 +215,10 @@ def assign_release_check(room_id: str, title: str) -> Task:
         f'In room {room_id}, assign a task titled "{title}" to Tester and Reviewer. '
         "Get their member IDs with teamup_list_room_members. Use teamup_create_task "
         "with both IDs in addressed_member_ids and a new client_task_id. "
-        f'Use this description: "{description}"'
+        f'Use this description: "{description}" '
+        f'Set assignment.closing_criteria to "{assignment["closing_criteria"]}" and '
+        f'assignment.eta to "{assignment["eta"]}". '
+        "Creating the assignment sends its own notification. End your turn after creating it."
     )
 
     async def script(ctx):
@@ -226,6 +229,7 @@ def assign_release_check(room_id: str, title: str) -> Task:
             room_id=room_id,
             title=title,
             description=description,
+            assignment=assignment,
             addressed_member_ids=[member_ids["Tester"], member_ids["Reviewer"]],
             client_task_id=ctx.message_id("release-task"),
         )
@@ -233,22 +237,38 @@ def assign_release_check(room_id: str, title: str) -> Task:
     return Task(prompt, script)
 
 
-async def find_room_task(ctx, room_id: str, title: str) -> dict:
+def read_assignment_prompt(room_id: str) -> str:
+    return (
+        "Use teamup_notifications to find the task assignment mention. "
+        f"Read its room message with teamup_read_messages in room {room_id}. "
+        "Use the task number from that message to find the task with teamup_list_tasks. "
+        "Read the task's closing criteria."
+    )
+
+
+async def read_assignment(ctx, room_id: str) -> dict:
+    notices = (await ctx.call("notifications"))["notifications"]
+    [notice] = [row for row in notices if row.get("room_id") == room_id]
+    messages = (await ctx.call("read_messages", room_id=room_id))["messages"]
+    [message] = [row for row in messages if row["message_id"] == notice["message_id"]]
+    number = re.search(r"Task #([0-9]+) assigned", message["text"])
+    if number is None:
+        raise ValueError("Assignment notice lacks a task number")
     records = (await ctx.call("list_tasks", room_id=room_id))["tasks"]
-    [task] = [record for record in records if record["title"] == title]
+    [task] = [record for record in records if record["task_number"] == int(number[1])]
     return {"room_id": room_id, "task_id": task["task_id"]}
 
 
-def record_release_check(room_id: str, title: str) -> Task:
+def record_release_check(room_id: str) -> Task:
     prompt = (
-        f'Use teamup_list_tasks in room {room_id} and take the task titled "{title}" '
-        "with teamup_join_task. Record your private smoke-test result in one "
-        "teamup_report_progress, preserving the exact fixture ID and using a new "
+        f"{read_assignment_prompt(room_id)} "
+        "Use teamup_join_task to accept the task. Record your private smoke-test result in "
+        "one teamup_report_progress, preserving the exact fixture ID and using a new "
         "client_progress_id. Leave the task open for the reviewer."
     )
 
     async def script(ctx):
-        args = await find_room_task(ctx, room_id, title)
+        args = await read_assignment(ctx, room_id)
         await ctx.call("join_task", **args)
         await ctx.call(
             "report_progress",
@@ -260,9 +280,9 @@ def record_release_check(room_id: str, title: str) -> Task:
     return Task(prompt, script)
 
 
-def review_release_check(room_id: str, title: str) -> Task:
+def review_release_check(room_id: str) -> Task:
     prompt = (
-        f'Find the task titled "{title}" in room {room_id} with teamup_list_tasks. '
+        f"{read_assignment_prompt(room_id)} "
         "Use teamup_task_history to read the tester's progress. If the smoke test "
         "passed, use teamup_join_task, then record one note with teamup_report_progress "
         "confirming the result and copying the exact fixture ID from the tester's note. "
@@ -270,7 +290,7 @@ def review_release_check(room_id: str, title: str) -> Task:
     )
 
     async def script(ctx):
-        args = await find_room_task(ctx, room_id, title)
+        args = await read_assignment(ctx, room_id)
         history = (await ctx.call("task_history", **args))["events"]
         [note] = [event["note"] for event in history if event["kind"] == "progress"]
         fixture = re.search(r"\bfixture-[0-9a-f]{8}\b", note)
