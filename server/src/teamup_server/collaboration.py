@@ -1809,6 +1809,10 @@ class Collaboration:
                 "UPDATE accounts SET disabled = 1 WHERE owner_id = ?", (owner_id,)
             )
             self._revoke_account_sessions(connection, owner_id)
+            notified: set[str] = set()
+            for member in connection.execute("SELECT member_id FROM members WHERE owner_id = ?", (owner_id,)):
+                self._recover_member_rooms(connection, member["member_id"], notified)
+        self._notify(notified)
 
     def _managed_account(
         self, connection: sqlite3.Connection, username: str, operator_token: str | None
@@ -2295,8 +2299,8 @@ class Collaboration:
             )
         return {"description": description}
 
-    @staticmethod
-    def _retire(connection: sqlite3.Connection, member_id: str) -> None:
+    def _retire(self, connection: sqlite3.Connection, member_id: str, notified: set[str]) -> None:
+        self._recover_member_rooms(connection, member_id, notified)
         connection.execute(
             """
             INSERT INTO retired_room_access (
@@ -2328,10 +2332,11 @@ class Collaboration:
         )
 
     def retire_member(self, token: str, member_id: str) -> dict:
+        notified = {member_id}
         with self._transaction(write=True) as connection:
             if not self._owned_member(connection, token, member_id)["retired"]:
-                self._retire(connection, member_id)
-        self._notify((member_id,))
+                self._retire(connection, member_id, notified)
+        self._notify(notified)
         return {"member_id": member_id, "retired": True}
 
     @staticmethod
@@ -2345,9 +2350,10 @@ class Collaboration:
     def retire_self(self, token: str) -> dict:
         with self._transaction(write=True) as connection:
             member = _member(connection, token, include_retired=True)
+            notified = {member["member_id"]}
             if not member["retired"]:
-                self._retire(connection, member["member_id"])
-        self._notify((member["member_id"],))
+                self._retire(connection, member["member_id"], notified)
+        self._notify(notified)
         return self._retirement_receipt(member)
 
     def member_retirement(self, token: str) -> dict:
@@ -2938,6 +2944,301 @@ class Collaboration:
             )
         return {"room_id": room_id, "name": name, "history_policy": history_policy}
 
+    def record_leadership_heartbeat(self, token: str) -> None:
+        with self._transaction(write=True) as connection:
+            member_id = _member(connection, token)["member_id"]
+            now = _utc_micros(self._now_datetime())
+            connection.execute(
+                """
+                INSERT INTO leadership_heartbeats (member_id, observed_at) VALUES (?, ?)
+                ON CONFLICT (member_id) DO UPDATE SET observed_at = MAX(observed_at, excluded.observed_at)
+                """,
+                (member_id, now),
+            )
+            connection.execute(
+                """
+                UPDATE room_leadership SET next_check_at = ?
+                WHERE leader_member_id IS NULL AND next_check_at IS NULL AND room_id IN (
+                    SELECT room_id FROM room_members WHERE member_id = ?
+                )
+                """,
+                (now, member_id),
+            )
+
+    @staticmethod
+    def _leadership_actor(
+        connection: sqlite3.Connection, token: str, room_id: str, epoch: int | None = None
+    ) -> sqlite3.Row:
+        actor = _member(connection, token)["member_id"]
+        _room_member(connection, room_id, actor, active=True)
+        state = _room_leader(connection, room_id)
+        if state is None:
+            raise CollaborationError("forbidden")
+        if epoch is not None and state["leadership_epoch"] != epoch:
+            raise CollaborationError("conflict")
+        if state["leader_member_id"] != actor:
+            raise CollaborationError("forbidden")
+        return state
+
+    @staticmethod
+    def _rank_successors(connection: sqlite3.Connection, state: sqlite3.Row, now: int) -> list[dict]:
+        room_id = state["room_id"]
+        incumbent = state["leader_member_id"]
+        previous = incumbent or state["previous_member_id"]
+        _register_expiry_clock(connection)
+        rows = connection.execute(
+            f"""
+            WITH work AS (
+                SELECT msg.sender_member_id AS actor, msg.created_at
+                FROM messages AS msg JOIN rooms AS r ON r.room_id = msg.room_id
+                LEFT JOIN room_members AS viewer ON viewer.room_id = r.room_id AND viewer.member_id = :viewer
+                WHERE r.room_id = :room AND (:automatic OR (
+                    viewer.acked_board_version = r.version AND
+                    (r.history_policy = 'retained' OR msg.message_id > viewer.joined_after)
+                ))
+                UNION ALL
+                SELECT e.actor_member_id, e.created_at FROM task_events AS e JOIN tasks AS t USING (task_id)
+                JOIN rooms AS r ON r.room_id = t.room_id
+                LEFT JOIN room_members AS viewer ON viewer.room_id = r.room_id AND viewer.member_id = :viewer
+                WHERE r.room_id = :room AND (:automatic OR viewer.acked_board_version = r.version)
+                    AND NOT EXISTS (SELECT 1 FROM task_addressees AS ta WHERE ta.task_id = t.task_id)
+            ), latest AS (
+                SELECT actor, MAX(teamup_expiry_micros(created_at)) AS last_active FROM work GROUP BY actor
+            )
+            SELECT {_MEMBER_PROFILE}, rm.membership_id, rm.responsibility, latest.last_active,
+                m.owner_id = (SELECT owner_id FROM members WHERE member_id = :previous) AS same_owner
+            FROM {_PROFILE_TABLES} JOIN room_members AS rm ON rm.member_id = m.member_id
+            JOIN leadership_heartbeats AS h ON h.member_id = m.member_id
+            LEFT JOIN latest ON latest.actor = m.member_id
+            WHERE rm.room_id = :room AND m.member_id IS NOT :viewer AND rm.membership_id IS NOT :blocked
+                AND m.retired = 0 AND COALESCE(a.disabled, 0) = 0 AND h.observed_at > :cutoff
+            ORDER BY m.member_id
+            """,
+            dict(room=room_id, viewer=incumbent, automatic=incumbent is None, previous=previous,
+                 blocked=state["blocked_membership_id"], cutoff=now - _HEARTBEAT_MICROS),
+        )
+        ranked = []
+        for row in rows:
+            profile = _member_profile(row)
+            if row["responsibility"] is not None:
+                profile["description"] = row["responsibility"]
+            leadership_term = bool(_LEADERSHIP_TERMS.search(
+                f"{row['role_description']} {profile.get('description', '')}"
+            ))
+            same_owner = bool(row["same_owner"])
+            active = row["last_active"]
+            profile.update(
+                membership_id=row["membership_id"],
+                reason="leader_profile" if leadership_term else "same_owner" if same_owner else "recent_activity",
+                last_active_at=_rfc3339(_EPOCH + timedelta(microseconds=active)) if active is not None else None,
+            )
+            ranked.append(((not leadership_term, not same_owner, active is None, -(active or 0), row["member_id"]), profile))
+        return [profile for _, profile in sorted(ranked)]
+
+    def room_leadership_candidates(self, token: str, room_id: str) -> dict:
+        with self._transaction() as connection:
+            state = self._leadership_actor(connection, token, room_id)
+            return {
+                "leadership_epoch": state["leadership_epoch"],
+                "candidates": self._rank_successors(connection, state, _utc_micros(self._now_datetime())),
+            }
+
+    @staticmethod
+    def _leadership_receipt(state: sqlite3.Row, *, left: bool = False) -> dict:
+        return {
+            "room_id": state["room_id"], "leader_member_id": state["leader_member_id"],
+            "leadership_epoch": state["leadership_epoch"], "pending": state["pending_kind"] is not None,
+            "left": left,
+        }
+
+    def _appoint_room_leader(
+        self, connection: sqlite3.Connection, state: sqlite3.Row, successor: str | None, now: int,
+        notified: set[str], *, block_unresponsive: bool = False,
+    ) -> sqlite3.Row:
+        room_id = state["room_id"]
+        previous = state["leader_member_id"]
+        blocked = None
+        if block_unresponsive and previous is not None:
+            blocked = _room_member(connection, room_id, previous)["membership_id"]
+        updated = connection.execute(
+            """
+            UPDATE room_leadership SET leader_member_id = ?, previous_member_id = COALESCE(leader_member_id, previous_member_id),
+                leadership_epoch = leadership_epoch + 1, blocked_membership_id = ?, pending_kind = NULL,
+                deadline = NULL, leave_after = 0, challenge_at = ?, next_check_at = ?
+            WHERE room_id = ? RETURNING *
+            """,
+            (successor, blocked, now + _CHALLENGE_INTERVAL, now + _LEADERSHIP_GRACE if successor else None, room_id),
+        ).fetchone()
+        if successor is not None:
+            self._add_room_notice(
+                connection, successor, room_id, "leadership_assigned",
+                f"You now lead room {room_id}. Read its Board, review open tasks and manage the room.",
+                leadership_epoch=updated["leadership_epoch"],
+            )
+            notified.add(successor)
+        return updated
+
+    def _departing_room_leader(
+        self, connection: sqlite3.Connection, state: sqlite3.Row, notified: set[str]
+    ) -> None:
+        now = _utc_micros(self._now_datetime())
+        candidates = self._rank_successors(connection, state, now)
+        successor = candidates[0]["member_id"] if candidates else None
+        self._appoint_room_leader(connection, state, successor, now, notified)
+
+    def _recover_member_rooms(
+        self, connection: sqlite3.Connection, member_id: str, notified: set[str]
+    ) -> None:
+        rows = connection.execute(
+            """
+            SELECT l.* FROM room_leadership AS l JOIN rooms AS r USING (room_id)
+            WHERE l.leader_member_id = ? AND r.archived_at IS NULL
+            """,
+            (member_id,),
+        ).fetchall()
+        for state in rows:
+            self._departing_room_leader(connection, state, notified)
+
+    def _request_leadership_decision(
+        self, connection: sqlite3.Connection, state: sqlite3.Row, kind: str, leave: bool, now: int,
+        notified: set[str],
+    ) -> sqlite3.Row:
+        room_id = state["room_id"]
+        deadline = now + _LEADERSHIP_GRACE
+        updated = connection.execute(
+            """
+            UPDATE room_leadership SET leadership_epoch = leadership_epoch + 1, pending_kind = ?,
+                deadline = ?, next_check_at = ?, leave_after = ? WHERE room_id = ? RETURNING *
+            """,
+            (kind, deadline, deadline, leave, room_id),
+        ).fetchone()
+        epoch = updated["leadership_epoch"]
+        member_id = updated["leader_member_id"]
+        if kind == "defer":
+            notice = "leadership_deferred"
+            instruction = (
+                f"Choose a successor within two minutes. Use teamup_room_leadership_candidates for {room_id}, "
+                f"then teamup_handoff_room_leadership with leadership_epoch {epoch}."
+            )
+        else:
+            notice = "leadership_challenge"
+            instruction = (
+                f"Confirm you are available to lead {room_id} within two minutes. "
+                f"Call teamup_confirm_room_leadership with room_id {room_id} and leadership_epoch {epoch}."
+            )
+        self._add_room_notice(connection, member_id, room_id, notice, instruction, leadership_epoch=epoch)
+        notified.add(member_id)
+        return updated
+
+    def handoff_room_leadership(
+        self, token: str, room_id: str, leadership_epoch: int, mode: str, *,
+        member_id: str | None = None, membership_id: str | None = None, leave: bool = False,
+    ) -> dict:
+        if (
+            type(leadership_epoch) is not int or leadership_epoch < 1 or type(leave) is not bool
+            or mode not in ("choose", "auto", "defer")
+            or (mode == "choose" and not (member_id and membership_id))
+            or (mode != "choose" and (member_id is not None or membership_id is not None))
+        ):
+            raise CollaborationError("invalid_request")
+        notified: set[str] = set()
+        with self._transaction(write=True) as connection:
+            state = self._leadership_actor(connection, token, room_id, leadership_epoch)
+            now = _utc_micros(self._now_datetime())
+            if state["deadline"] is not None and state["deadline"] <= now:
+                raise CollaborationError("conflict")
+            left = False
+            if mode == "defer":
+                if state["pending_kind"] != "defer":
+                    state = self._request_leadership_decision(connection, state, "defer", leave, now, notified)
+                elif leave != bool(state["leave_after"]):
+                    raise CollaborationError("conflict")
+            else:
+                candidates = self._rank_successors(connection, state, now)
+                if mode == "choose":
+                    candidates = [
+                        row for row in candidates
+                        if (row["member_id"], row["membership_id"]) == (member_id, membership_id)
+                    ]
+                if not candidates:
+                    raise CollaborationError("conflict")
+                previous = state["leader_member_id"]
+                left = bool(leave or state["leave_after"])
+                state = self._appoint_room_leader(connection, state, candidates[0]["member_id"], now, notified)
+                if left:
+                    self._end_room_membership(connection, room_id, previous, None, notify=True)
+                    notified.add(previous)
+        self._notify(notified)
+        return self._leadership_receipt(state, left=left)
+
+    def confirm_room_leadership(self, token: str, room_id: str, leadership_epoch: int) -> dict:
+        if type(leadership_epoch) is not int or leadership_epoch < 1:
+            raise CollaborationError("invalid_request")
+        with self._transaction(write=True) as connection:
+            state = self._leadership_actor(connection, token, room_id, leadership_epoch)
+            now = _utc_micros(self._now_datetime())
+            if state["pending_kind"] != "challenge" or state["deadline"] <= now:
+                raise CollaborationError("conflict")
+            state = connection.execute(
+                """
+                UPDATE room_leadership SET leadership_epoch = leadership_epoch + 1, pending_kind = NULL,
+                    deadline = NULL, challenge_at = ?, next_check_at = ? WHERE room_id = ? RETURNING *
+                """,
+                (now + _CHALLENGE_INTERVAL, now + _LEADERSHIP_GRACE, room_id),
+            ).fetchone()
+        return self._leadership_receipt(state)
+
+    def _sweep_leader(
+        self, connection: sqlite3.Connection, state: sqlite3.Row, now: int, notified: set[str]
+    ) -> None:
+        room_id = state["room_id"]
+        incumbent = state["leader_member_id"]
+        kind = state["pending_kind"]
+        if incumbent is not None and kind is None:
+            heartbeat = connection.execute(
+                "SELECT observed_at FROM leadership_heartbeats WHERE member_id = ?", (incumbent,)
+            ).fetchone()
+            lost = heartbeat is not None and heartbeat[0] + _LEADERSHIP_GRACE <= now
+            if not lost:
+                if now >= state["challenge_at"]:
+                    self._request_leadership_decision(connection, state, "challenge", False, now, notified)
+                else:
+                    connection.execute(
+                        "UPDATE room_leadership SET next_check_at = ? WHERE room_id = ?",
+                        (min(state["challenge_at"], (heartbeat[0] if heartbeat else now) + _LEADERSHIP_GRACE), room_id),
+                    )
+                return
+        candidates = self._rank_successors(connection, state, now)
+        successor = candidates[0]["member_id"] if candidates else None
+        if not successor and (kind == "defer" or incumbent is None):
+            connection.execute(
+                "UPDATE room_leadership SET next_check_at = ? WHERE room_id = ?",
+                (now + _HEARTBEAT_MICROS if kind else None, room_id),
+            )
+            return
+        self._appoint_room_leader(connection, state, successor, now, notified,
+                                 block_unresponsive=kind == "challenge")
+        if state["leave_after"]:
+            self._end_room_membership(connection, room_id, incumbent, None, notify=True)
+            notified.add(incumbent)
+
+    def sweep_room_leadership(self) -> bool:
+        notified: set[str] = set()
+        with self._transaction(write=True) as connection:
+            now = _utc_micros(self._now_datetime())
+            rows = connection.execute(
+                """
+                SELECT l.* FROM room_leadership AS l JOIN rooms AS r USING (room_id)
+                WHERE l.next_check_at <= ? AND r.archived_at IS NULL
+                ORDER BY l.next_check_at, l.room_id LIMIT ?
+                """,
+                (now, _LEADERSHIP_BATCH),
+            ).fetchall()
+            for state in rows:
+                self._sweep_leader(connection, state, now, notified)
+        self._notify(notified)
+        return len(rows) == _LEADERSHIP_BATCH
+
     def join_room(self, token: str, room_id: str) -> dict:
         with self._transaction(write=True) as connection:
             member_id = _member(connection, token)["member_id"]
@@ -2957,6 +3258,10 @@ class Collaboration:
                 (room_id, member_id, room_id, uuid4().hex),
             )
             if joined.rowcount:
+                connection.execute(
+                    "UPDATE room_leadership SET next_check_at = ? WHERE room_id = ? AND leader_member_id IS NULL",
+                    (_utc_micros(self._now_datetime()), room_id),
+                )
                 _record_activity(
                     connection, room_id, "member_joined", member_id, _rfc3339_utc_now()
                 )
@@ -2977,11 +3282,16 @@ class Collaboration:
                 (room_id,),
             ).fetchone():
                 _room_member(connection, room_id, member_id, active=True)
+            notified: set[str] = set()
+            state = _room_leader(connection, room_id)
+            if state is not None and state["leader_member_id"] == member_id:
+                self._departing_room_leader(connection, state, notified)
             event_id = self._end_room_membership(
                 connection, room_id, member_id, membership_id, notify=notify
             )
-        if event_id is not None:
-            self._notify((member_id,))
+            if event_id is not None:
+                notified.add(member_id)
+        self._notify(notified)
         return (
             {"room_id": room_id, "departure_event_id": event_id}
             if notify
@@ -2996,11 +3306,16 @@ class Collaboration:
             _room_member(connection, room_id, actor["member_id"], active=True)
             if not _has_room_leadership(connection, room_id, actor["member_id"]):
                 raise CollaborationError("forbidden")
+            notified: set[str] = set()
+            state = _room_leader(connection, room_id)
+            if state is not None and state["leader_member_id"] == member_id:
+                self._departing_room_leader(connection, state, notified)
             event_id = self._end_room_membership(
                 connection, room_id, member_id, membership_id, notify=True
             )
-        if event_id is not None:
-            self._notify((member_id,))
+            if event_id is not None:
+                notified.add(member_id)
+        self._notify(notified)
         return {
             "room_id": room_id,
             "member_id": member_id,
