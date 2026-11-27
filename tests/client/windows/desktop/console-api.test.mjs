@@ -54,3 +54,30 @@ test('does not recast authorization or connection errors as an unsupported capab
   await assert.rejects(api('GET',url(roomPath)),/unauthorized/);
   assert.deepEqual(await api('GET',url(roomPath.replace('local-mcp','unknown'))),{state:'not_found'});
 });
+
+test('routes focused actions through the selected MCP binding',async()=>{
+  const calls=[];
+  const api=makeConsoleApi(async queries=>queries.map(([tool,args])=>{
+    calls.push([tool,args]);
+    switch(tool) {
+      case 'teamup_list_rooms':
+        return {rooms:[{room_id:room,name:'Team chat',leader_member_id:me,leadership_epoch:7}]};
+      case 'teamup_find_members':
+        return {members:directory};
+      case 'teamup_room_leadership_candidates':
+        return {candidates:[],leadership_epoch:7};
+      case 'teamup_handoff_room_leadership':
+        return {left:false,pending:true};
+      default: throw new Error('Unexpected MCP call: '+tool);
+    }
+  }),{memberId:me});
+  const endpoint='/api/room-leadership?session=local-mcp&room='+room;
+  assert.equal((await api('GET',url('/api/workspace'))).rooms[0].leadership_epoch,7);
+  assert.deepEqual(await api('GET',url(endpoint)),{state:'ready',candidates:[],leadership_epoch:7});
+  const body={mode:'defer',leadership_epoch:7,leave:true};
+  assert.deepEqual(await api('POST',url(endpoint),async()=>body),{state:'ready',left:false,pending:true});
+  assert.deepEqual(calls.slice(-2),[
+    ['teamup_room_leadership_candidates',{room_id:room}],
+    ['teamup_handoff_room_leadership',{room_id:room,...body}],
+  ]);
+});

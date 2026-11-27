@@ -25,7 +25,7 @@ test("serves the bundled console without a running Client", async () => {
   assert.match(html, /id="board-toggle"[^>]*aria-controls="board-panel"[^>]*aria-expanded="false"/);
   assert.match(html, /id="room-id"[\s\S]*id="board-panel"[^>]*hidden/);
   assert.doesNotMatch(html, /id="room-session-actions"/);
-  for (const asset of ["/console-members.js", "/console-history.mjs", "/console-board.js", "/console-sessions.js"]) {
+  for (const asset of ["/console-members.js", "/console-history.mjs", "/console-board.js", "/console-sessions.js", "/console-focused-rooms.mjs"]) {
     const script = await handle(new Request(origin + asset));
     assert.equal(script.status, 200);
     assert.equal(script.headers.get("Content-Type"), "text/javascript; charset=utf-8");
@@ -93,6 +93,11 @@ test("relays named reads and writes with the main process credential", async (t)
   assert.deepEqual(await roster.json(), { state: "ready" });
   assert.equal((await handle(consoleRequest(roomMembers, { method: "POST" }))).status, 404);
   assert.equal((await handle(consoleRequest(roomMembers, {}, "https://example.com"))).status, 403);
+
+  const leadership = "/api/room-leadership?room=01234567-89ab-4cde-8123-456789abcdef&session=local";
+  assert.equal((await handle(consoleRequest(leadership))).status, 200);
+  assert.equal((await handle(consoleRequest(leadership, { method: "POST" }))).status, 409);
+  assert.equal((await handle(consoleRequest(leadership, { method: "POST" }, "https://example.com"))).status, 403);
 
   const versions = await handle(consoleRequest("/api/versions"));
   assert.equal(versions.status, 200);

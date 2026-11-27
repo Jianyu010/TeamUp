@@ -102,6 +102,10 @@ def _profile_fields(member: dict) -> dict:
     }
 
 
+def _linked_room_fields(room: dict) -> dict:
+    return {field: room[field] for field in ("parent_room_id", "created_at", "expires_at") if field in room}
+
+
 def _member_with_presence(member: dict, presence: dict[str, dict]) -> dict:
     identifier = member["member_id"]
     return {
@@ -351,10 +355,15 @@ class ConsoleReader:
                         "name": room["name"],
                         "latest_message_id": latest,
                         "memberships": [],
+                        **_linked_room_fields(room),
                     },
                 )
                 if latest is not None and (shared["latest_message_id"] or 0) < latest:
                     shared["latest_message_id"] = latest
+                epoch = room.get("leadership_epoch")
+                if type(epoch) is int and epoch >= shared.get("leadership_epoch", 0):
+                    shared["leadership_epoch"] = epoch
+                    shared["leader_member_id"] = room.get("leader_member_id")
                 if room.get("can_remove_members") is True:
                     permissions = {"can_remove_members": True}
                 else:
@@ -427,6 +436,7 @@ class ConsoleReader:
                         "name": entry["name"],
                         "latest_message_id": None,
                         "memberships": [],
+                        **_linked_room_fields(entry),
                     },
                 )
                 room["history_policy"] = entry["history_policy"]
@@ -595,6 +605,27 @@ class ConsoleReader:
             return {"state": exc.code}
         return {"state": "ready", "board": board}
 
+    async def focused_room_read(
+        self, identity: str, room_id: str, operation: str, query: dict | None
+    ) -> dict:
+        session = self._current(identity)
+        if session is None:
+            return {"state": "not_found"}
+        try:
+            result = await self._read(session, f"/rooms/{room_id}/{operation}", query)
+        except ClientError as exc:
+            return {"state": exc.code}
+        return {"state": "ready", **result}
+
+    async def focused_room_write(
+        self, identity: str, room_id: str, operation: str, body: dict
+    ) -> dict:
+        try:
+            result = await self._write(identity, f"/rooms/{room_id}/{operation}", body)
+        except ClientError as exc:
+            return {"state": exc.code}
+        return {"state": "ready", **result}
+
     async def archive_room(self, identity: str, room_id: str) -> dict:
         try:
             result = await self._write(identity, f"/rooms/{room_id}/archive", None)
@@ -637,6 +668,7 @@ class ConsoleReader:
         return {
             "state": "ready",
             "members": roster,
+            **_linked_room_fields(detail),
             "history_state": "ready" if history else "board_ack_required",
             "history_truncated": bool(history and history.get("history_truncated")),
             "messages": [_message(item, members) for item in messages],

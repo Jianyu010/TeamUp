@@ -1157,3 +1157,104 @@ def test_desktop_admin_session_requires_private_socket_and_launcher_authorizatio
                 assert response.json()["session"] == {"access_token": "scoped-console"}
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "route,suffix,body",
+    [
+        ("room-invitations", "invitations", {"member_id": REMOTE, "client_request_id": "invite"}),
+        ("child-rooms", "children", {"name": "Investigate", "client_request_id": "new-child"}),
+        ("room-lease", "lease/extend", {"seconds": 3600, "expected_expires_at": "2026-11-29T00:00:00Z"}),
+        ("room-leadership", "leadership/handoff", {
+            "leadership_epoch": 7, "mode": "choose", "leave": True,
+            "member_id": REVIEWER, "membership_id": "a" * 32,
+        }),
+    ],
+)
+def test_focused_room_write_uses_exact_origin_and_requested_approved_session(route, suffix, body):
+    async def scenario():
+        actor = "9" * 64
+        active = [ConsoleSession(actor, "codex", "api", "selected-secret")]
+        calls = []
+
+        async def upstream(method, path, token, *, query=None, body=None):
+            calls.append((method, path, token, query, body))
+            if body.get("client_request_id") == "conflict":
+                raise ClientError("conflict", "Conflicting request")
+            return {"room_id": ROOM}
+
+        async with (
+            serve_console(ConsoleReader(lambda: tuple(active), upstream)) as url,
+            httpx.AsyncClient(trust_env=False) as client,
+        ):
+            origin, token = url.split("#")
+            address = origin + "api/" + route
+            params = {"session": actor, "room": ROOM}
+            auth = {"Authorization": "Bearer " + token}
+            blocked = await client.post(address, params=params, json=body, headers=auth)
+            assert blocked.status_code == 403
+            auth["Origin"] = origin.rstrip("/")
+            accepted = await client.post(address, params=params, json=body, headers=auth)
+            assert accepted.status_code == 200
+            assert accepted.json() == {"state": "ready", "room_id": ROOM}
+            assert calls == [("POST", f"/rooms/{ROOM}/{suffix}", "selected-secret", None, body)]
+            active.clear()
+            missing = await client.post(address, params=params, json=body, headers=auth)
+            assert missing.status_code == 404
+            assert len(calls) == 1
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("route,suffix", [("child-rooms", "children"), ("room-leadership", "leadership/candidates")])
+def test_focused_room_reads_keep_the_selected_scope(route, suffix):
+    async def scenario():
+        actor = "9" * 64
+        calls = []
+        active = ConsoleSession(actor, "codex", "api", "selected-secret")
+
+        async def upstream(method, path, token, *, query=None):
+            calls.append((method, path, token, query))
+            return {"rooms": [], "next_after": None} if route == "child-rooms" else {
+                "candidates": [], "leadership_epoch": 7,
+            }
+
+        async with (
+            serve_console(ConsoleReader(lambda: (active,), upstream)) as url,
+            httpx.AsyncClient(trust_env=False) as client,
+        ):
+            origin, token = url.split("#")
+            address = origin + "api/" + route
+            child_query = {"after": DISCOVERABLE_ROOM} if route == "child-rooms" else {}
+            params = {"session": actor, "room": ROOM, **child_query}
+            blocked = await client.get(address, params=params)
+            assert blocked.status_code == 401
+            page = await client.get(address, params=params, headers={"Authorization": "Bearer " + token})
+            assert page.status_code == 200
+            assert page.json()["state"] == "ready"
+            assert calls == [("GET", f"/rooms/{ROOM}/{suffix}", "selected-secret", child_query or None)]
+
+    asyncio.run(scenario())
+
+
+def test_focused_room_workspace_preserves_joined_leadership_and_lease_metadata():
+    async def scenario():
+        upstream = Upstream()
+        lease = {
+            "parent_room_id": DISCOVERABLE_ROOM,
+            "created_at": "2026-11-28T19:00:00Z",
+            "expires_at": "2026-11-29T00:00:00Z",
+        }
+
+        async def request(method, path, token, *, query=None):
+            data = await upstream(method, path, token, query=query)
+            if path == "/rooms":
+                data["rooms"][0].update(leader_member_id=BACKEND, leadership_epoch=7, **lease)
+            return data
+
+        result = await ConsoleReader(sessions, request).workspace()
+        assert {name: result["rooms"][0][name] for name in lease} == lease
+        assert result["rooms"][0]["leader_member_id"] == BACKEND
+        assert result["rooms"][0]["leadership_epoch"] == 7
+
+    asyncio.run(scenario())
