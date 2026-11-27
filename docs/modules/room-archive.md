@@ -1,6 +1,6 @@
 # Room archive
 
-The room leader can mark the room’s goal reached. A root room also closes after 24 elapsed hours without a new committed chat, measured from its creation when empty. Joins, Board changes, tasks, delivery acknowledgments, and retries do not extend the deadline. The server runs the inactivity sweep at startup and every 15 seconds, with immediate successive batches while more rooms may be due. [Child rooms](focused-rooms.md#child-rooms-and-renewal) close on their own lease, and a root room stays open while any linked child is live. A new chat at or after the deadline is rejected even between sweeps.
+The room leader can mark the room’s goal reached. A root room also closes after 24 elapsed hours without a new committed chat, measured from its creation when empty. Work brought in from a closed child starts a new 24-hour interval so the parent can act on it. Joins, Board changes, ordinary task changes, delivery acknowledgments, and retries do not extend the deadline. The server runs the inactivity sweep at startup and every 15 seconds, with immediate successive batches while more rooms may be due. [Child rooms](focused-rooms.md#child-rooms-and-renewal) close on their own lease, and a root room stays open while any linked child is live. A new chat at or after the deadline is rejected even between sweeps.
 
 ## Ownership and storage
 
