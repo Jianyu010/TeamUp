@@ -109,7 +109,7 @@ _INBOX = """
 _TASK = """
     t.task_id, t.task_number, t.room_id, t.creator_member_id, t.title,
     t.description, t.status, t.version, t.created_at, t.updated_at,
-    t.started_at, t.last_progress_at, t.finished_at
+    t.started_at, t.last_progress_at, t.finished_at, a.closing_criteria, a.eta
 """
 _VISIBLE_TASK = """
     (
@@ -602,6 +602,15 @@ def _migrate_room_tasks(connection: sqlite3.Connection) -> None:
         )
     elif row["version"] != 1:
         raise ValueError("Unsupported room task schema version")
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS task_assignments (
+            task_id TEXT PRIMARY KEY REFERENCES tasks(task_id),
+            closing_criteria TEXT NOT NULL,
+            eta TEXT
+        )
+        """
+    )
 
 
 def _seed_id_counters(connection: sqlite3.Connection) -> None:
@@ -1086,7 +1095,11 @@ def _task_row(
     connection: sqlite3.Connection, room_id: str, task_id: str
 ) -> sqlite3.Row | None:
     return connection.execute(
-        f"SELECT {_TASK} FROM tasks AS t WHERE t.room_id = ? AND t.task_id = ?",
+        f"""
+        SELECT {_TASK} FROM tasks AS t
+        LEFT JOIN task_assignments AS a USING (task_id)
+        WHERE t.room_id = ? AND t.task_id = ?
+        """,
         (room_id, task_id),
     ).fetchone()
 
@@ -1161,17 +1174,7 @@ def _reminder_eligible(
         return False
     if not _task_visible(connection, task, member_id):
         return False
-    enabled = connection.execute(
-        """
-        SELECT 1 FROM members AS m
-        WHERE m.member_id = ? AND NOT EXISTS (
-            SELECT 1 FROM accounts AS a
-            WHERE a.owner_id = m.owner_id AND a.disabled = 1
-        )
-        """,
-        (member_id,),
-    ).fetchone()
-    if enabled is None:
+    if _available_member(connection, member_id) is None:
         return False
     membership = connection.execute(
         """
@@ -1183,6 +1186,8 @@ def _reminder_eligible(
     ).fetchone()
     if membership is None:
         return False
+    if task["closing_criteria"] is not None and member_id == task["creator_member_id"]:
+        return True
     return (
         connection.execute(
             """
@@ -1199,37 +1204,41 @@ def _task_reminder_recipients(
     connection: sqlite3.Connection, task: sqlite3.Row
 ) -> list[str]:
     return [
-        row[0]
+        row["member_id"]
         for row in connection.execute(
             """
-            SELECT tp.member_id
-            FROM task_participants AS tp
-            JOIN tasks AS t ON t.task_id = tp.task_id
-            JOIN members AS m ON m.member_id = tp.member_id
+            WITH candidates(member_id) AS (
+                SELECT member_id FROM task_participants WHERE task_id = ?
+                UNION
+                SELECT ? WHERE ? IS NOT NULL
+            )
+            SELECT c.member_id
+            FROM candidates AS c
+            JOIN members AS m ON m.member_id = c.member_id
             JOIN room_members AS rm
-                ON rm.room_id = ? AND rm.member_id = tp.member_id
+                ON rm.room_id = ? AND rm.member_id = c.member_id
             JOIN rooms AS r ON r.room_id = rm.room_id
-            WHERE tp.task_id = ?
-                AND rm.acked_board_version = r.version
+            WHERE rm.acked_board_version = r.version AND m.retired = 0
                 AND NOT EXISTS (
                     SELECT 1 FROM accounts AS a
                     WHERE a.owner_id = m.owner_id AND a.disabled = 1
                 )
                 AND (
-                    t.creator_member_id = tp.member_id
+                    c.member_id = ?
                     OR NOT EXISTS (
-                        SELECT 1 FROM task_addressees AS a
-                        WHERE a.task_id = t.task_id
+                        SELECT 1 FROM task_addressees AS a WHERE a.task_id = ?
                     )
                     OR EXISTS (
                         SELECT 1 FROM task_addressees AS a
-                        WHERE a.task_id = t.task_id
-                            AND a.member_id = tp.member_id
+                        WHERE a.task_id = ? AND a.member_id = c.member_id
                     )
                 )
-            ORDER BY tp.member_id
+            ORDER BY c.member_id
             """,
-            (task["room_id"], task["task_id"]),
+            (
+                task["task_id"], task["creator_member_id"], task["closing_criteria"],
+                task["room_id"], task["creator_member_id"], task["task_id"], task["task_id"],
+            ),
         )
     ]
 
@@ -1277,7 +1286,7 @@ def _task_projection(
     now: datetime,
 ) -> dict:
     task_id = task["task_id"]
-    return {
+    projection = {
         "task_id": task_id,
         "task_number": task["task_number"],
         "room_id": task["room_id"],
@@ -1295,6 +1304,12 @@ def _task_projection(
         "finished_at": task["finished_at"],
         "stalled_since": _task_stalled_since(task, stall_after, now),
     }
+    if task["closing_criteria"] is not None:
+        projection["assignment"] = {
+            "closing_criteria": task["closing_criteria"],
+            "eta": task["eta"],
+        }
+    return projection
 
 
 def _authorized_task(
@@ -3215,89 +3230,105 @@ class Collaboration:
                 ):
                     raise CollaborationError("conflict")
                 return message
-            recipients = [
-                row["member_id"]
-                for row in connection.execute(
-                    """
-                    SELECT member_id FROM room_members
-                    WHERE room_id = ? AND member_id != ? ORDER BY member_id
-                    """,
-                    (room_id, sender),
-                )
-            ]
-            if not set(targets).issubset(recipients):
-                raise CollaborationError("invalid_mention")
-            now = self._now_datetime()
-            stamp = _utc_micros(now)
-            if stamp - room["last_chat_at"] >= _ROOM_IDLE_MICROS:
-                raise CollaborationError("room_archived")
-            created_at = _rfc3339(now)
-            connection.execute(
-                "UPDATE rooms SET last_chat_at = MAX(last_chat_at, ?) WHERE room_id = ?",
-                (stamp, room_id),
+            message, visible_recipients = self._write_room_message(
+                connection, room_id, room, sender, client_message_id, text, targets,
+                self._now_datetime(),
             )
-            message_id = _next_id(connection, "message_id")
-            connection.execute(
-                """
-                INSERT INTO messages (
-                    message_id, room_id, sender_member_id, client_message_id, text,
-                    mention_member_id, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    message_id,
-                    room_id,
-                    sender,
-                    client_message_id,
-                    text,
-                    targets[0] if targets else None,
-                    created_at,
-                ),
-            )
-            connection.executemany(
-                """
-                INSERT INTO room_message_additional_mentions (message_id, position, member_id)
-                VALUES (?, ?, ?)
-                """,
-                (
-                    (message_id, pos, member)
-                    for pos, member in enumerate(targets[1:], 1)
-                ),
-            )
-            _record_activity(
-                connection, room_id, "message", sender, created_at, message_id
-            )
-            for recipient in recipients:
-                connection.execute(
-                    """
-                    INSERT INTO inbox_events (event_id, member_id, message_id, kind)
-                    VALUES (?, ?, ?, ?)
-                    """,
-                    (
-                        _next_id(connection, "event_id"),
-                        recipient,
-                        message_id,
-                        "mention" if recipient in targets else "message",
-                    ),
-                )
-            message = _room_message(
-                connection.execute(
-                    f"SELECT {_MESSAGE}, {_ADDITIONAL_MENTIONS} FROM messages AS m WHERE m.message_id = ?",
-                    (message_id,),
-                ).fetchone()
-            )
-            visible_recipients = [
-                row["member_id"]
-                for row in connection.execute(
-                    """
-                    SELECT rm.member_id FROM room_members AS rm JOIN rooms AS r USING (room_id)
-                    WHERE rm.room_id = ? AND rm.member_id != ? AND rm.acked_board_version = r.version
-                    """,
-                    (room_id, sender),
-                )
-            ]
         self._notify(visible_recipients)
         return message
+
+    def _write_room_message(
+        self,
+        connection: sqlite3.Connection,
+        room_id: str,
+        room: sqlite3.Row,
+        sender: str,
+        client_message_id: str,
+        text: str,
+        targets: list[str],
+        now: datetime,
+    ) -> tuple[dict, list[str]]:
+        recipients = [
+            row["member_id"]
+            for row in connection.execute(
+                """
+                SELECT member_id FROM room_members
+                WHERE room_id = ? AND member_id != ? ORDER BY member_id
+                """,
+                (room_id, sender),
+            )
+        ]
+        if not set(targets).issubset(recipients):
+            raise CollaborationError("invalid_mention")
+        stamp = _utc_micros(now)
+        if stamp - room["last_chat_at"] >= _ROOM_IDLE_MICROS:
+            raise CollaborationError("room_archived")
+        created_at = _rfc3339(now)
+        connection.execute(
+            "UPDATE rooms SET last_chat_at = MAX(last_chat_at, ?) WHERE room_id = ?",
+            (stamp, room_id),
+        )
+        message_id = _next_id(connection, "message_id")
+        connection.execute(
+            """
+            INSERT INTO messages (
+                message_id, room_id, sender_member_id, client_message_id, text,
+                mention_member_id, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                message_id,
+                room_id,
+                sender,
+                client_message_id,
+                text,
+                targets[0] if targets else None,
+                created_at,
+            ),
+        )
+        connection.executemany(
+            """
+            INSERT INTO room_message_additional_mentions (message_id, position, member_id)
+            VALUES (?, ?, ?)
+            """,
+            (
+                (message_id, pos, member)
+                for pos, member in enumerate(targets[1:], 1)
+            ),
+        )
+        _record_activity(
+            connection, room_id, "message", sender, created_at, message_id
+        )
+        for recipient in recipients:
+            connection.execute(
+                """
+                INSERT INTO inbox_events (event_id, member_id, message_id, kind)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    _next_id(connection, "event_id"),
+                    recipient,
+                    message_id,
+                    "mention" if recipient in targets else "message",
+                ),
+            )
+        message = _room_message(
+            connection.execute(
+                f"SELECT {_MESSAGE}, {_ADDITIONAL_MENTIONS} FROM messages AS m WHERE m.message_id = ?",
+                (message_id,),
+            ).fetchone()
+        )
+        visible_recipients = [
+            row["member_id"]
+            for row in connection.execute(
+                """
+                SELECT rm.member_id FROM room_members AS rm JOIN rooms AS r USING (room_id)
+                WHERE rm.room_id = ? AND rm.member_id != ? AND rm.acked_board_version = r.version
+                """,
+                (room_id, sender),
+            )
+        ]
+        return message, visible_recipients
 
     def open_dm(self, token: str, peer_member_id: str) -> dict:
         with self._transaction(write=True) as connection:
@@ -3568,15 +3599,25 @@ class Collaboration:
         title: str,
         description: str | None,
         addressed_member_ids: Iterable[str] | None,
+        assignment: dict[str, str | None] | None = None,
     ) -> dict:
+        visible_recipients: list[str] = []
         with self._transaction(write=True) as connection:
             member_id = _member(connection, token)["member_id"]
             membership = _room_member(connection, room_id, member_id, active=True)
             _require_current_board(membership)
             raw_addressees = list(addressed_member_ids or ())
-            fingerprint = _task_fingerprint(
-                ("create", room_id, title, description, sorted(raw_addressees))
+            fingerprint_values: list[object] = [
+                "create", room_id, title, description, sorted(raw_addressees)
+            ]
+            assignment_details = (
+                (assignment["closing_criteria"], assignment.get("eta"))
+                if assignment is not None
+                else None
             )
+            if assignment_details is not None:
+                fingerprint_values.extend(assignment_details)
+            fingerprint = _task_fingerprint(fingerprint_values)
             retry = connection.execute(
                 """
                 SELECT task_id, fingerprint FROM task_retries
@@ -3593,7 +3634,8 @@ class Collaboration:
                     raise CollaborationError("not_found")
                 return self._projection(connection, task)
             addressees = _validated_addressees(connection, room_id, raw_addressees)
-            now = self._now()
+            now_datetime = self._now_datetime()
+            now = _rfc3339(now_datetime)
             task_id = str(uuid4())
             task_number = connection.execute(
                 """
@@ -3627,6 +3669,25 @@ class Collaboration:
                     "INSERT INTO task_addressees (task_id, member_id) VALUES (?, ?)",
                     (task_id, addressee),
                 )
+            if assignment_details is not None:
+                targets = [addressee for addressee in addressees if addressee != member_id]
+                if not 1 <= len(targets) <= 16 or any(
+                    _available_member(connection, target) is None for target in targets
+                ):
+                    raise CollaborationError("invalid_request")
+                closing_criteria, eta = assignment_details
+                connection.execute(
+                    "INSERT INTO task_assignments (task_id, closing_criteria, eta) VALUES (?, ?, ?)",
+                    (task_id, closing_criteria, eta),
+                )
+                text = f"Task #{task_number} assigned. Read the task and join to accept."
+                if eta is None:
+                    text += " Record your ETA as task progress or reply privately."
+                client_message_id = self._assignment_message_key(connection, member_id, task_id)
+                _, visible_recipients = self._write_room_message(
+                    connection, room_id, membership, member_id, client_message_id, text,
+                    targets, now_datetime,
+                )
             _add_task_event(connection, task_id, member_id, "created", now)
             connection.execute(
                 """
@@ -3639,7 +3700,28 @@ class Collaboration:
             task = _task_row(connection, room_id, task_id)
             if task is None:
                 raise CollaborationError("not_found")
-            return self._projection(connection, task)
+            result = self._projection(connection, task)
+        if visible_recipients:
+            self._notify(visible_recipients)
+        return result
+
+    @staticmethod
+    def _assignment_message_key(
+        connection: sqlite3.Connection, sender: str, task_id: str
+    ) -> str:
+        prefix = f"task-assignment-{task_id}"
+        key = prefix
+        # Ordinary room posts can use any valid retry key. Choose an unused key
+        # under the same write lock rather than reusing an unrelated receipt.
+        while connection.execute(
+            """
+            SELECT 1 FROM messages
+            WHERE sender_member_id = ? AND client_message_id = ? AND room_id IS NOT NULL
+            """,
+            (sender, key),
+        ).fetchone():
+            key = f"{prefix}-{uuid4()}"
+        return key
 
     def list_tasks(
         self,
@@ -3666,6 +3748,7 @@ class Collaboration:
             rows = connection.execute(
                 f"""
                 SELECT {_TASK} FROM tasks AS t
+                LEFT JOIN task_assignments AS a USING (task_id)
                 WHERE t.room_id = ? AND t.task_number > ?{status_filter}
                     AND {_VISIBLE_TASK}
                 ORDER BY t.task_number
@@ -3886,6 +3969,7 @@ class Collaboration:
             tasks = connection.execute(
                 f"""
                 SELECT {_TASK} FROM tasks AS t
+                LEFT JOIN task_assignments AS a USING (task_id)
                 WHERE t.status = 'open' AND t.started_at IS NOT NULL
                     AND t.task_id > ?
                     AND EXISTS (
@@ -3996,6 +4080,7 @@ class Collaboration:
                         r.stalled_since, {_TASK}
                     FROM task_reminders AS r
                     JOIN tasks AS t ON t.task_id = r.task_id
+                    LEFT JOIN task_assignments AS a ON a.task_id = t.task_id
                     WHERE r.member_id = ? AND r.claimed_at IS NULL
                         AND r.reminder_id > ?
                     ORDER BY r.reminder_id
@@ -4026,6 +4111,7 @@ class Collaboration:
                     r.stalled_since, {_TASK}
                 FROM task_reminders AS r
                 JOIN tasks AS t ON t.task_id = r.task_id
+                LEFT JOIN task_assignments AS a ON a.task_id = t.task_id
                 WHERE r.reminder_id = ? AND r.member_id = ?
                     AND r.claimed_at IS NULL
                 """,

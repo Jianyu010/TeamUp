@@ -397,3 +397,34 @@ def test_a_rolled_back_reminder_scan_retries_the_same_page(tmp_path, monkeypatch
         instance.scan_task_reminders()
     monkeypatch.setattr(module, "_task_reminder_recipients", original)
     assert instance.scan_task_reminders() == [members["target"]["member_id"]]
+
+
+def test_assignment_creator_traces_stalled_work_without_joining(tmp_path):
+    clock = Clock()
+    instance = collaboration(tmp_path, clock)
+    members, room_id = team(instance)
+    sender = members["sender"]["member_id"]
+    target = members["target"]["member_id"]
+    task = instance.create_task(
+        token("sender"),
+        room_id,
+        "assigned",
+        "Check API",
+        None,
+        [sender, target],
+        assignment={"closing_criteria": "Checks pass"},
+    )
+    clock.advance(60)
+    assert instance.scan_task_reminders() == []
+    instance.join_task(token("target"), room_id, task["task_id"])
+    clock.advance(60)
+    assert instance.scan_task_reminders() == sorted([sender, target])
+    for label in ("sender", "target"):
+        (reminder,) = instance.task_reminders(token(label))
+        assert reminder["task_id"] == task["task_id"]
+        assert instance.claim_task_reminder(token(label), reminder["reminder_id"]) == reminder
+
+    instance.join_task(token("sender"), room_id, task["task_id"])
+    clock.advance(300)
+    assert instance.scan_task_reminders() == sorted([sender, target])
+    assert len(instance.task_reminders(token("sender"))) == 1

@@ -221,11 +221,17 @@ class _Message(_Body):
     ] = Field(default_factory=list)
 
 
+class _TaskAssignment(_Body):
+    closing_criteria: _LongText
+    eta: _ShortText | None = None
+
+
 class _TaskCreate(_Body):
     client_task_id: _ShortText
     title: _Name
     description: _LongText | None = None
     addressed_member_ids: list[_Identifier] | None = None
+    assignment: _TaskAssignment | None = None
 
     @field_validator("addressed_member_ids")
     @classmethod

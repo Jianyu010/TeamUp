@@ -358,35 +358,113 @@ async def we05(options) -> str:
 async def we06(options) -> str:
     title = "Verify the release fixture"
     fixture = f"fixture-{uuid4().hex[:8]}"
+    assignment = {
+        "closing_criteria": "Confirm the smoke-test result and exact fixture ID.",
+        "eta": "15 minutes after assignment",
+    }
     specs = [
         Spec("A", "Release Lead"),
         Spec("B", "Tester", facts=[f"The release smoke test passed on {fixture}."]),
         Spec("C", "Reviewer"),
+        Spec("D", "Observer"),
     ]
     async with Run("WE-06", specs, options) as run:
-        await run.turn("A", tasks.create_room("Release verification", RULES, PROTOCOL))
+        await run.turn(
+            "A",
+            tasks.create_room(
+                "Release verification",
+                "Keep release evidence in the task history.",
+                "Read and acknowledge the board. Record task work as task progress.",
+            ),
+        )
         room = run.room_id()
         await run.phase(
             ("B", tasks.join_room(room, "Tester is here.")),
             ("C", tasks.join_room(room, "Reviewer is here.")),
+            ("D", tasks.join_room(room, "Observer is here.")),
         )
         a_id, b_id, c_id = (run.member_id(name) for name in ("A", "B", "C"))
         contributors = {b_id, c_id}
-        await run.turn("A", tasks.assign_release_check(room, title))
+        before = await run.messages(room, "D")
+        created = await run.turn(
+            "A", tasks.assign_release_check(room, title, assignment)
+        )
         records = (await run.read("A", "list_tasks", room_id=room))["tasks"]
         if (
             len(records) != 1
             or records[0]["title"] != title
             or records[0]["creator_member_id"] != a_id
+            or not records[0]["description"]
             or set(records[0]["addressed_member_ids"]) != contributors
+            or records[0]["participant_member_ids"]
             or records[0]["status"] != "open"
+            or records[0].get("assignment") != assignment
         ):
             raise Failure(
                 f"A did not create the addressed release task. Errors: {run.turn_errors()}"
             )
-        task_args = {"room_id": room, "task_id": records[0]["task_id"]}
+        opened = records[0]
+        task_args = {"room_id": room, "task_id": opened["task_id"]}
+        requests = [
+            call.input
+            for call in created.calls
+            if call.name == "teamup_create_task" and not call.error
+        ]
+        if not requests:
+            raise Failure("A did not create the assignment through MCP")
+        if await run.read("A", "create_task", **requests[0]) != opened:
+            raise Failure("Retry did not return the existing assignment")
 
-        await run.turn("B", tasks.record_release_check(room, title), kind="nudge")
+        messages = await run.messages(room, "D")
+        if messages[: len(before)] != before or len(messages) != len(before) + 1:
+            raise Failure("Assignment and its retry must add exactly one room message")
+        alert = messages[-1]
+        if (
+            alert["sender_member_id"] != a_id
+            or set(alert.get("mention_member_ids", [])) != contributors
+            or not re.search(rf"\bTask #{opened['task_number']}\b", alert["text"])
+            or any(
+                value in alert["text"]
+                for value in (title, opened["description"], *assignment.values())
+            )
+        ):
+            raise Failure(
+                "Assignment mention must direct only assignees to the task number"
+            )
+        if (await run.read("D", "list_tasks", room_id=room))["tasks"]:
+            raise Failure("A room observer could list a private assignment")
+        try:
+            await run.read("D", "get_task", **task_args)
+        except Failure as error:
+            if "not_found" not in str(error):
+                raise
+        else:
+            raise Failure("A room observer could read a private assignment by ID")
+
+        async def await_assignment_notice(recipient: str) -> None:
+            deadline = asyncio.get_running_loop().time() + 15
+            while asyncio.get_running_loop().time() < deadline:
+                notices = (await run.read(recipient, "notifications"))["notifications"]
+                if notices:
+                    if (
+                        len(notices) == 1
+                        and notices[0].get("room_id") == room
+                        and notices[0]["message_id"] == alert["message_id"]
+                        and notices[0]["sender_member_id"] == a_id
+                    ):
+                        return
+                    raise Failure(f"{recipient} received unexpected notices: {notices}")
+                await asyncio.sleep(0.2)
+            raise Failure(f"{recipient} did not receive the assignment mention")
+
+        await asyncio.gather(*(await_assignment_notice(name) for name in ("B", "C")))
+        for name in ("A", "D"):
+            if (await run.read(name, "notifications"))["notifications"]:
+                raise Failure(
+                    f"{name} received a notification for another member's assignment"
+                )
+
+        await run.turn("B", tasks.record_release_check(room), kind="wake")
         evidence = (await run.read("A", "task_history", **task_args))["events"]
         if not any(
             e["kind"] == "progress"
@@ -398,7 +476,7 @@ async def we06(options) -> str:
                 f"B did not record the release evidence. Errors: {run.turn_errors()}"
             )
 
-        await run.turn("C", tasks.review_release_check(room, title), kind="nudge")
+        await run.turn("C", tasks.review_release_check(room), kind="wake")
         task = await run.read("A", "get_task", **task_args)
         history = (await run.read("A", "task_history", **task_args))["events"]
         expected = [
@@ -419,7 +497,7 @@ async def we06(options) -> str:
                 "Durable task history does not show the expected handoff and finish. "
                 f"Errors: {run.turn_errors()}"
             )
-        return "A assigned the room task, B recorded evidence, C reviewed and finished"
+        return "Both assignees received one directed mention and completed the private task handoff"
 
 
 SCENARIOS = [
@@ -435,5 +513,5 @@ SCENARIOS = [
         skip="Covered by the model-free Board mid-conversation check NS-15.04.",
     ),
     Scenario("WE-05", "Five-agent stand-up hand-off chain", 5, 18, 900, we05),
-    Scenario("WE-06", "Three-agent room task handoff", 3, 6, 900, we06),
+    Scenario("WE-06", "Directed room task assignment and handoff", 4, 7, 900, we06),
 ]

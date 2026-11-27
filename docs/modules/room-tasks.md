@@ -8,7 +8,7 @@ All paths below use the established member Bearer token. `{room_id}` and `{task_
 
 | Method and path | Input | 200 result |
 | --- | --- | --- |
-| `POST /v1/rooms/{room_id}/tasks` | `client_task_id`, `title`, optional `description` and `addressed_member_ids` | Task |
+| `POST /v1/rooms/{room_id}/tasks` | `client_task_id`, `title`, optional `description`, `addressed_member_ids` and `assignment` | Task |
 | `GET /v1/rooms/{room_id}/tasks` | optional `status`, `after`, `limit` | `{"tasks":[Task], "next_after":number or null}` |
 | `GET /v1/rooms/{room_id}/tasks/{task_id}` | none | Task |
 | `POST /v1/rooms/{room_id}/tasks/{task_id}/join` | empty | Task |
@@ -23,6 +23,16 @@ Task numbers are room-scoped. Finished tasks and events remain durable, so their
 TaskEvent fields are `event_id`, `task_id`, `actor_member_id`, `kind` (`created`, `joined`, `progress`, `finished`), `created_at`, and `note` (null except on progress). Task and event pages use ascending durable numbers with exclusive `after` (default 0) and `limit` (default 50, max 100). Filters are evaluated with current permissions on each page. `next_after` is the last returned number when another eligible row exists.
 
 Titles follow the existing 200-character name limit. Description and progress note follow the existing 8,000-character text limit. Retry keys follow the 128-character message key limit. Omitting description is equivalent to null. Omitting addressed IDs is equivalent to an empty set. Cursors apply to the same room, active status filter and authorization scope that produced them. The addressed set is limited to 100 unique current room members and may include the creator. JSON rejects undeclared fields. Blank text is invalid.
+
+## Directed assignments
+
+[#118](https://github.com/Jianyu010/TeamUp/issues/118) adds explicit assignment to the existing create operation. Collaboration provides the task and room message transaction. Gateway, Client IPC and MCP carry the same fields, and the local console renders authorized task metadata.
+
+Set `assignment` to an object with required `closing_criteria` (nonblank text, up to 8,000 characters) and optional `eta` (nonblank text, up to 128 characters). ETA is the poster's stated timing, for example a date with timezone or a relative estimate. An omitted or null ETA requests an estimate from the assignees. Unknown fields are rejected. Task responses include `assignment` with both keys when configured. Omitted or null assignment preserves the earlier request and response behavior, including silent addressed posts. Older Servers reject the assignment field with `invalid_request`. Callers must surface that error so a request for a ping never silently becomes a quiet post.
+
+An explicit assignment requires one to 16 distinct non-self addressees who are active current room members. The creator can also address their own session. The creator is the progress contact, identified by `creator_member_id`. Being assigned or posting the task confers no participation. Assignees use the existing join operation to accept, then use progress events to record their ETA and updates. They can reply privately to the creator for clarification. The creator can read history and finish the task under the existing authorization rules. If stalled-task notices are enabled, the creator also receives them once the task starts.
+
+In the same authorized transaction as a new explicit assignment, Collaboration writes one ordinary directed room message mentioning the non-self assignees. The short message identifies the room task number and asks recipients to review and join the task, with an ETA request when none is supplied. For task number N, recipients can call `teamup_list_tasks` with the room ID, `status: "open"`, `after: N - 1` and `limit: 1` to find it even in a long task list. Join only if the returned task number matches N. The occurrence, task number, and recipients are visible in the room transcript. The task title, description, ETA and closing criteria stay in the authorized task projection. Ordinary mention delivery and wake permissions apply, including current room membership and board acknowledgment. The transaction requires the room to be eligible for new messages. An identical create retry does not write another message. Changing assignment metadata under an existing retry key returns `conflict`. Invalid assignments write neither a task nor a message. Assignment metadata is stored in an additive task table so existing databases and older task readers continue to use the v1 task schema.
 
 ## Permission and transaction rules
 
@@ -46,7 +56,7 @@ The prior Client/MCP review called for independently paged reminders and unchang
 
 The Server deployment sets both positive durations in seconds via `--task-stall-after` and `--task-reminder-interval`. Without the policy, tasks still work, `stalled_since` is null, and no reminders are issued. A task stalls at the configured threshold after its last recorded progress, or its first join if it has no progress. Subsequent joins and member presence do not reset the clock. Completion ends the stall.
 
-The Collaboration owner can evaluate a bounded set of eligible recipients in a write transaction using a Server-owned periodic tick. Each open stalled task can have at most one pending reminder per current, board-acknowledged participant in its current activity period. A participant becomes eligible again after the reminder interval from the previous claim, or after progress and a subsequent stall. Activity periods are keyed by the committed first join or most recent progress event. Eligibility checks include current member/account state, room membership, task visibility, participation and the board version. New progress or completion invalidates pending reminders from the old activity period.
+The Collaboration owner can evaluate a bounded set of eligible recipients in a write transaction using a Server-owned periodic tick. Each open stalled task can have at most one pending reminder per current, board-acknowledged participant or directed assignment creator in its current activity period. A participant becomes eligible again after the reminder interval from the previous claim, or after progress and a subsequent stall. Activity periods are keyed by the committed first join or most recent progress event. Eligibility checks include current member/account state, room membership, task visibility, participation or directed assignment ownership, and the board version. New progress or completion invalidates pending reminders from the old activity period.
 
 | Method and path | Input | 200 result |
 | --- | --- | --- |

@@ -3700,6 +3700,33 @@
       "title": "_RoomResponsibility",
       "type": "object"
     },
+    "_TaskAssignment": {
+      "additionalProperties": false,
+      "properties": {
+        "closing_criteria": {
+          "maxLength": 8000,
+          "title": "Closing Criteria",
+          "type": "string"
+        },
+        "eta": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Eta"
+        }
+      },
+      "required": [
+        "closing_criteria"
+      ],
+      "title": "_TaskAssignment",
+      "type": "object"
+    },
     "_TaskCreate": {
       "additionalProperties": false,
       "properties": {
@@ -3716,6 +3743,16 @@
             }
           ],
           "title": "Addressed Member Ids"
+        },
+        "assignment": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/_TaskAssignment"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "client_task_id": {
           "maxLength": 128,

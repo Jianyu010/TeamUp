@@ -7,6 +7,7 @@ import sqlite3
 import subprocess
 import sys
 from base64 import urlsafe_b64encode
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, contextmanager
 from hashlib import sha256
 from pathlib import Path
@@ -354,7 +355,7 @@ def test_tasks_survive_restart_on_an_existing_database(tmp_path):
             "progress",
         ]
 
-    with closing(sqlite3.connect(db_path)) as connection:
+    with closing(sqlite3.connect(db_path)) as connection, connection:
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 12
         assert (
             connection.execute(
@@ -373,10 +374,17 @@ def test_tasks_survive_restart_on_an_existing_database(tmp_path):
             "task_addressees",
             "task_participants",
             "task_events",
+            "task_assignments",
         } <= tables
+        # Simulate the v1 database written before directed assignments existed.
+        connection.execute("DROP TABLE task_assignments")
 
     with live_server(db_path) as client:
         assert get(client, "target", path).json() == updated.json()
+        assert (
+            create(client, "sender", room_path, key="durable", assignment=None).json()
+            == updated.json()
+        )
         assert get(client, "target", f"{path}/events").json() == events
         assert (
             create(client, "sender", room_path, key="durable").json() == updated.json()
@@ -387,3 +395,88 @@ def test_tasks_survive_restart_on_an_existing_database(tmp_path):
         second = create(client, "sender", room_path, key="task-2")
         assert second.status_code == 200, second.text
         assert second.json()["task_number"] == 2
+
+
+def test_directed_assignment_creates_one_scoped_mention_across_retries(tmp_path):
+    database = tmp_path / "team.sqlite3"
+    with live_server(database) as client:
+        members, room_path = team_room(client)
+        acknowledge(client, "sender", room_path)
+        acknowledge(client, "reader", room_path)
+        target = members["target"]["member_id"]
+        sender = members["sender"]["member_id"]
+        payload = {
+            "title": "Private title",
+            "description": "Private description",
+            "addressed_member_ids": [target, sender],
+            "assignment": {"closing_criteria": "Private criteria"},
+        }
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            attempts = [
+                pool.submit(create, client, "sender", room_path, **payload)
+                for _ in range(2)
+            ]
+            responses = [attempt.result() for attempt in attempts]
+        for response in responses:
+            assert response.status_code == 200, response.text
+        task = responses[0].json()
+        assert responses[1].json() == task
+        assert task["assignment"] == {"closing_criteria": "Private criteria", "eta": None}
+        assert task["participant_member_ids"] == []
+        assert task["started_at"] is None
+        assert task["creator_member_id"] == sender
+        detail = f"{room_path}/tasks/{task['task_id']}"
+        error(get(client, "reader", detail), 404, "not_found")
+        assert get(client, "target", "/inbox?kinds=mention").json() == {"events": []}
+        acknowledge(client, "target", room_path)
+        events = get(client, "target", "/inbox?kinds=mention").json()["events"]
+        assert len(events) == 1
+        assert events[0]["kind"] == "mention"
+        message = events[0]["message"]
+        assert message["mention_member_id"] == target
+        assert f"Task #{task['task_number']}" in message["text"]
+        assert "ETA" in message["text"]
+        assert "Private" not in message["text"]
+        for label in ("sender", "reader"):
+            assert get(client, label, "/inbox?kinds=mention").json() == {"events": []}
+        assert get(client, "target", detail).json() == task
+        assert create(client, "sender", room_path, **payload).json() == task
+        error(
+            create(
+                client,
+                "sender",
+                room_path,
+                **{**payload, "assignment": {**payload["assignment"], "eta": "Tomorrow"}},
+            ),
+            409,
+            "conflict",
+        )
+        silent = create(
+            client, "sender", room_path, key="silent", addressed_member_ids=[target]
+        ).json()
+        assert "assignment" not in silent
+        assert get(client, "target", "/inbox?kinds=mention").json()["events"] == events
+
+    with live_server(database) as client:
+        assert create(client, "sender", room_path, **payload).json() == task
+        assert get(client, "target", "/inbox?kinds=mention").json()["events"] == events
+        assert get(client, "target", detail).json() == task
+
+
+def test_directed_assignment_validates_before_writing_anything(tmp_path):
+    with live_server(tmp_path / "team.sqlite3") as client:
+        members, room_path = team_room(client)
+        for label in members:
+            acknowledge(client, label, room_path)
+        target = members["target"]["member_id"]
+        sender = members["sender"]["member_id"]
+        assignment = {"closing_criteria": "Checks pass", "eta": "In an hour"}
+        for payload in (
+            {"assignment": assignment},
+            {"assignment": assignment, "addressed_member_ids": [sender]},
+            {"assignment": {**assignment, "extra": True}, "addressed_member_ids": [target]},
+            {"assignment": {**assignment, "eta": " "}, "addressed_member_ids": [target]},
+        ):
+            error(create(client, "sender", room_path, **payload), 422, "invalid_request")
+        assert get(client, "sender", f"{room_path}/tasks").json()["tasks"] == []
+        assert get(client, "target", "/inbox?kinds=mention").json() == {"events": []}
