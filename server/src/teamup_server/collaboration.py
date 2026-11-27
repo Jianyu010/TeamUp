@@ -3053,10 +3053,10 @@ class Collaboration:
             if existing is not None:
                 if existing["fingerprint"] != fingerprint:
                     raise CollaborationError("conflict")
-                room = _room_member(connection, existing["room_id"], member_id)
+                existing_room = _room_member(connection, existing["room_id"], member_id)
                 return {
-                    "room_id": existing["room_id"], "name": room["name"],
-                    "history_policy": room["history_policy"], **_child_metadata(existing),
+                    "room_id": existing["room_id"], "name": existing_room["name"],
+                    "history_policy": existing_room["history_policy"], **_child_metadata(existing),
                 }
             now = self._now_datetime()
             room = self._insert_room(connection, member_id, name, rules, protocol, history_policy, now)
@@ -3200,8 +3200,8 @@ class Collaboration:
                 AND m.retired = 0 AND COALESCE(a.disabled, 0) = 0 AND h.observed_at > :cutoff
             ORDER BY m.member_id
             """,
-            dict(room=room_id, viewer=incumbent, automatic=incumbent is None, previous=previous,
-                 blocked=state["blocked_membership_id"], cutoff=now - _HEARTBEAT_MICROS),
+            {"room": room_id, "viewer": incumbent, "automatic": incumbent is None, "previous": previous,
+                 "blocked": state["blocked_membership_id"], "cutoff": now - _HEARTBEAT_MICROS},
         )
         ranked = []
         for row in rows:
@@ -3622,6 +3622,7 @@ class Collaboration:
                 "current_board_version": room["version"],
                 "member_count": count,
                 **_archive_metadata(room),
+                **_child_metadata(room),
             }
 
     def room_members(
@@ -3722,10 +3723,10 @@ class Collaboration:
             """,
             (child["creator_member_id"], parent),
         ).fetchone()[0]
-        number = connection.execute(
+        last_number = connection.execute(
             "SELECT COALESCE(MAX(task_number), 0) FROM tasks WHERE room_id = ?", (parent,)
         ).fetchone()[0]
-        for number, task in enumerate(tasks, start=number + 1):
+        for number, task in enumerate(tasks, start=last_number + 1):
             successor = str(uuid4())
             title = "Coordinate continuation of restricted work" if task["restricted"] else task["title"]
             description = (
@@ -5217,6 +5218,12 @@ class Collaboration:
             if not changed.rowcount:
                 raise CollaborationError("not_found")
         return {"notice_id": notice_id}
+
+    def maintain_rooms(self) -> bool:
+        children_due = self.sweep_child_rooms()
+        archives_due = self.archive_inactive_rooms()
+        leadership_due = self.sweep_room_leadership()
+        return children_due or archives_due or leadership_due
 
     def inbox_changes(self, token: str) -> ObserveInbox:
         with self._transaction() as connection:

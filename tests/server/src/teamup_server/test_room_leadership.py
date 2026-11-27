@@ -85,7 +85,7 @@ def test_explicit_choice_checks_membership_generation_and_transfers_only_once(te
     db = team.db
     db.leave_room(peer, team.room)
     db.join_room(peer, team.room)
-    kwargs = dict(member_id=row["member_id"], membership_id=row["membership_id"])
+    kwargs = {"member_id": row["member_id"], "membership_id": row["membership_id"]}
     with pytest.raises(CollaborationError, match="conflict"):
         team.handoff(epoch, "choose", **kwargs)
     kwargs["membership_id"] = team.candidates()["candidates"][0]["membership_id"]
@@ -100,8 +100,8 @@ def test_explicit_choice_checks_membership_generation_and_transfers_only_once(te
         outcomes = list(pool.map(transfer, range(2)))
     assert outcomes.count("conflict") == 1
     receipt = next(outcome for outcome in outcomes if isinstance(outcome, dict))
-    assert receipt == dict(room_id=team.room, leader_member_id=team.id(peer),
-                           leadership_epoch=epoch+1, pending=False, left=False)
+    assert receipt == {"room_id": team.room, "leader_member_id": team.id(peer),
+                           "leadership_epoch": epoch+1, "pending": False, "left": False}
     with pytest.raises(CollaborationError, match="forbidden"):
         db.publish_board(team.leader, team.room, 1, "changed", "changed")
     assert db.publish_board(peer, team.room, 1, "changed", "changed")["version"] == 2
