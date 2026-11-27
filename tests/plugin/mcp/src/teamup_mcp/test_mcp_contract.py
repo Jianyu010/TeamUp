@@ -283,7 +283,7 @@ def test_collaboration_skill_covers_dm_handoff_and_privacy():
     assert "teamup_read_dm" in lowered
     assert "same conversation" in lowered
     assert "older client release" in lowered
-    assert "do not use a room as a substitute" in lowered
+    assert "approved private handoff" in lowered
     assert "logs" in lowered
     assert "wake automatically" in lowered
 
@@ -292,6 +292,17 @@ def test_collaboration_skill_names_teamup_message_references():
     skill = (ROOT / "plugin/skills/teamup-collaboration/SKILL.md").read_text()
     assert "`msg-<message_id>`" in skill
     assert "`msg-42`" in skill
+
+
+def test_collaboration_skill_covers_focused_room_handoffs():
+    skill = (ROOT / "plugin/skills/teamup-collaboration/SKILL.md").read_text()
+    for name in (
+        "teamup_invite_to_room", "teamup_create_linked_room", "teamup_extend_room_lease",
+        "teamup_room_leadership_candidates", "teamup_handoff_room_leadership",
+        "teamup_confirm_room_leadership",
+    ):
+        assert f"`{name}`" in skill
+    assert "read and acknowledge" in skill.lower()
 
 
 def test_retired_claude_attachment_does_not_retry(monkeypatch):
