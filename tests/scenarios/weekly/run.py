@@ -82,11 +82,17 @@ class Run:
     # --- reading state through the public MCP surface -------------------------
 
     def room_id(self) -> str:
+        return self._created_id("teamup_create_room", "room_id")
+
+    def dm_id(self) -> str:
+        return self._created_id("teamup_open_dm", "dm_id")
+
+    def _created_id(self, operation: str, field: str) -> str:
         for turn in self.turns:
-            for output in turn.output_of("teamup_create_room"):
-                if isinstance(output.get("room_id"), str):
-                    return output["room_id"]
-        raise Failure("no agent created a room (teamup_create_room never succeeded)")
+            for output in turn.output_of(operation):
+                if isinstance(output.get(field), str):
+                    return output[field]
+        raise Failure(f"{operation} returned no {field}. Errors: {self.turn_errors()}")
 
     def member_id(self, name: str) -> str:
         for turn in self.turns:
@@ -98,13 +104,20 @@ class Run:
 
     async def messages(self, room_id: str, reader: str) -> list[dict]:
         """Whole room history as one member sees it (the room creator sees all)."""
+        return (await self.read(reader, "read_messages", room_id=room_id, limit=100))[
+            "messages"
+        ]
+
+    async def dm_messages(self, dm_id: str, reader: str) -> list[dict]:
+        """Read the DM as one of its participants."""
+        return (await self.read(reader, "read_dm", dm_id=dm_id, limit=100))["messages"]
+
+    async def read(self, reader: str, operation: str, **arguments) -> dict:
         async with self.stack.developers[reader].session() as session:
-            failed, result = await call(
-                session, "read_messages", room_id=room_id, limit=100
-            )
+            failed, result = await call(session, operation, **arguments)
         if failed:
-            raise Failure(f"{reader} cannot read the room: {result}")
-        return result["messages"]
+            raise Failure(f"{reader} could not {operation}: {result}")
+        return result
 
     async def has_acked(self, name: str, room_id: str) -> bool:
         """TeamUp refuses reads until the member acked the current board."""

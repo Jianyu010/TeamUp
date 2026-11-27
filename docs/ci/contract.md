@@ -26,11 +26,22 @@ Run all commands from the repository root. Set up the Python environment with `u
 | --- | --- | --- | --- |
 | Nightly scenarios | `TEAMUP_SCENARIOS=nightly uv run --no-sync pytest tests/scenarios/nightly -q` | 15 minutes | No |
 | Nightly performance | `uv run --no-sync python -m tests.scenarios.perf --out results/nightly/perf.json` | 25 minutes | No |
-| Weekly agent end-to-end tests | `uv run --no-sync python -m tests.scenarios.weekly --out results/weekly/summary.json` | 90 minutes | Yes, via opencode and the csi gateway |
+| Weekly agent end-to-end tests | `uv run --no-sync python -m tests.scenarios.weekly --out results/weekly/agents.json` | 90 minutes | Yes, via opencode and the csi gateway |
+| Weekly pressure and recovery | `uv run --no-sync python -m tests.scenarios.perf --suite weekly` | 35 minutes | No |
 
 The `TEAMUP_RESULTS_DIR` environment variable controls where the summary goes and defaults to `results`. The `conftest.py` file writes `results/nightly/scenarios.json`. The workflow then runs `scripts/ci/results.py merge` to produce `results/nightly/summary.json`.
 
 The nightly report attempts to publish the summary and sets the merge freeze when the verdict is red. The report then fails the GitHub Actions run so its conclusion reflects the suite verdict.
+
+## Check granularity and load profiles
+
+Report separately diagnosable behaviors as individual scenario entries with unique, stable IDs. Related checks may share an ID prefix and a fixture. Each entry records only its own verdict. A failure in one entry does not overwrite neighboring verdicts. A required `fail` or `error` still makes the suite red. Each runner saves completed verdicts as it goes. If it is interrupted, unfinished entries report errors and completed entries retain their results.
+
+Use model-free, bounded workloads for both load profiles. Nightly uses hundreds of rooms and small task groups of 3, 4 and 5. Weekly uses thousands to tens of thousands of rooms and groups of 10, 30, 50 and 100 with scripted participants. The weekly load profile is separate from real-agent scenarios. Hold connected sessions, heartbeat activity and simultaneous sends as separately reported workload dimensions. Mark incorrect deliveries and failed operations with a failing verdict. Publish latency as metrics while comparable runner baselines are collected.
+
+`python -m tests.scenarios.perf --suite weekly` writes `results/weekly/perf.json`, with `suite: "weekly"` and workload labels that distinguish scale. The weekly agent step writes `results/weekly/agents.json`. The workflow merges both files into `results/weekly/summary.json` and publishes the existing schema. Missing parts are errors. The standalone agent command keeps its existing default output. The weekly report records failures without freezing merges.
+
+Run load and recovery checks on disposable loopback Servers and synthetic data. Keep databases, browser profiles, and snapshots in runner-owned temporary workspaces. Clean them after the checks and publish only results and bounded diagnostics. The recovery drill verifies restored data through the public API and does not use deployment data or credentials.
 
 ## Results file (schema 1)
 
@@ -60,7 +71,7 @@ The nightly report attempts to publish the summary and sets the merge freeze whe
 ```
 
 - Valid values for `status` are `pass`, `fail`, `error`, and `skip`. The `detail` field summarizes the failure in 2,000 characters or fewer and must be free of secrets.
-- The suite fails if any entry in `scenarios` has status `fail` or `error`. Performance benchmarks record metrics only. If a benchmark cannot complete, record an `NP-xx` scenario with status `error`.
+- The suite fails if any entry in `scenarios` has status `fail` or `error`. A performance check records metrics and its own verdict. It reports an invariant violation as `fail` and a benchmark execution error as `error`.
 - Label values must be scalars. The dashboard distinguishes series by `name` and `labels` together. Round numeric values to one decimal place.
 - The workflow supplies `sha`, `version`, and `host` through `TEAMUP_SHA`, `TEAMUP_VERSION`, and `TEAMUP_HOST` respectively. Write `null` for any missing values.
 

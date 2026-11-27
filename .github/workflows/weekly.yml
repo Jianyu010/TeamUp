@@ -27,7 +27,7 @@ jobs:
     name: 4 · Weekly
     if: ${{ github.ref == 'refs/heads/main' }}
     runs-on: [self-hosted, e2e]
-    timeout-minutes: 120
+    timeout-minutes: 155
     permissions:
       contents: read
     env:
@@ -53,6 +53,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: echo "TEAMUP_VERSION=$(python3 -E -s -m scripts.ci.version --sha "$GITHUB_SHA")" >> "$GITHUB_ENV"
+      - name: Prepare a disposable scenario directory
+        run: |
+          scenario_dir=$(mktemp -d /tmp/tu-ci-XXXXXX)
+          echo "TEAMUP_SCENARIO_TMPDIR=$scenario_dir" >> "$GITHUB_ENV"
       - name: Python environment (uv, locked, through the mirror)
         timeout-minutes: 10
         run: |
@@ -62,13 +66,24 @@ jobs:
       - name: Agent scenarios (WE)
         timeout-minutes: 95
         continue-on-error: true
-        run: uv run --no-sync python -m tests.scenarios.weekly --out results/weekly/summary.json 2>&1 | tail -60
+        run: uv run --no-sync python -m tests.scenarios.weekly --out results/weekly/agents.json 2>&1 | tail -60
+      - name: Large-scale model-free pressure and recovery
+        timeout-minutes: 35
+        continue-on-error: true # the report keeps the verdict of each check
+        run: uv run --no-sync python -m tests.scenarios.perf --suite weekly 2>&1 | tail -80
       - name: Summary
         if: ${{ always() }}
         run: |
           python3 -E -s -m scripts.ci.results merge --suite weekly --out results/weekly/summary.json \
-            results/weekly/summary.json
+            results/weekly/agents.json results/weekly/perf.json
           python3 -E -s -m scripts.ci.results status results/weekly/summary.json || true
+      - name: Clean up scenario databases and browser profiles
+        if: ${{ always() && env.TEAMUP_SCENARIO_TMPDIR != '' }}
+        run: |
+          case "$TEAMUP_SCENARIO_TMPDIR" in
+            /tmp/tu-ci-??????) rm -rf -- "$TEAMUP_SCENARIO_TMPDIR" ;;
+            *) exit 1 ;;
+          esac
       - name: Keep the results
         id: keep1
         if: ${{ always() }}
@@ -172,6 +187,7 @@ jobs:
             reason=$(grep '^::error::' status.txt | sed 's/^::error:://' | head -8)
             python3 -E -s -m scripts.ci.freeze set --source weekly --url "$URL" \
               --reason "Weekly on \`${TEAMUP_SHA:0:7}\` is red: ${reason:-the suite did not report}"
+            exit 1
           fi
       - name: Minor release
         if: ${{ steps.judge.outputs.green == 'true' && inputs.release != false }}

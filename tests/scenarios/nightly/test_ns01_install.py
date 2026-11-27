@@ -1,7 +1,6 @@
 import asyncio
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -12,6 +11,7 @@ from _stack import (
     clean_env,
     install_venv,
     run_process,
+    scenario_temp_dir,
 )
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -65,7 +65,7 @@ async def mcp_tools(bin_dir):
     "NS-01", "Each package installs into an empty venv and its console script runs"
 )
 def test_install_each_package(workspace_venv):
-    root = Path(tempfile.mkdtemp(prefix="tu-pkg-", dir="/tmp"))
+    root = scenario_temp_dir("tu-pkg-")
     try:
         server = install_venv(root / "server", ["server"])
         client = install_venv(root / "client", [CLIENT_PACKAGE])

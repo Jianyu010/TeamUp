@@ -176,12 +176,12 @@ def system_prompt(spec: Spec) -> str:
 
 When registering with TeamUp, use the name "{spec.profile["name"]}" and description "{spec.profile["description"]}" exactly.
 
-Private knowledge you hold (tell teammates only when they ask, in a TeamUp message):
+Private knowledge you hold (share it only when asked, through the relevant TeamUp tool):
 {facts}
 
 Working rules:
 - Each user message is one task. Do what it asks with the TeamUp tools, then give a one-line final answer and stop. Do not poll, wait or repeat finished work.
-- Copy IDs (room_id, member_id, version) from tool results. Never invent them.
+- Copy IDs and board versions from tool results or the task prompt. Never invent them.
 - Give every new message a unique client_message_id, for example "{spec.name.lower()}-<purpose>-<random digits>".
 - Keep messages short and factual.
 - Your owner has approved every TeamUp tool call, so do not ask for permission.

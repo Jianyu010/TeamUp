@@ -21,6 +21,14 @@ KEY = _stack.new_secret()
 ENV = _results.environment()
 
 
+class BenchmarkFailure(AssertionError):
+    """A workload violated an invariant, with observations retained."""
+
+    def __init__(self, detail, metrics):
+        super().__init__(detail)
+        self.metrics = metrics
+
+
 def ms(seconds):
     return seconds * 1000.0
 
@@ -39,7 +47,7 @@ def metric(id_, name, unit, labels, stats, **extra):
 # NP-01 -----------------------------------------------------------------------
 
 
-async def np01(ws, quick):
+async def np01(ws, quick, profile="nightly"):
     """A -> IPC -> Client A -> Server -> SSE -> Client B notice, per mention."""
     n = 10 if quick else 200
     _, (alice, bob) = _stack.deploy(ws, notify=False)
@@ -96,7 +104,7 @@ async def np01(ws, quick):
                 "ms",
                 {"agents": 2},
                 _results.stats(samples),
-                transport="two-member room with @mention (DM not merged)",
+                transport="two-member room with @mention",
                 path="IPC -> Client A -> Server -> SSE -> Client B notice",
             )
         ]
@@ -125,7 +133,7 @@ async def consume(client, member, ready, recv):
             events = response.json()["events"]
             for event in events:
                 started = float(event["message"]["text"].split("|", 1)[0])
-                recv.append(ms(stamp - started))
+                recv.append((event["message"]["message_id"], ms(stamp - started)))
                 after = event["event_id"]
             if len(events) < 100:
                 return
@@ -141,6 +149,20 @@ async def consume(client, member, ready, recv):
         async for line in lines:
             if line.startswith("event:"):
                 await drain()
+
+
+def expected_deliveries(posted):
+    return [set().union(*posted[:i], *posted[i + 1 :]) for i in range(len(posted))]
+
+
+def delivery_counts(posted, received):
+    missing = duplicate = unexpected = 0
+    for expected, deliveries in zip(expected_deliveries(posted), received, strict=True):
+        observed = {message_id for message_id, _ in deliveries}
+        missing += len(expected - observed)
+        duplicate += len(deliveries) - len(observed)
+        unexpected += len(observed - expected)
+    return missing, duplicate, unexpected
 
 
 async def np02_level(server, label, rate, seconds):
@@ -171,14 +193,15 @@ async def np02_level(server, label, rate, seconds):
         asyncio.create_task(consume(c, m, r, rec))
         for c, m, r, rec in zip(clients, members, ready, received, strict=True)
     ]
-    post_ms, errors, sent_ok = [], 0, 0
+    post_ms, errors = [], 0
+    posted = [set() for _ in members]
     try:
         await asyncio.wait_for(asyncio.gather(*(r.wait() for r in ready)), 20)
         per_sender = rate / 5
         count = int(seconds * per_sender)
 
         async def post(idx, seq):
-            nonlocal errors, sent_ok
+            nonlocal errors
             started = time.perf_counter()
             try:
                 response = await clients[idx].post(
@@ -192,7 +215,7 @@ async def np02_level(server, label, rate, seconds):
                 if response.status_code != 200:
                     raise RuntimeError(response.status_code)
                 post_ms.append(ms(time.perf_counter() - started))
-                sent_ok += 1
+                posted[idx].add(response.json()["message_id"])
             except Exception:  # noqa: BLE001 - any failed request counts as an error
                 errors += 1
 
@@ -209,13 +232,25 @@ async def np02_level(server, label, rate, seconds):
         window = time.perf_counter()
         await asyncio.gather(*(sender(i) for i in range(5)))
         window = time.perf_counter() - window
-        expected = sent_ok * 4
+        expected = expected_deliveries(posted)
         # Wait for fan-out to settle, then stop the consumers.
         deadline = time.monotonic() + 15
-        while sum(map(len, received)) < expected and time.monotonic() < deadline:
+        while time.monotonic() < deadline:
+            if all(
+                ids.issubset({message_id for message_id, _ in rec})
+                for ids, rec in zip(expected, received, strict=True)
+            ):
+                break
             await asyncio.sleep(0.1)
-        fanout = [x for rec in received for x in rec]
-        return post_ms, fanout, sent_ok, errors, window, max(0, expected - len(fanout))
+        fanout = [latency for rec in received for _, latency in rec]
+        return (
+            post_ms,
+            fanout,
+            sum(map(len, posted)),
+            errors,
+            window,
+            delivery_counts(posted, received),
+        )
     finally:
         for task in consumers:
             task.cancel()
@@ -224,14 +259,21 @@ async def np02_level(server, label, rate, seconds):
             await c.aclose()
 
 
-async def np02(ws, quick):
+async def np02(ws, quick, profile="nightly"):
     seconds = 3 if quick else 30
     server = _stack.Server(ws, {"owner": KEY}).start()
     out = []
+    failures = []
     for label, rate in LEVELS.items():
-        post_ms, fanout, ok, errors, window, missing = await np02_level(
+        post_ms, fanout, ok, errors, window, counts = await np02_level(
             server, label, rate, seconds
         )
+        missing, duplicate, unexpected = counts
+        if any((errors, missing, duplicate, unexpected)):
+            failures.append(
+                f"{label}: {errors} post errors, {missing} missing, "
+                f"{duplicate} duplicate, {unexpected} unexpected deliveries"
+            )
         labels = {"agents": 5, "load": label}
         extra = {"target_msg_per_s": rate, "window_s": _results.rounded(window)}
         out += [
@@ -276,6 +318,15 @@ async def np02(ws, quick):
                 **extra,
             ),
         ]
+        for name, count in (
+            ("room_duplicate_deliveries", duplicate),
+            ("room_unexpected_deliveries", unexpected),
+        ):
+            out.append(
+                metric("NP-02", name, "count", labels, _results.single(count), **extra)
+            )
+    if failures:
+        raise BenchmarkFailure("\n".join(failures), out)
     return out
 
 
@@ -288,7 +339,7 @@ def db_bytes(path):
     return size, (os.stat(wal).st_size if wal.exists() else 0)
 
 
-async def np03(ws, quick):
+async def np03(ws, quick, profile="nightly"):
     checkpoints = [100, 500] if quick else [1_000, 10_000, 50_000]
     samples = 10 if quick else 30
     server = _stack.Server(ws, {"owner": KEY}).start()
