@@ -1548,6 +1548,18 @@ class Collaboration:
                 )
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS room_invitation_requests (
+                    sender_member_id TEXT NOT NULL REFERENCES members(member_id),
+                    client_request_id TEXT NOT NULL,
+                    room_id TEXT NOT NULL REFERENCES rooms(room_id),
+                    peer_member_id TEXT NOT NULL REFERENCES members(member_id),
+                    message_id INTEGER UNIQUE REFERENCES messages(message_id) ON DELETE SET NULL,
+                    PRIMARY KEY (sender_member_id, client_request_id)
+                )
+                """
+            )
             if version < 12:
                 self._migrate_room_archive(connection)
                 connection.execute("PRAGMA user_version = 12")
@@ -3754,6 +3766,24 @@ class Collaboration:
         ]
         return message, visible_recipients
 
+    @staticmethod
+    def _get_or_create_dm(
+        connection: sqlite3.Connection, member_id: str, peer_member_id: str
+    ) -> str:
+        member_low, member_high = sorted((member_id, peer_member_id))
+        connection.execute(
+            """
+            INSERT INTO dms (dm_id, member_low, member_high) VALUES (?, ?, ?)
+            ON CONFLICT (member_low, member_high) DO NOTHING
+            """,
+            (str(uuid4()), member_low, member_high),
+        )
+        dm_id: str = connection.execute(
+            "SELECT dm_id FROM dms WHERE member_low = ? AND member_high = ?",
+            (member_low, member_high),
+        ).fetchone()["dm_id"]
+        return dm_id
+
     def open_dm(self, token: str, peer_member_id: str) -> dict:
         with self._transaction(write=True) as connection:
             member_id = _member(connection, token)["member_id"]
@@ -3761,18 +3791,7 @@ class Collaboration:
                 raise CollaborationError("invalid_peer")
             if _available_member(connection, peer_member_id) is None:
                 raise CollaborationError("invalid_peer")
-            member_low, member_high = sorted((member_id, peer_member_id))
-            connection.execute(
-                """
-                INSERT INTO dms (dm_id, member_low, member_high) VALUES (?, ?, ?)
-                ON CONFLICT (member_low, member_high) DO NOTHING
-                """,
-                (str(uuid4()), member_low, member_high),
-            )
-            dm_id = connection.execute(
-                "SELECT dm_id FROM dms WHERE member_low = ? AND member_high = ?",
-                (member_low, member_high),
-            ).fetchone()["dm_id"]
+            dm_id = self._get_or_create_dm(connection, member_id, peer_member_id)
             return {"dm_id": dm_id, "peer_member_id": peer_member_id}
 
     def send_dm(
@@ -3795,37 +3814,106 @@ class Collaboration:
                 return dict(existing)
             if _available_member(connection, peer) is None:
                 raise CollaborationError("not_found")
-            message_id = _next_id(connection, "message_id")
-            connection.execute(
-                """
-                INSERT INTO messages (
-                    message_id, room_id, dm_id, sender_member_id, client_message_id,
-                    text, mention_member_id, created_at
-                ) VALUES (?, NULL, ?, ?, ?, ?, NULL, ?)
-                """,
-                (
-                    message_id,
-                    dm_id,
-                    sender,
-                    client_message_id,
-                    text,
-                    _rfc3339_utc_now(),
-                ),
-            )
-            connection.execute(
-                """
-                INSERT INTO inbox_events (event_id, member_id, message_id, kind)
-                VALUES (?, ?, ?, 'dm')
-                """,
-                (_next_id(connection, "event_id"), peer, message_id),
-            )
-            message = dict(
-                connection.execute(
-                    f"SELECT {_DM_MESSAGE} FROM messages AS m WHERE m.message_id = ?",
-                    (message_id,),
-                ).fetchone()
+            message = self._write_dm(
+                connection, dm_id, sender, peer, client_message_id, text
             )
         self._notify((peer,))
+        return message
+
+    @staticmethod
+    def _write_dm(
+        connection: sqlite3.Connection,
+        dm_id: str,
+        sender: str,
+        peer: str,
+        client_message_id: str,
+        text: str,
+    ) -> dict:
+        message_id = _next_id(connection, "message_id")
+        connection.execute(
+            """
+            INSERT INTO messages (
+                message_id, room_id, dm_id, sender_member_id, client_message_id,
+                text, mention_member_id, created_at
+            ) VALUES (?, NULL, ?, ?, ?, ?, NULL, ?)
+            """,
+            (message_id, dm_id, sender, client_message_id, text, _rfc3339_utc_now()),
+        )
+        connection.execute(
+            """
+            INSERT INTO inbox_events (event_id, member_id, message_id, kind)
+            VALUES (?, ?, ?, 'dm')
+            """,
+            (_next_id(connection, "event_id"), peer, message_id),
+        )
+        return dict(
+            connection.execute(
+                f"SELECT {_DM_MESSAGE} FROM messages AS m WHERE m.message_id = ?",
+                (message_id,),
+            ).fetchone()
+        )
+
+    def invite_to_room(
+        self, token: str, room_id: str, member_id: str, client_request_id: str
+    ) -> dict:
+        if (
+            not isinstance(client_request_id, str)
+            or len(client_request_id) > 128
+            or not client_request_id.strip()
+        ):
+            raise CollaborationError("invalid_request")
+        try:
+            client_request_id.encode("utf-8")
+        except UnicodeEncodeError:
+            raise CollaborationError("invalid_request") from None
+        with self._transaction(write=True) as connection:
+            sender = _member(connection, token)["member_id"]
+            room = _room_member(connection, room_id, sender, active=True)
+            if not _has_room_leadership(connection, room_id, sender):
+                raise CollaborationError("forbidden")
+            if member_id == sender:
+                raise CollaborationError("invalid_request")
+            prior = connection.execute(
+                """
+                SELECT room_id, peer_member_id, message_id FROM room_invitation_requests
+                WHERE sender_member_id = ? AND client_request_id = ?
+                """,
+                (sender, client_request_id),
+            ).fetchone()
+            if prior is not None and (prior["room_id"], prior["peer_member_id"]) != (
+                room_id,
+                member_id,
+            ):
+                raise CollaborationError("conflict")
+            if _available_member(connection, member_id) is None:
+                raise CollaborationError("not_found")
+            if prior is not None:
+                if prior["message_id"] is None:
+                    raise CollaborationError("not_found")
+                return dict(
+                    connection.execute(
+                        f"SELECT {_DM_MESSAGE} FROM messages AS m WHERE m.message_id = ?",
+                        (prior["message_id"],),
+                    ).fetchone()
+                )
+            dm_id = self._get_or_create_dm(connection, sender, member_id)
+            text = (
+                f"You are invited to join the TeamUp room {room['name']!r} (room ID {room_id}). "
+                "After you join, read and acknowledge its Board."
+            )
+            # Keep invitation request IDs independent of caller-chosen DM message IDs.
+            message = self._write_dm(
+                connection, dm_id, sender, member_id, str(uuid4()), text
+            )
+            connection.execute(
+                """
+                INSERT INTO room_invitation_requests (
+                    sender_member_id, client_request_id, room_id, peer_member_id, message_id
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (sender, client_request_id, room_id, member_id, message["message_id"]),
+            )
+        self._notify((member_id,))
         return message
 
     def dm_history(self, token: str, dm_id: str, after: int, limit: int) -> dict:
