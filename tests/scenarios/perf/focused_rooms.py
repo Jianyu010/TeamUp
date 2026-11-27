@@ -32,6 +32,7 @@ LEVELS = {
     "nightly": (4, 16, 3, 8, 120),
     "weekly": (10, 100, 4, 16, 300),
 }
+LONG_LEASE_RENEWALS = {"quick": 2, "nightly": 28, "weekly": 72}
 ROLES = ("expiring", "renewed", "manual", "notice")
 GENERIC = "Coordinate continuation of restricted work"
 SUCCESS = {200: {None}}
@@ -546,6 +547,25 @@ class Workload:
                 json={"name": "Losing child", "client_request_id": "late"},
             )
 
+    async def exercise_long_lease(self, renewals):
+        lead = self.leaders[0]
+        parent = await self.root(lead, "Long-lived parent")
+        child = await self.child(lead, parent, "long-lease", "Long-lived child")
+        task = await self.task(lead, child, "long-task", "Continue long-lived work")
+        deadline = child["expires_at"]
+        for _ in range(renewals):
+            await self.api.respond(lead.token)
+            self.clock.now = datetime.fromisoformat(deadline) - NOTICE_WINDOW
+            deadline = await self.renew(lead, child, deadline)
+        await self.api.respond(lead.token)
+        self.clock.now = datetime.fromisoformat(deadline)
+        await self.sweep([(lead, {"room": child}, self.clock.now)], what="long-lease expiry")
+        self.assert_work(
+            await self.parent_work(lead, parent),
+            Counter({(child["room_id"], task["task_id"], task["title"]): 1}),
+        )
+        await self.api.call("POST", room_path(parent) + "/archive", lead.token)
+
 
 async def focused_pressure(ws, quick, profile):
     level = "quick" if quick else profile
@@ -555,6 +575,7 @@ async def focused_pressure(ws, quick, profile):
         "parents": parents,
         "children_per_parent": children,
         "renewals": rounds,
+        "long_lease_renewals": LONG_LEASE_RENEWALS[level],
         "concurrency": concurrency,
     }
     samples = defaultdict(list)
@@ -576,6 +597,7 @@ async def focused_pressure(ws, quick, profile):
                 )
                 await work.setup()
                 await work.exercise()
+                await work.exercise_long_lease(LONG_LEASE_RENEWALS[level])
     except (AssertionError, TimeoutError) as failure:
         detail = str(failure) or type(failure).__name__
         if isinstance(failure, TimeoutError):
