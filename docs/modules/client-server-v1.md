@@ -93,7 +93,7 @@ The local Client accesses the Board through the Gateway. Collaboration owns Boar
 - Publishing preserves each member's previous fetch and acknowledgment versions. The next authorization check for ordinary messages, history, or the inbox uses the new version. Members regain access by fetching and acknowledging the new version through the existing routes.
 - Existing rooms use the same creator record and require no schema migration. Rooms without a verifiable creator record remain readable by joined sessions and grant no publication authority. Existing Board fetch, Board acknowledgment, and room summary shapes remain compatible. If an older Server lacks the view route, the Client keeps the room ID and summary and reports that the Board is temporarily unavailable.
 
-See [Member lifecycle](member-lifecycle.md#creator-removal-and-roster-controls-70-71-72) for member-initiated departure, removal by the creator, and how each affects authorization, retries, and the inbox.
+See [Member lifecycle](member-lifecycle.md#leader-removal-and-roster-controls-70-71-72) for member-initiated departure, removal by the room leader, and how each affects authorization, retries, and the inbox.
 
 ## Team-public room directory (#56)
 
