@@ -1527,6 +1527,32 @@ class Collaboration:
             if version < 12:
                 self._migrate_room_archive(connection)
                 connection.execute("PRAGMA user_version = 12")
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS room_control_notices (
+                    notice_id INTEGER PRIMARY KEY,
+                    member_id TEXT NOT NULL REFERENCES members(member_id),
+                    room_id TEXT NOT NULL REFERENCES rooms(room_id),
+                    kind TEXT NOT NULL,
+                    text TEXT NOT NULL,
+                    leadership_epoch INTEGER,
+                    expires_at TEXT,
+                    acknowledged INTEGER NOT NULL DEFAULT 0 CHECK (acknowledged IN (0, 1))
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS room_control_notices_pending
+                ON room_control_notices (member_id, notice_id) WHERE acknowledged = 0
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS room_control_notices_scope
+                ON room_control_notices (room_id, kind, member_id, leadership_epoch, expires_at)
+                """
+            )
 
     def _migrate_room_archive(self, connection: sqlite3.Connection) -> None:
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(rooms)")}
@@ -4328,6 +4354,72 @@ class Collaboration:
                 [(through, room_id) for room_id, through in watermarks.items()],
             )
             return RetentionPass(len(due), expired_events, more_due)
+
+    @staticmethod
+    def _add_room_notice(
+        connection: sqlite3.Connection,
+        member_id: str,
+        room_id: str,
+        kind: str,
+        text: str,
+        *,
+        leadership_epoch: int | None = None,
+        expires_at: str | None = None,
+    ) -> int:
+        """Record a control notice in the transaction that changed the room."""
+        if leadership_epoch is not None or expires_at is not None:
+            previous = connection.execute(
+                """
+                SELECT notice_id FROM room_control_notices
+                WHERE room_id = ? AND kind = ? AND member_id = ?
+                    AND leadership_epoch IS ? AND expires_at IS ?
+                """,
+                (room_id, kind, member_id, leadership_epoch, expires_at),
+            ).fetchone()
+            if previous is not None:
+                return int(previous["notice_id"])
+        notice_id = _next_id(connection, "event_id")
+        connection.execute(
+            """
+            INSERT INTO room_control_notices (
+                notice_id, member_id, room_id, kind, text, leadership_epoch, expires_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (notice_id, member_id, room_id, kind, text, leadership_epoch, expires_at),
+        )
+        return notice_id
+
+    def room_notices(self, token: str, after: int = 0, limit: int = 50) -> dict:
+        with self._transaction() as connection:
+            member_id = _member(connection, token)["member_id"]
+            rows = connection.execute(
+                """
+                SELECT n.notice_id, n.kind, n.room_id, n.text, n.leadership_epoch, n.expires_at
+                FROM room_control_notices n
+                JOIN room_members rm ON rm.room_id = n.room_id AND rm.member_id = n.member_id
+                JOIN rooms r ON r.room_id = n.room_id
+                WHERE n.member_id = ? AND n.acknowledged = 0 AND n.notice_id > ?
+                    AND r.archived_at IS NULL
+                ORDER BY n.notice_id LIMIT ?
+                """,
+                (member_id, after, limit),
+            )
+            return {"notices": [{key: value for key, value in dict(row).items()
+                                 if value is not None} for row in rows]}
+
+    def ack_room_notice(self, token: str, notice_id: int) -> dict:
+        with self._transaction(write=True) as connection:
+            member_id = _member(connection, token)["member_id"]
+            changed = connection.execute(
+                """
+                UPDATE room_control_notices SET acknowledged = 1
+                WHERE notice_id = ? AND member_id = ?
+                """,
+                (notice_id, member_id),
+            )
+            if not changed.rowcount:
+                raise CollaborationError("not_found")
+        return {"notice_id": notice_id}
 
     def inbox_changes(self, token: str) -> ObserveInbox:
         with self._transaction() as connection:

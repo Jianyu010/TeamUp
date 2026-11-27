@@ -14,6 +14,7 @@ from ._desktop import PREVIEW_LIMIT, TITLE_LIMIT, clean
 from ._harness import owned_socket, wake_prompt
 from ._notices import binding_scope
 from ._protocol import is_integer, is_string, is_uuid
+from ._room_control_notices import drain_room_notices
 from ._task_notices import drain_task_reminders
 from ._upstream import unavailable
 from .ipc import ClientError
@@ -472,6 +473,8 @@ class Coordinator:
             counts = {"unread_mentions": self._notices.unread(session.scope)}
             if departures := self._notices.unread_departures(session.scope):
                 counts["unread_room_departures"] = departures
+            if room_notices := self._notices.unread_room_notices(session.scope):
+                counts["unread_room_notices"] = room_notices
             return counts
         if method == "register":
             try:
@@ -951,10 +954,12 @@ class Coordinator:
     async def _drain_with_hints(self, binding, session, lines):
         wake = session.inbox_changed
         reminder_wake = asyncio.Event()
-        reader = asyncio.create_task(self._read_hints(lines, wake, reminder_wake))
+        room_wake = asyncio.Event()
+        reader = asyncio.create_task(self._read_hints(lines, wake, reminder_wake, room_wake))
         reminders = asyncio.create_task(
             self._watch_task_reminders(binding, reminder_wake)
         )
+        room_notices = asyncio.create_task(self._watch_room_notices(binding, session, room_wake))
         try:
             while True:
                 wake.clear()
@@ -966,7 +971,28 @@ class Coordinator:
         finally:
             reader.cancel()
             reminders.cancel()
-            await asyncio.gather(reader, reminders, return_exceptions=True)
+            room_notices.cancel()
+            await asyncio.gather(reader, reminders, room_notices, return_exceptions=True)
+
+    async def _watch_room_notices(self, binding, session, wake):
+        def record(notice):
+            if self._notices.record_room_notice(session.scope, notice):
+                self._notice_output.emit({key: val for key, val in notice.items() if key != "text"})
+                session.harness_changed.set()
+
+        while True:
+            wake.clear()
+            try:
+                if not await drain_room_notices(
+                    self._upstream.request, binding.member_token, record
+                ):
+                    return
+            except (ClientError, OSError, OverflowError, sqlite3.Error):
+                retry_delay = 5
+            else:
+                retry_delay = PRESENCE_INTERVAL
+            with suppress(TimeoutError):
+                await asyncio.wait_for(wake.wait(), timeout=retry_delay)
 
     async def _watch_task_reminders(self, binding, wake):
         while True:
@@ -1141,10 +1167,53 @@ class Coordinator:
                         self._notices.set_harness_state(
                             scope, notice["event_id"], state
                         )
+                    control_waiting = await self._deliver_room_notices(binding, session)
+                    if control_waiting and self._leases.get(session.identity) is not None:
+                        with suppress(TimeoutError):
+                            await asyncio.wait_for(session.harness_changed.wait(), timeout=5)
+                        continue
                     if blocked or not pending:
                         await session.harness_changed.wait()
             except sqlite3.Error:
                 await asyncio.sleep(1)
+
+    async def _deliver_room_notices(self, binding, session):
+        scope = session.scope
+        lease = self._leases.get(session.identity)
+        for notice in self._notices.pending_room_notices(scope):
+            event_id = notice["event_id"]
+            room_id = notice["room_id"]
+            wake_scope = {"room_id": room_id, "sender_member_id": None}
+            if not self._wake_allowed(session, wake_scope):
+                self._notices.mark_room_notice_attempted(scope, event_id)
+                continue
+            if lease is None:
+                return True
+            driver = self._drivers.get(lease.kind)
+            if driver is None:
+                self._notices.mark_room_notice_attempted(scope, event_id)
+                continue
+            try:
+                room = await self._upstream.request("GET", f"/rooms/{room_id}", binding.member_token)
+            except ClientError as exc:
+                if exc.code not in ("not_found", "not_registered", "unauthorized"):
+                    return True
+                self._notices.mark_room_notice_attempted(scope, event_id)
+                continue
+            except OSError:
+                return True
+            if self._leases.get(session.identity) is not lease:
+                return True
+            self._notices.mark_room_notice_attempted(scope, event_id)
+            if room.get("archived_at") is not None or not self._wake_allowed(session, wake_scope):
+                continue
+            if any(
+                field in room and field in notice and room[field] != notice[field]
+                for field in ("leadership_epoch", "expires_at")
+            ):
+                continue
+            await driver(lease.address, lease.token, f"TeamUp room {room_id}: {notice['text']}")
+        return False
 
     def _wake_allowed(self, session, notice):
         identity = session.identity
