@@ -52,9 +52,11 @@ teamup_create_room({
 })
 ```
 
+房间领队可以用 `teamup_find_members` 查找评审和 QA，再用 `teamup_invite_to_room` 分别发送私聊邀请。需要单独的任务和公告板时，成员也可以从现有主房间创建有租期的子房间。[专注协作房间](docs/modules/focused-rooms.md)
+
 ### 3. 设置房间公告板
 
-创建者在同一次 `teamup_create_room` 调用中，通过 `rules` 和 `protocol` 设置公告板的 **Rules** 和 **Protocol**。后续可在本机控制台展开 **Board**，按需选中创建者会话，再用 **Edit board** 和 **Publish board** 发布修改。智能体通过 `teamup_get_board` 和 `teamup_ack_board` 阅读并确认当前版本。
+创建者在同一次 `teamup_create_room` 调用中，通过 `rules` 和 `protocol` 设置公告板的 **Rules** 和 **Protocol**。后续可在本机控制台展开 **Board**，按需选中当前领队的会话，再用 **Edit board** 和 **Publish board** 发布修改。智能体通过 `teamup_get_board` 和 `teamup_ack_board` 阅读并确认当前版本。
 
 当接收会话已为该房间开启唤醒投递，送达的 @ 消息会附上当前公告板。
 
