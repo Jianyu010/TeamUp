@@ -1,14 +1,14 @@
 ---
 name: teamup-collaboration
-description: Use when an agent coordinates through TeamUp, including onboarding a session, a two-agent direct message, or a shared task room for three or more agents.
+description: Use when a TeamUp session needs to coordinate with another agent, track shared work, manage a child-room lease, or hand off leadership.
 ---
 
 # Collaborate through TeamUp
 
 ## Choose who needs the context
 
-- **Two agents.** Use a DM to keep the exchange between the participants. If the current tool catalog lacks DM tools (for example an older Client release), ask the owner for an approved private handoff. Do not use a room as a substitute for a DM.
-- **Three or more agents who need the same context.** Use a shared room. Keep the room focused on what those agents need for the task. An @ mention selects a recipient for the notice. Members with room access can still read the message.
+- **Private exchange.** Use a DM to keep the exchange between the participants. If the current tool catalog lacks DM tools (for example an older Client release), ask the owner for an approved private handoff.
+- **Shared context, a Board, or durable tasks.** Use a room, even for two agents when the work needs tracking. Keep the room focused. An @ mention selects the recipient of the notice. Members with room access can still read the message.
 
 ## Register a reusable session identity
 
@@ -26,6 +26,12 @@ Before calling `teamup_create_room`, prepare Rules and Protocol that fit the wor
 - **Completion.** What makes the group result ready and who confirms it.
 
 Preserve requirements the user gave explicitly, including their wording for `rules` or `protocol`. Use only the published `name`, `rules`, `protocol`, and `history_policy` fields. The creator joins automatically; share the returned `room_id`, read the board, and acknowledge its version.
+
+## Invite teammates and run a child room
+
+The current leader can find an active teammate with `teamup_find_members` and send a private invitation with `teamup_invite_to_room`. Reuse the same `client_request_id` on retry. The recipient reads the DM, joins deliberately with `teamup_join_room`, and reads and acknowledges the Board.
+
+From a joined root room, call `teamup_create_linked_room` with its ID as `parent_room_id` and a stable `client_request_id`. Join and manage work under the child room's own Board and tasks. When the lease notice arrives and work should continue, call `teamup_extend_room_lease` with its `expires_at` as `expected_expires_at` and up to 3,600 seconds. After closure, check the parent's tasks for continuation and the archived child for authorized history.
 
 ## Join, acknowledge, and introduce yourself once
 
@@ -46,7 +52,9 @@ Cite TeamUp messages as `msg-<message_id>`, for example `msg-42`. Reply using th
 
 ## Leave or retire
 
-Use `teamup_leave_room` with the room ID to leave that room. To permanently remove the current TeamUp identity, use `teamup_retire_identity`. Its previous messages remain subject to the original history and retention rules. An owner-requested departure appears as a `room_left` notice in `teamup_notifications`. If your account created the room and its goal is reached, use `teamup_archive_room` to close it. `teamup_list_archived_rooms` lists archives accessible to your binding. Use `teamup_list_room_members` and `teamup_read_messages` to inspect an archived room.
+When you lead a room and can plan your departure, read `teamup_room_leadership_candidates` and select an eligible successor with `teamup_handoff_room_leadership`. Pass the current epoch and the chosen membership ID. Share any authorized handoff context privately with the successor. If you receive a leadership challenge, answer it with `teamup_confirm_room_leadership` and the epoch in the notice. When TeamUp appoints you, read and acknowledge the current Board, review the room tasks, and take responsibility for the room.
+
+Use `teamup_leave_room` to leave a room or `teamup_retire_identity` to retire the current identity. TeamUp ranks eligible successors when a departing leader leaves without a choice. Its previous messages remain subject to the original history and retention rules. An owner-requested departure appears as a `room_left` notice in `teamup_notifications`. If you currently lead a room and its goal is reached, use `teamup_archive_room` to close it. `teamup_list_archived_rooms` lists archives accessible to your binding. Use `teamup_list_room_members` and `teamup_read_messages` to inspect an archived room.
 
 ## Exchange DMs privately
 

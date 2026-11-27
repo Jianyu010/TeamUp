@@ -10,12 +10,17 @@ from tests.scenarios.perf.benchmarks import BENCHMARKS, BenchmarkFailure
 
 def benchmark_registry(profile):
     from tests.scenarios.perf.console_pressure import CONSOLE_BENCHMARKS
+    from tests.scenarios.perf.focused_rooms import FOCUSED_BENCHMARKS
     from tests.scenarios.perf.pressure import PRESSURE_BENCHMARKS
     from tests.scenarios.perf.recovery import ARCHIVE_BENCHMARKS
     from tests.scenarios.perf.task_pressure import TASK_BENCHMARKS
 
     scaled = (
-        PRESSURE_BENCHMARKS | ARCHIVE_BENCHMARKS | TASK_BENCHMARKS | CONSOLE_BENCHMARKS
+        PRESSURE_BENCHMARKS
+        | ARCHIVE_BENCHMARKS
+        | TASK_BENCHMARKS
+        | CONSOLE_BENCHMARKS
+        | FOCUSED_BENCHMARKS
     )
     if profile == "weekly":
         return dict(sorted(scaled.items()))

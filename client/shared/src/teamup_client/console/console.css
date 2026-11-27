@@ -417,3 +417,46 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
 .archived-message p { white-space: pre-wrap; }
 .archive-notices { margin-top: 12px; }
 #archived-notices { overflow-wrap: anywhere; font-size: 12px; }
+
+#leadership-description span { overflow-wrap: anywhere; }
+.leadership-choice { display: grid; gap: 4px; margin-top: 10px; }
+#leadership-candidate {
+  min-width: 0; width: 100%; padding: 5px;
+  border: 1px solid var(--edge); border-radius: 5px; background: var(--shell);
+}
+#leadership-detail:empty, #leadership-status:empty { display: none; }
+#leadership-retry { margin-top: 8px; color: var(--accent); }
+.leadership-actions { flex-wrap: wrap; }
+#leadership-choose { border-color: #52645f; color: var(--accent); }
+#leadership-dialog button:disabled, #focus-board button:disabled { cursor: default; opacity: .55; }
+#focus-status:empty, #focus-children-status:empty, #focus-lease-hint:empty, #focus-invite-hint:empty {
+  display: none;
+}
+.focus-columns {
+  display: grid; gap: 8px; align-content: start; align-items: start; padding: 2px;
+  grid-template-columns: repeat(auto-fit, minmax(min(230px, 100%), 1fr));
+}
+.focus-section {
+  display: grid; gap: 7px; align-content: start; padding: 9px; font-size: 12px;
+  border: 1px solid var(--line); border-radius: 7px; background: var(--panel);
+}
+.focus-section h3 { margin: 0; font-size: 13px; }
+.focus-section form, .focus-section label { display: grid; gap: 4px; }
+.focus-section form { gap: 7px; }
+.focus-section :is(input, select, textarea) {
+  min-width: 0; max-width: 100%; padding: 5px; resize: vertical;
+  border: 1px solid var(--edge); border-radius: 5px; background: #192224; color: inherit; font: inherit;
+}
+.focus-section button, #focus-children-more {
+  justify-self: start; border-color: var(--edge); color: var(--accent); padding: 3px 6px;
+}
+#focus-lease { display: grid; gap: 4px; }
+#focus-lease code { font: 11px ui-monospace, monospace; overflow-wrap: anywhere; }
+#focus-children { display: grid; gap: 5px; margin: 0; padding: 0; list-style: none; }
+.focus-child {
+  display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 5px 6px;
+  background: var(--raised); border: 1px solid var(--edge); border-radius: 5px; overflow-wrap: anywhere;
+}
+.focus-child > div { min-width: 0; }
+.focus-child strong, .focus-child small { display: block; }
+.focus-child small { color: var(--muted); font-size: 11px; }

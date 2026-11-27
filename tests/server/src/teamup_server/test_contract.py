@@ -186,6 +186,47 @@ def confirm(client, label, room_path):
     assert response.json() == {"version": 1}
 
 
+def heartbeat(client, label):
+    response = post(client, label, "/presence/heartbeat")
+    assert response.status_code == 200, response.text
+
+
+def candidates(client, label, room_path):
+    response = get(client, label, f"{room_path}/leadership/candidates")
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def handoff(client, label, room_path, mode, **fields):
+    epoch = candidates(client, label, room_path)["leadership_epoch"]
+    response = post(
+        client,
+        label,
+        f"{room_path}/leadership/handoff",
+        json={"leadership_epoch": epoch, "mode": mode, **fields},
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def handover(client, room_path, label):
+    """Give ``label`` the leadership of ``room_path`` by its creator's ranked choice."""
+    chosen = member(client, label)
+    row = next(
+        row
+        for row in candidates(client, "sender", room_path)["candidates"]
+        if row["member_id"] == chosen
+    )
+    return handoff(
+        client,
+        "sender",
+        room_path,
+        "choose",
+        member_id=row["member_id"],
+        membership_id=row["membership_id"],
+    )
+
+
 def send(client, room_path, key, text="hello", target=None):
     return post(
         client,

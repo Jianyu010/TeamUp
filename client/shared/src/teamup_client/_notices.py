@@ -72,6 +72,18 @@ class NoticeStore:
                     PRIMARY KEY (binding_scope, event_id)
                 ) WITHOUT ROWID
             """)
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS room_control_notices (
+                    binding_scope TEXT NOT NULL,
+                    event_id INTEGER NOT NULL,
+                    room_id TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    delivered INTEGER NOT NULL DEFAULT 0,
+                    harness_attempted INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (binding_scope, event_id)
+                ) WITHOUT ROWID
+            """)
             columns = {row[1] for row in db.execute("PRAGMA table_info(notices)")}
             for name, definition in _DELIVERY_COLUMNS.items():
                 if name not in columns:
@@ -215,29 +227,69 @@ class NoticeStore:
                 )
         return result.rowcount == 1
 
+    def record_room_notice(self, scope, notice):
+        with self._db:
+            inserted = self._db.execute(
+                """
+                INSERT INTO room_control_notices (binding_scope, event_id, room_id, kind, payload)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT (binding_scope, event_id) DO NOTHING
+                """,
+                (scope, notice["event_id"], notice["room_id"], notice["kind"], json.dumps(notice)),
+            )
+        return inserted.rowcount == 1
+
+    def pending_room_notices(self, scope):
+        return [
+            json.loads(payload)
+            for (payload,) in self._db.execute(
+                """
+                SELECT payload FROM room_control_notices
+                WHERE binding_scope = ? AND harness_attempted = 0
+                ORDER BY event_id
+                """,
+                (scope,),
+            )
+        ]
+
+    def mark_room_notice_attempted(self, scope, event_id):
+        with self._db:
+            self._db.execute(
+                """
+                UPDATE room_control_notices SET harness_attempted = 1
+                WHERE binding_scope = ? AND event_id = ?
+                """,
+                (scope, event_id),
+            )
+
     def page(self, scope, after, limit):
         if after >= 2**63 - 1:
             return []
         cursor = self._db.execute(
             """
-            SELECT event_id, room_id, dm_id, message_id, sender_member_id, kind
+            SELECT event_id, room_id, dm_id, message_id, sender_member_id, kind, payload
             FROM (
                 SELECT event_id, room_id, NULL AS dm_id, message_id, sender_member_id,
-                    'mention' AS kind
+                    'mention' AS kind, NULL AS payload
                 FROM notices WHERE binding_scope = ? AND event_id > ?
                 UNION ALL
-                SELECT event_id, NULL, dm_id, message_id, sender_member_id, 'dm'
+                SELECT event_id, NULL, dm_id, message_id, sender_member_id, 'dm', NULL
                 FROM dm_notices WHERE binding_scope = ? AND event_id > ?
                 UNION ALL
-                SELECT event_id, room_id, NULL, NULL, NULL, 'room_left'
+                SELECT event_id, room_id, NULL, NULL, NULL, 'room_left', NULL
                 FROM room_departure_notices WHERE binding_scope = ? AND event_id > ?
+                UNION ALL
+                SELECT event_id, room_id, NULL, NULL, NULL, kind, payload
+                FROM room_control_notices WHERE binding_scope = ? AND event_id > ?
             ) ORDER BY event_id LIMIT ?
             """,
-            (scope, after, scope, after, scope, after, limit),
+            (scope, after, scope, after, scope, after, scope, after, limit),
         )
         rows = []
-        for event_id, room_id, dm_id, message_id, sender, kind in cursor:
-            if kind == "room_left":
+        for event_id, room_id, dm_id, message_id, sender, kind, payload in cursor:
+            if payload is not None:
+                rows.append(json.loads(payload))
+            elif kind == "room_left":
                 rows.append({"event_id": event_id, "kind": kind, "room_id": room_id})
             elif kind == "mention":
                 rows.append(
@@ -273,6 +325,18 @@ class NoticeStore:
                 "WHERE binding_scope = ? AND event_id = ?",
                 addresses,
             )
+            self._db.executemany(
+                "UPDATE room_control_notices SET delivered = 1 "
+                "WHERE binding_scope = ? AND event_id = ?",
+                addresses,
+            )
+
+    def unread_room_notices(self, scope):
+        (count,) = self._db.execute(
+            "SELECT count(*) FROM room_control_notices WHERE binding_scope = ? AND delivered = 0",
+            (scope,),
+        ).fetchone()
+        return count
 
     def unread_departures(self, scope):
         (count,) = self._db.execute(

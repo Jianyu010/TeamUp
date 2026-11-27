@@ -12,8 +12,9 @@
 | WE-04 | 公告中途变更 | 保留历史编号。由 nightly 的 NS-15.04 验证 |
 | WE-05 | 五个 Agent 站会 | Backend 发起，经 Frontend、Tester、Docs 到 Ops 逐级 @ 交接。五方都发过状态 |
 | WE-06 | 定向指派与交接房间任务 | Release Lead 设置预计完成时间和完成标准，并指派给 Tester 和 Reviewer。两人各收到一次定向通知。Tester 领取并记录测试夹具编号，Reviewer 读取记录、核验并完成任务。Observer 看不到任务内容 |
+| WE-07 | 聚焦房间：邀请、交接与任务接续 | Coordinator 建根房间和子房间，创建两项任务，并用私聊邀请 Verifier。Verifier 从通知里读到邀请、按其中的房间 ID 加入、确认公告并记录私有测试结果。Coordinator 用 auto 把领导权交给 Verifier。Verifier 完成已核验的任务，保留另一项未完成，然后关闭子房间。父房间只出现一项带来源引用的接续任务，Coordinator 收到 `child_tasks_rolled_up` 通知 |
 
-WE-06 模拟发布核验流程，有三名协作者和一名观察者，共七轮。每周负载测试由 `python -m tests.scenarios.perf --suite weekly` 单独运行，使用脚本化参与者覆盖 10、30、50、100 人的任务组。
+WE-06 模拟发布核验流程，有三名协作者和一名观察者，共七轮。WE-07 共五轮，其中 Verifier 先单独登记。每周负载测试由 `python -m tests.scenarios.perf --suite weekly` 单独运行，使用脚本化参与者覆盖 10、30、50、100 人的任务组。
 
 ## Agent 如何接入
 
@@ -38,9 +39,11 @@ TeamUp Client 只有 Claude Code 和 Codex 两种唤醒 driver，没有 opencode
 
 DM 通知只保存在 Client 本地，不会自动启动 Agent。WE-01 在问句和回复分别写入 DM 后显式启动 B 和 A 的下一轮。WE-06 先通过 MCP 确认两名被指派者收到定向通知，再由编排器启动 Tester 并在测试记录写入后启动 Reviewer。两人通过通知中的房间消息找到任务编号。
 
+聚焦房间通知（例如 `leadership_assigned`）和邀请私聊一样不产生桌面通知，因此同样不会触发唤醒。WE-07 不使用唤醒轮：编排器在邀请发出后显式启动 Verifier，在领导权交接后再次显式启动它。两个轮次里 Agent 都先调用 `teamup_notifications` 找到自己的私聊或房间通知，再按通知内容行动。通过条件包含“没有任何一轮是唤醒轮”。
+
 ## 判定与指标
 
-判定通过 MCP 读取 TeamUp 状态。房间聊天使用房间历史，用 `board_ack_required` 判断成员是否确认了当前公告。WE-01 以双方身份读取同一个 DM 的历史。WE-06 检查通知收件人、指派重试后的消息数量、观察者的访问权限，以及任务的参与者、事件顺序和完成状态。成员 ID 取自 Agent 自己的 `teamup_register` 结果。
+判定通过 MCP 读取 TeamUp 状态。房间聊天使用房间历史，用 `board_ack_required` 判断成员是否确认了当前公告。WE-01 以双方身份读取同一个 DM 的历史。WE-06 检查通知收件人、指派重试后的消息数量、观察者的访问权限，以及任务的参与者、事件顺序和完成状态。WE-07 以 Coordinator 身份读取邀请 DM 的历史、子房间成员、任务事件、父房间任务和归档列表，并以 Verifier 身份确认公告和领导权通知。成员 ID 取自 Agent 自己的 `teamup_register` 结果。
 
 每个场景记录以下指标，`labels` 为 `{"scenario": "WE-02", "agents": 3}`：
 
@@ -57,7 +60,7 @@ DM 通知只保存在 Client 本地，不会自动启动 Agent。WE-01 在问句
 
 ## 预算
 
-- 全套件目标不超过 150 个 Agent 轮次，实际计划约 30 轮。
+- 全套件目标不超过 150 个 Agent 轮次，实际计划约 35 轮。
 - 每个场景有轮次和时长上限（见 `scenarios.py`），`--max-turns` 可再调低。超限判 `fail`。
 - 全套件达到 80 分钟或 120 轮后，未开始的场景记为 `error`。契约上限是 90 分钟。
 - 条件一旦满足立即结束，不再启动新的唤醒轮。已开始的轮次会跑完，保证记录完整。
@@ -73,12 +76,23 @@ DM 通知只保存在 Client 本地，不会自动启动 Agent。WE-01 在问句
 | WE-03 | 4 | 110 s | 12 s |
 | WE-05 | 10 | 204 s | 约 17 s |
 
+### 2026-11-28 WE-07 单场景实测
+
+在 Linux x86_64 开发机上用 `uv run --no-sync python -m tests.scenarios.weekly --only WE-07` 跑了一次真实 Agent。模型为默认的 `csi-provider/DeepSeek-V4.1-Flash-1017`，经本机中继。场景通过，没有唤醒轮。
+
+| 轮次 | 模型步数 | TeamUp 工具调用 | 耗时 | token |
+| --- | --- | --- | --- | --- |
+| 5 | 31 | 27 | 62 s | 约 27.5 万 |
+
+Verifier 在被显式启动的两轮里都先调用 `teamup_notifications`：第一轮从私聊通知读到房间 ID 后加入并记录进度，第二轮读到领导权通知后完成任务并关闭房间。
+
 ## 运行
 
 ```sh
 # 不调用模型，验证接线（macOS 和 Linux 均可）
 uv run --no-sync python -m tests.scenarios.weekly --dry-run --out /tmp/weekly.json
 uv run --no-sync python -m tests.scenarios.weekly --dry-run --only WE-01,WE-06 --out /tmp/weekly-handoffs.json
+uv run --no-sync python -m tests.scenarios.weekly --dry-run --only WE-07 --out /tmp/weekly-focused.json
 
 # 真实 Agent（需要 opencode 和本机中继）
 uv run --no-sync python -m tests.scenarios.weekly --out results/weekly/summary.json

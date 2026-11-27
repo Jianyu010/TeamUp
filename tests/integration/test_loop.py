@@ -524,3 +524,107 @@ def test_dm_mcp_exchange_notices_and_recovery():
                 await run_dm_exchange(Path(directory), available_port())
 
         asyncio.run(run())
+
+
+async def run_focused_room_exchange(root, port):
+    alice = Developer(root, "alice", port)
+    bob = Developer(root, "bob", port)
+    keys = json.dumps({"alice": alice.enrollment_key, "bob": bob.enrollment_key})
+    with (
+        process(
+            "teamup_server.main",
+            "server/src",
+            ["--db", root / "server.db", "--port", port],
+            root / "server.log",
+            {"TEAMUP_ENROLLMENT_KEYS": keys},
+        ) as server,
+        alice.daemon(),
+        bob.daemon(),
+    ):
+        wait_for(lambda: tcp_is_ready(port), server)
+        async with alice.agent() as leader, bob.agent() as peer:
+            await tool(leader, "register", name="Build Lead",
+                       description="Coordinates the build and team handoffs.")
+            bob_member = await tool(peer, "register", name="Test Lead",
+                                    description="Coordinates test coverage.")
+            bob_id = bob_member["member_id"]
+            parent = await tool(leader, "create_room", name="Release")
+            parent_id = parent["room_id"]
+            invite = {
+                "room_id": parent_id,
+                "member_id": bob_id,
+                "client_request_id": "release-invitation",
+            }
+            receipt = await tool(leader, "invite_to_room", **invite)
+            assert await tool(leader, "invite_to_room", **invite) == receipt
+            assert await tool(peer, "list_rooms") == {"rooms": []}
+            dm = (await tool(peer, "read_dm", dm_id=receipt["dm_id"]))["messages"]
+            assert len(dm) == 1 and parent_id in dm[0]["text"]
+            await tool(peer, "join_room", room_id=parent_id)
+
+            create_child = {
+                "parent_room_id": parent_id,
+                "name": "Focused verification",
+                "client_request_id": "verification-room",
+                "rules": "Verify release behavior",
+                "history_policy": "retained",
+            }
+            child = await tool(leader, "create_linked_room", **create_child)
+            assert await tool(leader, "create_linked_room", **create_child) == child
+            assert child["parent_room_id"] == parent_id
+            child_id = child["room_id"]
+            child_page = await tool(peer, "list_child_rooms", room_id=parent_id, limit=1)
+            assert [row["room_id"] for row in child_page["rooms"]] == [child_id]
+            assert (await tool(peer, "list_rooms"))["rooms"][0]["room_id"] == parent_id
+            await tool(
+                leader, "archive_room", error="room_has_live_children", room_id=parent_id
+            )
+            await tool(
+                leader,
+                "extend_room_lease",
+                error="invalid_request",
+                room_id=child_id,
+                seconds=True,
+                expected_expires_at=child["expires_at"],
+            )
+
+            async with asyncio.timeout(20):
+                while True:
+                    ranking = await tool(leader, "room_leadership_candidates", room_id=parent_id)
+                    candidate = next(
+                        (row for row in ranking["candidates"] if row["member_id"] == bob_id),
+                        None,
+                    )
+                    if candidate:
+                        break
+                    await asyncio.sleep(0.1)
+            handoff = await tool(
+                leader,
+                "handoff_room_leadership",
+                room_id=parent_id,
+                leadership_epoch=ranking["leadership_epoch"],
+                mode="choose",
+                member_id=bob_id,
+                membership_id=candidate["membership_id"],
+                leave=True,
+            )
+            assert handoff["left"] and not handoff["pending"]
+            assert handoff["leader_member_id"] == bob_id
+            assert handoff["leadership_epoch"] > ranking["leadership_epoch"]
+            await tool(
+                peer,
+                "confirm_room_leadership",
+                error="conflict",
+                room_id=parent_id,
+                leadership_epoch=ranking["leadership_epoch"],
+            )
+
+
+def test_focused_room_mcp_exchange():
+    with tempfile.TemporaryDirectory(prefix="tu-focus-", dir="/tmp") as directory:
+
+        async def run():
+            async with asyncio.timeout(60):
+                await run_focused_room_exchange(Path(directory), available_port())
+
+        asyncio.run(run())

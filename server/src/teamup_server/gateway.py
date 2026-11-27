@@ -22,6 +22,7 @@ from pydantic import (
     Field,
     StringConstraints,
     field_validator,
+    model_validator,
 )
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException
@@ -44,6 +45,7 @@ _ERRORS = {
     "conflict": (409, "The request conflicts with the existing state."),
     "member_retired": (409, "This member's binding has been retired."),
     "room_archived": (409, "This room is archived."),
+    "room_has_live_children": (409, "Close the active child rooms first."),
     "membership_changed": (409, "The current room membership has changed."),
     "invalid_mention": (422, "Mention another member of this room."),
     "invalid_peer": (422, "The DM peer must be another available member of this team."),
@@ -52,10 +54,11 @@ _ERRORS = {
 _UUID = re.compile(r"[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}")
 _KEEPALIVE_SECONDS = 15
 _LOGGER = logging.getLogger(__name__)
-_LOG_TIMESTAMP = re.compile(
+_TIMESTAMP_PATTERN = (
     r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
     r"(?:\.[0-9]{1,6})?(?:Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])"
 )
+_LOG_TIMESTAMP = re.compile(_TIMESTAMP_PATTERN)
 
 _CONSOLE_STATIC_DIR = pathlib.Path(__file__).parent / "console"
 _CONSOLE_HEADERS = {
@@ -194,6 +197,44 @@ class _Room(_Body):
         if value is None:
             raise ValueError("Board text must be a string when provided")
         return value
+
+
+class _LinkedRoom(_Room):
+    client_request_id: _ShortText
+
+
+class _RoomInvitation(_Body):
+    member_id: _Identifier
+    client_request_id: _ShortText
+
+
+class _ExtendRoomLease(_Body):
+    seconds: Annotated[int, Field(strict=True, ge=1, le=3600)]
+    expected_expires_at: Annotated[
+        str, StringConstraints(strict=True, pattern=f"^{_TIMESTAMP_PATTERN}$")
+    ]
+
+
+class _LeadershipEpoch(_Body):
+    leadership_epoch: Annotated[int, Field(strict=True, gt=0)]
+
+
+class _LeadershipHandoff(_LeadershipEpoch):
+    mode: Literal["choose", "auto", "defer"]
+    member_id: _Identifier | None = None
+    membership_id: Annotated[
+        str, StringConstraints(strict=True, pattern=_MEMBERSHIP_PATTERN)
+    ] | None = None
+    leave: Annotated[bool, Field(strict=True)] = False
+
+    @model_validator(mode="after")
+    def validate_choice(self) -> "_LeadershipHandoff":
+        if self.mode == "choose":
+            if self.member_id is None or self.membership_id is None:
+                raise ValueError("A chosen successor requires both member and membership IDs")
+        elif {"member_id", "membership_id"} & self.model_fields_set:
+            raise ValueError("Only choose mode accepts member and membership IDs")
+        return self
 
 
 class _RemoveRoomMember(_Body):
@@ -642,6 +683,7 @@ class Gateway:
 
         @app.post("/v1/presence/heartbeat", dependencies=[Depends(_reject_body)])
         def heartbeat(token: _Bearer) -> dict:
+            collaboration.record_leadership_heartbeat(token)
             return presence.heartbeat(token)
 
         @app.get("/v1/presence", dependencies=[Depends(_reject_body)])
@@ -694,6 +736,75 @@ class Gateway:
         ) -> dict:
             _no_store(response)
             return collaboration.room_detail(token, room_id)
+
+        @app.post(
+            "/v1/rooms/{room_id}/invitations", dependencies=[Depends(_require_utf8)]
+        )
+        def invite_to_room(token: _Bearer, room_id: _Identifier, body: _RoomInvitation) -> dict:
+            return collaboration.invite_to_room(
+                token, room_id, body.member_id, body.client_request_id
+            )
+
+        @app.post(
+            "/v1/rooms/{room_id}/children", dependencies=[Depends(_require_utf8)]
+        )
+        def create_linked_room(token: _Bearer, room_id: _Identifier, body: _LinkedRoom) -> dict:
+            return collaboration.create_linked_room(
+                token, room_id, body.name, body.rules, body.protocol,
+                body.history_policy, body.client_request_id,
+            )
+
+        @app.get(
+            "/v1/rooms/{room_id}/children", dependencies=[Depends(_reject_body)]
+        )
+        def list_child_rooms(
+            token: _Bearer,
+            room_id: _Identifier,
+            response: Response,
+            after: _Identifier | None = None,
+            limit: _Limit = 50,
+        ) -> dict:
+            _no_store(response)
+            return collaboration.list_child_rooms(token, room_id, after, limit)
+
+        @app.post(
+            "/v1/rooms/{room_id}/lease/extend", dependencies=[Depends(_require_utf8)]
+        )
+        def extend_room_lease(
+            token: _Bearer, room_id: _Identifier, body: _ExtendRoomLease
+        ) -> dict:
+            return collaboration.extend_room_lease(
+                token, room_id, body.seconds, body.expected_expires_at
+            )
+
+        @app.get(
+            "/v1/rooms/{room_id}/leadership/candidates",
+            dependencies=[Depends(_reject_body)],
+        )
+        def room_leadership_candidates(
+            token: _Bearer, room_id: _Identifier, response: Response
+        ) -> dict:
+            _no_store(response)
+            return collaboration.room_leadership_candidates(token, room_id)
+
+        @app.post(
+            "/v1/rooms/{room_id}/leadership/handoff", dependencies=[Depends(_require_utf8)]
+        )
+        def handoff_room_leadership(
+            token: _Bearer, room_id: _Identifier, body: _LeadershipHandoff
+        ) -> dict:
+            return collaboration.handoff_room_leadership(
+                token, room_id, body.leadership_epoch, body.mode,
+                member_id=body.member_id, membership_id=body.membership_id, leave=body.leave,
+            )
+
+        @app.post(
+            "/v1/rooms/{room_id}/leadership/confirm", dependencies=[Depends(_require_utf8)]
+        )
+        def confirm_room_leadership(
+            token: _Bearer, room_id: _Identifier, body: _LeadershipEpoch
+        ) -> dict:
+            return collaboration.confirm_room_leadership(token, room_id, body.leadership_epoch)
 
         @app.get("/v1/rooms/{room_id}/members", dependencies=[Depends(_reject_body)])
         def room_members(
@@ -926,6 +1037,22 @@ class Gateway:
             token: _Bearer, dm_id: _Identifier, after: _After = 0, limit: _Limit = 50
         ) -> dict:
             return collaboration.dm_history(token, dm_id, after, limit)
+
+        @app.get("/v1/room-notices", dependencies=[Depends(_reject_body)])
+        def room_notices(
+            token: _Bearer, response: Response, after: _After = 0, limit: _Limit = 50
+        ) -> dict:
+            _no_store(response)
+            return collaboration.room_notices(token, after, limit)
+
+        @app.post(
+            "/v1/room-notices/{notice_id}/ack", dependencies=[Depends(_reject_body)]
+        )
+        def ack_room_notice(
+            token: _Bearer, notice_id: Annotated[int, Path(gt=0)]
+        ) -> dict:
+            collaboration.ack_room_notice(token, notice_id)
+            return {"notice_id": notice_id}
 
         @app.get("/v1/inbox", dependencies=[Depends(_require_query_utf8)])
         def inbox(

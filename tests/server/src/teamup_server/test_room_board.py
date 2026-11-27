@@ -4,7 +4,19 @@ from contextlib import closing
 from threading import Barrier
 
 import pytest
-from test_contract import api, confirm, enroll, error, get, join, member, post, room
+from test_contract import (
+    api,
+    confirm,
+    enroll,
+    error,
+    get,
+    handover,
+    heartbeat,
+    join,
+    member,
+    post,
+    room,
+)
 
 
 @pytest.fixture
@@ -57,7 +69,11 @@ def test_joined_sessions_of_the_creating_account_can_publish(team):
         "invalid_request",
     )
     assert get(team, "sender", f"{board_path}/view").json()["can_edit"] is True
+    heartbeat(team, "sibling")
+    error(post(team, "sibling", board_path, json=update), 403, "forbidden")
+    handover(team, path, "sibling")
     assert get(team, "sibling", f"{board_path}/view").json()["can_edit"] is True
+    assert get(team, "sender", f"{board_path}/view").json()["can_edit"] is False
     response = post(team, "sibling", board_path, json=update)
     assert response.status_code == 200
     assert response.json() == {
@@ -66,7 +82,8 @@ def test_joined_sessions_of_the_creating_account_can_publish(team):
         "room_id": path.rsplit("/", 1)[1],
         "can_edit": True,
     }
-    error(post(team, "sender", board_path, json=update), 409, "conflict")
+    error(post(team, "sender", board_path, json=update), 403, "forbidden")
+    error(post(team, "sibling", board_path, json=update), 409, "conflict")
     for label in ("target", "sibling"):
         error(get(team, label, f"{path}/messages"), 409, "board_ack_required")
     for label in ("sender", "target"):
@@ -90,10 +107,13 @@ def test_competing_edits_have_one_winner_and_persist(tmp_path):
         path = room(client)
         assert enroll(client, "sibling").is_success
         join(client, "sibling", path)
+        heartbeat(client, "sibling")
+        handover(client, path, "sibling")
         board_path = f"{path}/board"
-        together = Barrier(2)
+        together = Barrier(3)
 
-        def publish(label, rules):
+        def publish(attempt):
+            label, rules = attempt
             together.wait(timeout=5)
             return post(
                 client,
@@ -102,14 +122,16 @@ def test_competing_edits_have_one_winner_and_persist(tmp_path):
                 json={"version": 1, "rules": rules, "protocol": "Post a summary."},
             )
 
-        with ThreadPoolExecutor(max_workers=2) as workers:
-            responses = list(workers.map(publish, ("sender", "sibling"), ("First edit", "Second edit")))
-        assert sorted(result.status_code for result in responses) == [200, 409]
+        attempts = (("sender", "Deposed edit"), ("sibling", "First edit"), ("sibling", "Second edit"))
+        with ThreadPoolExecutor(max_workers=3) as workers:
+            responses = list(workers.map(publish, attempts))
+        assert sorted(result.status_code for result in responses) == [200, 403, 409]
         committed = next(result.json() for result in responses if result.is_success)
 
     with api(database) as client:
-        assert get(client, "sender", f"{board_path}/view").json() == committed
+        assert get(client, "sibling", f"{board_path}/view").json() == committed
         assert committed["version"] == 2
+        assert get(client, "sender", f"{board_path}/view").json()["can_edit"] is False
 
 
 def test_upgrade_keeps_rooms_without_a_recorded_creator_readable(tmp_path):
@@ -120,6 +142,7 @@ def test_upgrade_keeps_rooms_without_a_recorded_creator_readable(tmp_path):
         creator = member(client, "sender")
     with closing(sqlite3.connect(database)) as connection, connection:
         connection.execute("ALTER TABLE rooms DROP COLUMN creator_member_id")
+        connection.execute("DROP TABLE room_leadership")
         connection.execute("PRAGMA user_version = 9")
         connection.execute("UPDATE room_activity SET at = NULL WHERE room_id = ?", (path.rsplit("/", 1)[1],))
 
@@ -201,7 +224,10 @@ def test_creator_regains_board_permission_on_rejoin_without_transferring_it(team
     assert get(team, "target", f"{board}/view").json()["can_edit"] is False
     error(post(team, "target", board, json=update), 403, "forbidden")
     join(team, "sender", path)
+    assert get(team, "sender", f"{board}/view").json()["can_edit"] is False
+    heartbeat(team, "sender")
     assert get(team, "sender", f"{board}/view").json()["can_edit"] is True
+    assert get(team, "target", f"{board}/view").json()["can_edit"] is False
     assert post(team, "sender", board, json=update).json()["version"] == 2
 
 
@@ -223,7 +249,9 @@ def test_upgrade_recovers_only_the_original_timestamped_creator(tmp_path):
         with api(database) as client:
             assert get(client, "target", f"{path}/board/view").json()["can_edit"] is False
             join(client, "sibling", path)
+            heartbeat(client, "sibling")
             assert get(client, "sibling", f"{path}/board/view").json()["can_edit"] is True
+            assert get(client, "target", f"{path}/board/view").json()["can_edit"] is False
 
 
 def test_replacement_session_can_manage_existing_room_after_creator_retires(tmp_path):
@@ -253,6 +281,8 @@ def test_replacement_session_can_manage_existing_room_after_creator_retires(tmp_
         error(post(client, "target", removal, json=chosen), 403, "forbidden")
 
         join(client, "replacement", path)
+        assert get(client, "target", f"{path}/board/view").json()["can_edit"] is False
+        heartbeat(client, "replacement")
         (summary,) = get(client, "replacement", "/rooms?include_membership=true").json()["rooms"]
         assert summary["can_remove_members"] is True
         assert summary["acked_board_version"] is None

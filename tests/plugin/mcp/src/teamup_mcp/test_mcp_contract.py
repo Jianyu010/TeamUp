@@ -86,6 +86,8 @@ def test_stdio_passes_approved_binding_and_surfaces_ipc_error():
             seen.append(request)
             if request["method"] == "mention_status":
                 result = {"unread_mentions": next(unread)}
+                if seen[-2]["method"] == "list_rooms":
+                    result["unread_room_notices"] = 1
             else:
                 calls = [item for item in seen if item["method"] != "mention_status"]
                 result = requests[len(calls) - 1][2]
@@ -117,12 +119,12 @@ def test_stdio_passes_approved_binding_and_surfaces_ipc_error():
         ):
             initialized = await session.initialize()
             instructions = (initialized.instructions or "").lower()
-            assert "use a dm for two agents" in instructions
-            assert "room for three or more" in instructions
+            assert "use a dm for a private handoff" in instructions
+            assert "room for shared context, a board, or durable tasks" in instructions
             assert "if dm tools are unavailable" in instructions
             assert "private handoff" in instructions
             tools = {tool.name: tool for tool in (await session.list_tools()).tools}
-            assert "three or more" in tools["teamup_create_room"].description
+            assert "team-visible task room" in tools["teamup_create_room"].description
             assert "retry" in tools["teamup_send_dm"].description
             assert "same conversation" in tools["teamup_open_dm"].description
             assert "last event_id as after" in (
@@ -176,6 +178,13 @@ def test_stdio_passes_approved_binding_and_surfaces_ipc_error():
                 "teamup_list_archived_rooms",
                 "teamup_archive_room",
                 "teamup_create_room",
+                "teamup_create_linked_room",
+                "teamup_list_child_rooms",
+                "teamup_extend_room_lease",
+                "teamup_invite_to_room",
+                "teamup_room_leadership_candidates",
+                "teamup_handoff_room_leadership",
+                "teamup_confirm_room_leadership",
                 "teamup_join_room",
                 "teamup_leave_room",
                 "teamup_list_room_members",
@@ -230,7 +239,7 @@ def test_stdio_passes_approved_binding_and_surfaces_ipc_error():
                 [],
                 [],
                 [],
-                [],
+                ["TeamUp: 1 unread room notice. Call teamup_notifications to read them."],
                 [],
             ]
 
@@ -274,7 +283,7 @@ def test_collaboration_skill_covers_dm_handoff_and_privacy():
     assert "teamup_read_dm" in lowered
     assert "same conversation" in lowered
     assert "older client release" in lowered
-    assert "do not use a room as a substitute" in lowered
+    assert "approved private handoff" in lowered
     assert "logs" in lowered
     assert "wake automatically" in lowered
 
@@ -283,6 +292,17 @@ def test_collaboration_skill_names_teamup_message_references():
     skill = (ROOT / "plugin/skills/teamup-collaboration/SKILL.md").read_text()
     assert "`msg-<message_id>`" in skill
     assert "`msg-42`" in skill
+
+
+def test_collaboration_skill_covers_focused_room_handoffs():
+    skill = (ROOT / "plugin/skills/teamup-collaboration/SKILL.md").read_text()
+    for name in (
+        "teamup_invite_to_room", "teamup_create_linked_room", "teamup_extend_room_lease",
+        "teamup_room_leadership_candidates", "teamup_handoff_room_leadership",
+        "teamup_confirm_room_leadership",
+    ):
+        assert f"`{name}`" in skill
+    assert "read and acknowledge" in skill.lower()
 
 
 def test_retired_claude_attachment_does_not_retry(monkeypatch):

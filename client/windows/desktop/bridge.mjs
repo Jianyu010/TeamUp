@@ -20,6 +20,10 @@ if (typeof command !== 'string' || !isAbsolute(command) || !Array.isArray(args) 
 }
 const stateFile = join(profileDirectory, 'delivery.json');
 const token = randomBytes(32).toString('hex');
+const failureCode = /^(unauthorized|wrong_credentials|rate_limited|profile_unavailable|not_registered|forbidden|not_found|board_ack_required|conflict|member_retired|membership_changed|room_archived|room_has_live_children|invalid_peer|invalid_request|unavailable)(?::|\s)/;
+const writeStatus = {ready:200,unauthorized:401,wrong_credentials:401,not_registered:401,rate_limited:429,
+  profile_unavailable:409,forbidden:403,not_found:404,board_ack_required:409,conflict:409,member_retired:409,
+  membership_changed:409,room_archived:409,room_has_live_children:409,invalid_request:422,invalid_peer:422};
 const renderer = new URL('../../shared/src/teamup_client/console/', import.meta.url);
 const files = new Map([
   ['/', ['index.html','text/html']],
@@ -28,7 +32,7 @@ const files = new Map([
   ['/desktop-nav.js', ['desktop-nav.js','text/javascript']],
 ]);
 files.set('/desktop',['console/index.html','text/html']);
-for(const name of ['console.css','console.js','console-history.mjs','console-members.js','console-board.js','console-tasks.js','console-sessions.js','jet-pair.png']) {
+for(const name of ['console.css','console.js','console-history.mjs','console-members.js','console-board.js','console-tasks.js','console-sessions.js','console-focused-rooms.mjs','jet-pair.png']) {
   const contentType=name.endsWith('.css')?'text/css':name.endsWith('.png')?'image/png':'text/javascript';
   files.set('/'+name,['console/'+name,contentType]);
 }
@@ -89,6 +93,7 @@ async function mcp(calls) {
       const detail=row.error?.message??row.result?.content?.[0]?.text??'';
       const failure=new Error(name+' 查询失败');
       failure.toolUnavailable=/unknown (?:teamup )?tool|not listed|tool .*not found|unsupported operation/i.test(detail);
+      failure.code=failure.toolUnavailable?undefined:failureCode.exec(detail)?.[1];
       throw failure;
     }
     return row.result.structuredContent ?? JSON.parse(row.result.content[0].text);
@@ -162,12 +167,12 @@ async function processNotices() {
     await save();
   }
 }
-async function body(req) {
+async function body(req, limit=8192) {
   const chunks=[];
   let length=0;
   for await (const chunk of req) {
     length+=chunk.length;
-    if (length>8192) throw new Error('请求过大');
+    if (length>limit) throw new Error('请求过大');
     chunks.push(chunk);
   }
   return JSON.parse(Buffer.concat(chunks).toString('utf8'));
@@ -199,7 +204,10 @@ const app=createServer(async (req,res) => {
     }
     if (!authorized(req) || (req.method==='POST' && req.headers.origin!==`http://${req.headers.host}`)) return json(res,403,{error:'请通过本机快捷方式打开'});
     if(url.pathname.startsWith('/api/')) {
-      try { return json(res,200,await consoleApi(req.method,url,()=>body(req))); }
+      try {
+        const result=await consoleApi(req.method,url,()=>body(req,128*1024));
+        return json(res,req.method==='POST'?(writeStatus[result.state]??503):200,result);
+      }
       catch { return json(res,503,{state:'unavailable'}); }
     }
     if (req.method==='GET' && url.pathname==='/health') return json(res,200,{ok:true});

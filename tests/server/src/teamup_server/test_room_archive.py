@@ -18,6 +18,7 @@ from test_contract import (
     enroll,
     error,
     get,
+    heartbeat,
     join,
     live_server,
     member,
@@ -322,6 +323,8 @@ def test_joined_replacement_session_of_the_creating_account_can_archive(tmp_path
         path = room(client)
         error(post(client, "replacement", f"{path}/archive"), 404, "not_found")
         join(client, "replacement", path)
+        error(post(client, "replacement", f"{path}/archive"), 403, "forbidden")
+        heartbeat(client, "replacement")
         assert post(client, "sender", "/members/me/retire").status_code == 200
         response = post(client, "replacement", f"{path}/archive")
         assert response.status_code == 200

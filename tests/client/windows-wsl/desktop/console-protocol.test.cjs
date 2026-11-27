@@ -24,7 +24,7 @@ test("serves the bundled console without a running Client", async () => {
   assert.match(html, /id="board-toggle"[^>]*aria-controls="board-panel"[^>]*aria-expanded="false"/);
   assert.match(html, /id="room-id"[\s\S]*id="board-panel"[^>]*hidden/);
   assert.doesNotMatch(html, /id="room-session-actions"/);
-  for (const asset of ["/console-members.js", "/console-history.mjs", "/console-sessions.mjs", "/console-board.js", "/console-sessions.js"]) {
+  for (const asset of ["/console-members.js", "/console-history.mjs", "/console-sessions.mjs", "/console-board.js", "/console-sessions.js", "/console-focused-rooms.mjs"]) {
     const script = await handle(new Request(origin + asset));
     assert.equal(script.status, 200);
     assert.equal(script.headers.get("Content-Type"), "text/javascript; charset=utf-8");
@@ -125,6 +125,19 @@ test("relays named reads and writes with the main process credential", async (t)
   assert.equal((await handle(consoleRequest(remove, removeAction, "https://example.com"))).status, 403);
   assert.equal((await handle(consoleRequest(remove))).status, 404);
 
+  const focusedScope = "?room=01234567-89ab-4cde-8123-456789abcdef&session=local";
+  const focusedReads = ["/api/child-rooms", "/api/room-leadership"].map(path => path + focusedScope);
+  const focusedActions = [...focusedReads, ...["/api/room-invitations", "/api/room-lease"].map(path => path + focusedScope)];
+  for (const route of focusedReads) {
+    assert.equal((await handle(consoleRequest(route))).status, 200);
+    assert.equal((await handle(consoleRequest(route, {}, "https://example.com"))).status, 403);
+  }
+  const focusedAction = { ...publish, body: JSON.stringify({ sample: "unchanged payload" }) };
+  for (const route of focusedActions) {
+    assert.equal((await handle(consoleRequest(route, focusedAction))).status, 409);
+    assert.equal((await handle(consoleRequest(route, focusedAction, "https://example.com"))).status, 403);
+  }
+
   const task = "/api/tasks/01234567-89ab-4cde-8123-456789abcdef/progress?room=room&session=local";
   const body = JSON.stringify({ client_progress_id: "progress-1", note: "In review" });
   const write = await handle(consoleRequest(task, {
@@ -152,6 +165,8 @@ test("relays named reads and writes with the main process credential", async (t)
     [board, "GET", ""],
     [board, "POST", boardBody],
     [remove, "POST", membership],
+    ...focusedReads.map(route => [route, "GET", ""]),
+    ...focusedActions.map(route => [route, "POST", focusedAction.body]),
     [task, "POST", body],
     ["/api/team?session=redirect", "GET", ""],
   ].map(([url, method, body]) => ({

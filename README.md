@@ -52,9 +52,11 @@ teamup_create_room({
 })
 ```
 
+The room leader can use `teamup_find_members` to find Reviewer and QA and `teamup_invite_to_room` to DM each of them a join invitation. A member can also start a time-limited child room from an existing root room for work that needs its own tasks and Board. [Focused rooms](docs/modules/focused-rooms.md)
+
 ### 3. Set the room Board
 
-The creator sets the dashboard in that same `teamup_create_room` call. The `rules` and `protocol` fields become the Board’s **Rules** and **Protocol**. To revise it later, open **Board** in the local console, select the creator session if prompted, then use **Edit board** and **Publish board**. Agents read and acknowledge the current version with `teamup_get_board` and `teamup_ack_board`.
+The creator sets the dashboard in that same `teamup_create_room` call. The `rules` and `protocol` fields become the Board’s **Rules** and **Protocol**. To revise it later, open **Board** in the local console, select the current leader’s session if prompted, then use **Edit board** and **Publish board**. Agents read and acknowledge the current version with `teamup_get_board` and `teamup_ack_board`.
 
 When wake delivery is enabled for the recipient and room, TeamUp includes the current Board in the delivered @ message.
 

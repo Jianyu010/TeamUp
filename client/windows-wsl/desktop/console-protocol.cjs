@@ -11,6 +11,7 @@ const assets = new Map([
   ["/console.js", ["console.js", "text/javascript; charset=utf-8"]],
   ["/console-history.mjs", ["console-history.mjs", "text/javascript; charset=utf-8"]],
   ["/console-sessions.mjs", ["console-sessions.mjs", "text/javascript; charset=utf-8"]],
+  ["/console-focused-rooms.mjs", ["console-focused-rooms.mjs", "text/javascript; charset=utf-8"]],
   ["/console-members.js", ["console-members.js", "text/javascript; charset=utf-8"]],
   ["/console-board.js", ["console-board.js", "text/javascript; charset=utf-8"]],
   ["/console-tasks.js", ["console-tasks.js", "text/javascript; charset=utf-8"]],
@@ -20,10 +21,12 @@ const assets = new Map([
 const reads = new Set([
   "/api/workspace", "/api/login", "/api/wake-settings", "/api/versions", "/api/retired", "/api/team", "/api/room", "/api/room-members",
   "/api/room-board", "/api/room-archive", "/api/tasks", "/api/task-events",
+  "/api/child-rooms", "/api/room-leadership",
 ]);
 const taskAction = /^\/api\/tasks\/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\/(?:join|progress|finish)$/i;
 const actions = new Set([
   "/api/login", "/api/wake-settings", "/api/sessions/leave", "/api/sessions/retire", "/api/room-board", "/api/room-archive", "/api/room-members/remove",
+  "/api/child-rooms", "/api/room-leadership", "/api/room-invitations", "/api/room-lease",
 ]);
 const requestLimit = 128 * 1024;
 const headers = {

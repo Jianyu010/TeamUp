@@ -25,7 +25,7 @@ test("serves the bundled console without a running Client", async () => {
   assert.match(html, /id="board-toggle"[^>]*aria-controls="board-panel"[^>]*aria-expanded="false"/);
   assert.match(html, /id="room-id"[\s\S]*id="board-panel"[^>]*hidden/);
   assert.doesNotMatch(html, /id="room-session-actions"/);
-  for (const asset of ["/console-members.js", "/console-history.mjs", "/console-sessions.mjs", "/console-board.js", "/console-sessions.js"]) {
+  for (const asset of ["/console-members.js", "/console-history.mjs", "/console-sessions.mjs", "/console-board.js", "/console-sessions.js", "/console-focused-rooms.mjs"]) {
     const script = await handle(new Request(origin + asset));
     assert.equal(script.status, 200);
     assert.equal(script.headers.get("Content-Type"), "text/javascript; charset=utf-8");
@@ -94,6 +94,21 @@ test("relays named reads and writes with the main process credential", async (t)
   assert.equal((await handle(consoleRequest(roomMembers, { method: "POST" }))).status, 404);
   assert.equal((await handle(consoleRequest(roomMembers, {}, "https://example.com"))).status, 403);
 
+  const scoped = "?room=01234567-89ab-4cde-8123-456789abcdef&session=local";
+  const leadership = "/api/room-leadership" + scoped;
+  assert.equal((await handle(consoleRequest(leadership))).status, 200);
+  assert.equal((await handle(consoleRequest(leadership, { method: "POST" }))).status, 409);
+  assert.equal((await handle(consoleRequest(leadership, { method: "POST" }, "https://example.com"))).status, 403);
+  const children = "/api/child-rooms" + scoped;
+  assert.equal((await handle(consoleRequest(children))).status, 200);
+  assert.equal((await handle(consoleRequest(children, { method: "POST" }))).status, 409);
+  for (const write of ["/api/room-invitations" + scoped, "/api/room-lease" + scoped]) {
+    assert.equal((await handle(consoleRequest(write))).status, 404);
+    assert.equal((await handle(consoleRequest(write, { method: "POST" }, "https://example.com"))).status, 403);
+    assert.equal((await handle(consoleRequest(write, { method: "DELETE" }))).status, 404);
+    assert.equal((await handle(consoleRequest(write, { method: "POST" }))).status, 409);
+  }
+
   const versions = await handle(consoleRequest("/api/versions"));
   assert.equal(versions.status, 200);
   assert.deepEqual(await versions.json(), { state: "ready" });
@@ -146,6 +161,12 @@ test("relays named reads and writes with the main process credential", async (t)
   assert.deepEqual(received, [
     ["/api/team?session=local", "GET", ""],
     [roomMembers, "GET", ""],
+    [leadership, "GET", ""],
+    [leadership, "POST", ""],
+    [children, "GET", ""],
+    [children, "POST", ""],
+    ["/api/room-invitations" + scoped, "POST", ""],
+    ["/api/room-lease" + scoped, "POST", ""],
     ["/api/versions", "GET", ""],
     [archive, "GET", ""],
     [leave, "POST", ""],

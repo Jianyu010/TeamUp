@@ -84,6 +84,18 @@ class Run:
     def room_id(self) -> str:
         return self._created_id("teamup_create_room", "room_id")
 
+    def linked_room_id(self) -> str:
+        return self._created_id("teamup_create_linked_room", "room_id")
+
+    async def eventually(self, probe, what: str, timeout: float = 20.0):
+        """Poll a state read until it returns a truthy value."""
+        deadline = asyncio.get_running_loop().time() + timeout
+        while asyncio.get_running_loop().time() < deadline:
+            if value := await probe():
+                return value
+            await asyncio.sleep(0.2)
+        raise Failure(f"Timed out waiting for {what}. Errors: {self.turn_errors()}")
+
     def dm_id(self) -> str:
         return self._created_id("teamup_open_dm", "dm_id")
 

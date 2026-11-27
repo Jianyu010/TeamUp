@@ -78,7 +78,7 @@ def _compose(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        with Maintenance(collaboration.archive_inactive_rooms, MAINTENANCE_CADENCE):
+        with Maintenance(collaboration.maintain_rooms, MAINTENANCE_CADENCE):
             async with gateway_lifespan(app):
                 yield
 

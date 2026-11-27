@@ -14,6 +14,14 @@ from ._desktop import PREVIEW_LIMIT, TITLE_LIMIT, clean
 from ._harness import owned_socket, wake_prompt
 from ._notices import binding_scope
 from ._protocol import is_integer, is_string, is_uuid
+from ._room_control_notices import (
+    LEADER_KINDS,
+    OBSOLETE_CODES,
+    drain_room_notices,
+    leadership_notice_is_current,
+    wake_text,
+    wakes_harness,
+)
 from ._task_notices import drain_task_reminders
 from ._upstream import unavailable
 from .ipc import ClientError
@@ -31,9 +39,11 @@ LIMIT = partial(is_integer, minimum=1, maximum=100)
 PAGE = {"after": AFTER, "limit": LIMIT}
 HISTORY = {"after": AFTER, "before": BEFORE, "limit": LIMIT}
 ROOM = {"room_id": is_uuid}
+LEADERSHIP = {**ROOM, "leadership_epoch": POSITIVE}
 TASK = {**ROOM, "task_id": is_uuid}
 DM = {"dm_id": is_uuid}
 HISTORY_POLICIES = ("retained", "since_joining")
+HANDOFF_MODES = ("choose", "auto", "defer")
 TASK_STATUSES = ("open", "finished")
 PRESENCE_INTERVAL = 15
 
@@ -119,6 +129,41 @@ OPERATIONS = {
             "protocol": BOARD_TEXT,
             "history_policy": _history_policy,
         },
+    ),
+    "create_linked_room": Operation(
+        "POST",
+        "/rooms/{parent_room_id}/children",
+        {"parent_room_id": is_uuid, "name": ROLE, "client_request_id": MESSAGE_KEY},
+        {"rules": BOARD_TEXT, "protocol": BOARD_TEXT, "history_policy": _history_policy},
+    ),
+    "list_child_rooms": Operation(
+        "GET", "/rooms/{room_id}/children", ROOM, {"after": is_uuid, "limit": LIMIT}
+    ),
+    "invite_to_room": Operation(
+        "POST",
+        "/rooms/{room_id}/invitations",
+        {**ROOM, "member_id": is_uuid, "client_request_id": MESSAGE_KEY},
+    ),
+    "extend_room_lease": Operation(
+        "POST",
+        "/rooms/{room_id}/lease/extend",
+        {
+            **ROOM,
+            "seconds": partial(is_integer, minimum=1, maximum=3600),
+            "expected_expires_at": MESSAGE_KEY,
+        },
+    ),
+    "room_leadership_candidates": Operation(
+        "GET", "/rooms/{room_id}/leadership/candidates", ROOM
+    ),
+    "handoff_room_leadership": Operation(
+        "POST",
+        "/rooms/{room_id}/leadership/handoff",
+        {**LEADERSHIP, "mode": lambda value: value in HANDOFF_MODES},
+        {"member_id": is_uuid, "membership_id": _membership_id, "leave": lambda value: type(value) is bool},
+    ),
+    "confirm_room_leadership": Operation(
+        "POST", "/rooms/{room_id}/leadership/confirm", LEADERSHIP
     ),
     "join_room": Operation("POST", "/rooms/{room_id}/join", ROOM),
     "leave_room": Operation("POST", "/rooms/{room_id}/leave", ROOM),
@@ -472,6 +517,8 @@ class Coordinator:
             counts = {"unread_mentions": self._notices.unread(session.scope)}
             if departures := self._notices.unread_departures(session.scope):
                 counts["unread_room_departures"] = departures
+            if room_notices := self._notices.unread_room_notices(session.scope):
+                counts["unread_room_notices"] = room_notices
             return counts
         if method == "register":
             try:
@@ -510,7 +557,7 @@ class Coordinator:
             raise self._retired_error()
         if method == "ack_board":
             session.inbox_changed.set()
-        elif method in ("create_room", "join_room"):
+        elif method in ("create_room", "create_linked_room", "join_room"):
             self._remember_room(session.scope, result)
         elif method == "find_members" and isinstance(result.get("members"), list):
             self._remember_members(session.scope, result["members"])
@@ -951,10 +998,12 @@ class Coordinator:
     async def _drain_with_hints(self, binding, session, lines):
         wake = session.inbox_changed
         reminder_wake = asyncio.Event()
-        reader = asyncio.create_task(self._read_hints(lines, wake, reminder_wake))
+        room_wake = asyncio.Event()
+        reader = asyncio.create_task(self._read_hints(lines, wake, reminder_wake, room_wake))
         reminders = asyncio.create_task(
             self._watch_task_reminders(binding, reminder_wake)
         )
+        room_notices = asyncio.create_task(self._watch_room_notices(binding, session, room_wake))
         try:
             while True:
                 wake.clear()
@@ -966,7 +1015,28 @@ class Coordinator:
         finally:
             reader.cancel()
             reminders.cancel()
-            await asyncio.gather(reader, reminders, return_exceptions=True)
+            room_notices.cancel()
+            await asyncio.gather(reader, reminders, room_notices, return_exceptions=True)
+
+    async def _watch_room_notices(self, binding, session, wake):
+        def record(notice):
+            if self._notices.record_room_notice(session.scope, notice):
+                self._notice_output.emit({key: val for key, val in notice.items() if key != "text"})
+                session.harness_changed.set()
+
+        while True:
+            wake.clear()
+            try:
+                if not await drain_room_notices(
+                    self._upstream.request, binding.member_token, record
+                ):
+                    return
+            except (ClientError, OSError, OverflowError, sqlite3.Error):
+                retry_delay = 5
+            else:
+                retry_delay = PRESENCE_INTERVAL
+            with suppress(TimeoutError):
+                await asyncio.wait_for(wake.wait(), timeout=retry_delay)
 
     async def _watch_task_reminders(self, binding, wake):
         while True:
@@ -1141,10 +1211,67 @@ class Coordinator:
                         self._notices.set_harness_state(
                             scope, notice["event_id"], state
                         )
+                    control_waiting = await self._deliver_room_notices(binding, session)
+                    if control_waiting and self._leases.get(session.identity) is not None:
+                        with suppress(TimeoutError):
+                            await asyncio.wait_for(session.harness_changed.wait(), timeout=5)
+                        continue
                     if blocked or not pending:
                         await session.harness_changed.wait()
             except sqlite3.Error:
                 await asyncio.sleep(1)
+
+    async def _deliver_room_notices(self, binding, session):
+        scope = session.scope
+        lease = self._leases.get(session.identity)
+        for notice in self._notices.pending_room_notices(scope):
+            event_id = notice["event_id"]
+            room_id = notice["room_id"]
+            if not wakes_harness(notice["kind"]):
+                self._notices.mark_room_notice_attempted(scope, event_id)
+                continue
+            wake_scope = {"room_id": room_id, "sender_member_id": None}
+            if not self._wake_allowed(session, wake_scope):
+                self._notices.mark_room_notice_attempted(scope, event_id)
+                continue
+            if lease is None:
+                return True
+            driver = self._drivers.get(lease.kind)
+            if driver is None:
+                self._notices.mark_room_notice_attempted(scope, event_id)
+                continue
+            try:
+                room = await self._upstream.request("GET", f"/rooms/{room_id}", binding.member_token)
+            except ClientError as exc:
+                if exc.code not in ("not_found", "not_registered", "unauthorized"):
+                    return True
+                self._notices.mark_room_notice_attempted(scope, event_id)
+                continue
+            except OSError:
+                return True
+            guarded = notice["kind"] in LEADER_KINDS
+            ranking = None
+            if guarded:
+                try:
+                    ranking = await self._upstream.request(
+                        "GET", f"/rooms/{room_id}/leadership/candidates", binding.member_token
+                    )
+                except ClientError as exc:
+                    if exc.code not in OBSOLETE_CODES:
+                        return True
+                except OSError:
+                    return True
+            if self._leases.get(session.identity) is not lease:
+                return True
+            self._notices.mark_room_notice_attempted(scope, event_id)
+            if room.get("archived_at") is not None or not self._wake_allowed(session, wake_scope):
+                continue
+            if "expires_at" in notice and room.get("expires_at") != notice["expires_at"]:
+                continue
+            if guarded and not leadership_notice_is_current(ranking, notice):
+                continue
+            await driver(lease.address, lease.token, wake_text(notice, ranking))
+        return False
 
     def _wake_allowed(self, session, notice):
         identity = session.identity

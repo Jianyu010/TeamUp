@@ -500,6 +500,163 @@ async def we06(options) -> str:
         return "Both assignees received one directed mention and completed the private task handoff"
 
 
+# --- WE-07 ------------------------------------------------------------------
+
+
+async def we07(options) -> str:
+    # A focused child room: a DM invitation, a leadership handoff, and open work that
+    # continues in the parent. Nothing wakes an agent; every turn is scheduled, and the
+    # invitee and the new leader find their notices through teamup_notifications.
+    verify, notes = "Verify the release smoke test", "Publish the release notes"
+    fixture = f"fixture-{uuid4().hex[:8]}"
+    specs = [
+        Spec("A", "Coordinator"),
+        Spec("B", "Verifier", facts=[f"The release smoke test passed on {fixture}."]),
+    ]
+    async with Run("WE-07", specs, options) as run:
+        # The invitee must exist before it can be found and invited.
+        await run.turn("B", tasks.register())
+        opened = await run.turn(
+            "A",
+            tasks.open_focused_room(
+                "Release", "Release verification", verify, notes, "Verifier"
+            ),
+        )
+        parent, child = run.room_id(), run.linked_room_id()
+        [invitation] = opened.output_of("teamup_invite_to_room")
+        sources = {
+            task["title"]: task for task in opened.output_of("teamup_create_task")
+        }
+        dm = await run.dm_messages(invitation["dm_id"], "A")
+        if dm != [invitation] or not (
+            child in invitation["text"]
+            and "Release verification" in invitation["text"]
+            and "board" in invitation["text"].lower()
+        ):
+            raise Failure(f"The invitation is not the expected DM: {dm}")
+
+        # A DM notice is local and starts nobody: B's turn is scheduled.
+        await run.turn(
+            "B", tasks.accept_invitation("Coordinator", verify), kind="nudge"
+        )
+        a_id, b_id = run.member_id("A"), run.member_id("B")
+        roster = (await run.read("A", "list_room_members", room_id=child))["members"]
+        if b_id not in {
+            member["member_id"] for member in roster
+        } or not await run.has_acked("B", child):
+            raise Failure(
+                f"B did not join and acknowledge the invited room. Errors: {run.turn_errors()}"
+            )
+        args = {"room_id": child, "task_id": sources[verify]["task_id"]}
+        evidence = (await run.read("A", "task_history", **args))["events"]
+        if not any(
+            event["kind"] == "progress"
+            and event["actor_member_id"] == b_id
+            and fixture in (event["note"] or "")
+            for event in evidence
+        ):
+            raise Failure(
+                f"B did not record its smoke-test result in the invited room. Errors: {run.turn_errors()}"
+            )
+
+        async def successor() -> bool:
+            ranking = await run.read("A", "room_leadership_candidates", room_id=child)
+            return [row["member_id"] for row in ranking["candidates"]] == [b_id]
+
+        await run.eventually(successor, "a fresh heartbeat from B")
+        handed = await run.turn("A", tasks.hand_over(child))
+        [receipt] = handed.output_of("teamup_handoff_room_leadership")
+        if receipt["leader_member_id"] != b_id or receipt["pending"] or receipt["left"]:
+            raise Failure(
+                f"A did not hand the room to B: {receipt}. Errors: {run.turn_errors()}"
+            )
+
+        async def appointed() -> list[dict]:
+            feed = (await run.read("B", "notifications"))["notifications"]
+            return [
+                row
+                for row in feed
+                if row.get("kind") == "leadership_assigned"
+                and row.get("room_id") == child
+            ]
+
+        [notice] = await run.eventually(appointed, "B's leadership notice")
+        if (
+            notice["leadership_epoch"] != receipt["leadership_epoch"]
+            or "board" not in notice["text"].lower()
+        ):
+            raise Failure(f"B's leadership notice is stale: {notice}")
+        try:
+            await run.read("A", "room_leadership_candidates", room_id=child)
+        except Failure as error:
+            if "forbidden" not in str(error):
+                raise
+        else:
+            raise Failure("The former leader still reads leadership candidates")
+
+        # A room notice is no wake either: the new leader's turn is scheduled.
+        await run.turn(
+            "B", tasks.close_focused_room(child, verify, notes), kind="nudge"
+        )
+        task = await run.read("A", "get_task", **args)
+        history = (await run.read("A", "task_history", **args))["events"]
+        if task["status"] != "finished" or [
+            (event["kind"], event["actor_member_id"]) for event in history
+        ] != [
+            ("created", a_id),
+            ("joined", b_id),
+            ("progress", b_id),
+            ("finished", b_id),
+        ]:
+            raise Failure(
+                f"The new leader did not finish the verified task: {task}, {history}. "
+                f"Errors: {run.turn_errors()}"
+            )
+
+        async def rolled_up() -> list[dict]:
+            feed = (await run.read("A", "notifications"))["notifications"]
+            return [
+                row
+                for row in feed
+                if row.get("kind") == "child_tasks_rolled_up"
+                and row.get("room_id") == parent
+            ]
+
+        await run.eventually(rolled_up, "A's roll-up notice")
+        [continuation] = (await run.read("A", "list_tasks", room_id=parent))["tasks"]
+        source = {"room_id": child, "task_id": sources[notes]["task_id"]}
+        if (
+            continuation["title"],
+            continuation["status"],
+            continuation.get("origin"),
+        ) != (
+            notes,
+            "open",
+            source,
+        ):
+            raise Failure(
+                f"Unfinished work did not continue once in the parent: {continuation}. "
+                f"Errors: {run.turn_errors()}"
+            )
+        frozen = await run.read(
+            "A", "get_task", room_id=child, task_id=source["task_id"]
+        )
+        archived = (await run.read("A", "list_archived_rooms"))["rooms"]
+        if frozen != sources[notes] or [
+            (row["room_id"], row["archive_reason"]) for row in archived
+        ] != [(child, "goal_reached")]:
+            raise Failure(
+                f"The new leader did not close the room or froze its source wrongly: "
+                f"{frozen}, {archived}. Errors: {run.turn_errors()}"
+            )
+        if any(turn.kind == "wake" for turn in run.turns):
+            raise Failure("A focused-room turn was started by a wake")
+        return (
+            "B joined through the DM invitation, then led, finished and closed the child "
+            "room; its open work continued once in the parent"
+        )
+
+
 SCENARIOS = [
     Scenario("WE-01", "Two-agent DM exchange", 2, 4, 600, we01),
     Scenario("WE-02", "Three-agent room with @mentions", 3, 14, 720, we02),
@@ -514,4 +671,7 @@ SCENARIOS = [
     ),
     Scenario("WE-05", "Five-agent stand-up hand-off chain", 5, 18, 900, we05),
     Scenario("WE-06", "Directed room task assignment and handoff", 4, 7, 900, we06),
+    Scenario(
+        "WE-07", "Focused room invitation, handoff and continuation", 2, 5, 600, we07
+    ),
 ]

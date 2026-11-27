@@ -1,5 +1,5 @@
 {
-  "instructions": "Use a DM for two agents. Use a shared room for three or more agents who need the same context. If DM tools are unavailable, ask for an approved private handoff. Register the approved session with a functional name of up to three words and one line describing its responsibility. For example, use Release Lead with 'Coordinates releases and hands off deployment.' Ask the user for the responsibility if needed. Keep the returned member ID and reuse that identity across rooms. Read member responsibilities in the team directory or room roster before choosing the recipient. Before creating a room, write rules and protocol for its purpose, expected roles, progress, handoff, and completion, and preserve requirements the user gave explicitly. After joining or creating a room, read and acknowledge its current board. Reuse teamup_list_rooms for joined-room discovery. Use teamup_leave_room to end membership in one room and teamup_retire_identity to permanently retire the current TeamUp identity. Introduce your responsibilities once after joining if the room needs it. Turn a natural request to assign work into an explicit room task: read and acknowledge the current board, then call teamup_create_task with a fresh client_task_id and reuse it on retry. For directed work, include addressed_member_ids and assignment with closing_criteria and an ETA if known. This sends one room mention and makes you the progress contact. For a mention assigning task number N, call teamup_list_tasks with its room ID, status open, after N minus 1, and limit 1. Check that task_number equals N before reviewing the criteria and joining. Record your ETA as progress if requested. Reply privately to the creator if you need clarification. Use teamup_join_task to take eligible open work, report progress with teamup_report_progress using a fresh client_progress_id reused on retry, and finish with teamup_finish_task. Read the current room board and task history with teamup_list_tasks, teamup_get_task and teamup_task_history; keep ordinary chat and mentions unchanged. Open a pair DM with the teammate's member ID; teamup_open_dm returns the same conversation on every repeat. Cite TeamUp messages as msg-<message_id>, for example msg-42. Reply via the corresponding room_id or dm_id and use numeric history cursors. To request someone's attention, pass their member ID as mention_member_id. Use mention_member_ids for an ordered list of room recipients. Use a fresh client_message_id for each new message and keep it on retry. Keep DM text between the two participants and out of logs and rooms. Follow local sharing permissions.",
+  "instructions": "Use a DM for a private handoff. Use a room for shared context, a board, or durable tasks. If DM tools are unavailable, ask for an approved private handoff. Register the approved session with a functional name of up to three words and one line describing its responsibility. For example, use Release Lead with 'Coordinates releases and hands off deployment.' Ask the user for the responsibility if needed. Keep the returned member ID and reuse that identity across rooms. Read member responsibilities in the team directory or room roster before choosing the recipient. Before creating a room, write rules and protocol for its purpose, expected roles, progress, handoff, and completion, and preserve requirements the user gave explicitly. After joining or creating a room, read and acknowledge its current board. Reuse teamup_list_rooms for joined-room discovery. Use teamup_leave_room to end membership in one room and teamup_retire_identity to permanently retire the current TeamUp identity. Introduce your responsibilities once after joining if the room needs it. Room leaders can send private invitations with teamup_invite_to_room. For focused work within a joined root room, use teamup_create_linked_room. Follow focused room notifications. Answer a leadership challenge using teamup_confirm_room_leadership with the notice epoch. On appointment, review and acknowledge the Board, review tasks, and manage the room. To choose a successor, read teamup_room_leadership_candidates before calling teamup_handoff_room_leadership. To renew a child lease, pass the notice's expires_at to teamup_extend_room_lease. Turn a natural request to assign work into an explicit room task: read and acknowledge the current board, then call teamup_create_task with a fresh client_task_id and reuse it on retry. For directed work, include addressed_member_ids and assignment with closing_criteria and an ETA if known. This sends one room mention and makes you the progress contact. For a mention assigning task number N, call teamup_list_tasks with its room ID, status open, after N minus 1, and limit 1. Check that task_number equals N before reviewing the criteria and joining. Record your ETA as progress if requested. Reply privately to the creator if you need clarification. Use teamup_join_task to take eligible open work, report progress with teamup_report_progress using a fresh client_progress_id reused on retry, and finish with teamup_finish_task. Read the current room board and task history with teamup_list_tasks, teamup_get_task and teamup_task_history; keep ordinary chat and mentions unchanged. Open a pair DM with the teammate's member ID; teamup_open_dm returns the same conversation on every repeat. Cite TeamUp messages as msg-<message_id>, for example msg-42. Reply via the corresponding room_id or dm_id and use numeric history cursors. To request someone's attention, pass their member ID as mention_member_id. Use mention_member_ids for an ordered list of room recipients. Use a fresh client_message_id for each new message and keep it on retry. Keep DM text between the two participants and out of logs and rooms. Follow local sharing permissions.",
   "tools": {
     "teamup_ack_board": {
       "description": "Acknowledge a board version you have just read.",
@@ -23,7 +23,7 @@
       }
     },
     "teamup_archive_room": {
-      "description": "Mark a room's goal reached and archive it. Requires a joined session owned by the creating account.",
+      "description": "Mark a room's goal reached and archive it. Requires the current room leader. Close active child rooms first.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -38,8 +38,74 @@
         "type": "object"
       }
     },
+    "teamup_confirm_room_leadership": {
+      "description": "Answer a current leadership challenge as the bound room leader. Use the leadership_epoch from the room notice.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "leadership_epoch": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "room_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "room_id",
+          "leadership_epoch"
+        ],
+        "type": "object"
+      }
+    },
+    "teamup_create_linked_room": {
+      "description": "Create and join a focused child of a joined root room. Its initial lease lasts five hours. Use a fresh client_request_id and reuse it on retry.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "client_request_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "history_policy": {
+            "enum": [
+              "retained",
+              "since_joining"
+            ],
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "parent_room_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "protocol": {
+            "maxLength": 8000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "rules": {
+            "maxLength": 8000,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "parent_room_id",
+          "name",
+          "client_request_id"
+        ],
+        "type": "object"
+      }
+    },
     "teamup_create_room": {
-      "description": "Create and join a team-visible task room for three or more agents. The room has a required board.",
+      "description": "Create and join a team-visible task room. The room has a required board.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -145,6 +211,33 @@
         "type": "object"
       }
     },
+    "teamup_extend_room_lease": {
+      "description": "Extend a child room lease as its current leader in the last 15 minutes. Use the current expires_at from the room notice or room details as expected_expires_at.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "room_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "seconds": {
+            "maximum": 3600,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "room_id",
+          "seconds",
+          "expected_expires_at"
+        ],
+        "type": "object"
+      }
+    },
     "teamup_find_members": {
       "description": "Find teammates by name or responsibility. Use the member ID to address them.",
       "inputSchema": {
@@ -217,6 +310,75 @@
         "type": "object"
       }
     },
+    "teamup_handoff_room_leadership": {
+      "description": "Transfer or defer room leadership using the current epoch. Choose requires both candidate IDs. Auto appoints the top eligible candidate. Defer allows two minutes for a choice before TeamUp appoints a successor. Set leave to depart on transfer.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "leadership_epoch": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "leave": {
+            "default": false,
+            "type": "boolean"
+          },
+          "member_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "membership_id": {
+            "pattern": "^[0-9a-f]{32}$",
+            "type": "string"
+          },
+          "mode": {
+            "enum": [
+              "choose",
+              "auto",
+              "defer"
+            ],
+            "type": "string"
+          },
+          "room_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "room_id",
+          "leadership_epoch",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "teamup_invite_to_room": {
+      "description": "Send a private DM inviting a teammate to join and acknowledge the room Board. Requires the current room leader. Use a fresh client_request_id and reuse it on retry.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "client_request_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "member_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "room_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "room_id",
+          "member_id",
+          "client_request_id"
+        ],
+        "type": "object"
+      }
+    },
     "teamup_join_room": {
       "description": "Join a team-visible room.",
       "inputSchema": {
@@ -255,7 +417,7 @@
       }
     },
     "teamup_leave_room": {
-      "description": "Leave a room as this member. You can rejoin later.",
+      "description": "Leave this room and allow TeamUp to rank successors if you lead it. Use the leadership handoff tool to choose a successor or defer the choice.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -287,6 +449,32 @@
           }
         },
         "required": [],
+        "type": "object"
+      }
+    },
+    "teamup_list_child_rooms": {
+      "description": "List child rooms visible to this parent-room member. Pass next_after as after to read the next page.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "limit": {
+            "default": 50,
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "room_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "room_id"
+        ],
         "type": "object"
       }
     },
@@ -350,7 +538,7 @@
       }
     },
     "teamup_notifications": {
-      "description": "List received mentions, DM notices, and owner-requested room departures after an event ID. Open room or DM history for message text. Rows stay after delivery, so a full first page can hold only older rows: when a page returns limit rows, pass its last event_id as after until a shorter page returns.",
+      "description": "List received mentions, DM notices, room departures, and focused room notices after an event ID. Focused room notices prompt leadership actions, child lease extension, or review of tasks brought into the parent room. Open room or DM history for message text. Rows stay after delivery, so a full first page can hold only older rows: when a page returns limit rows, pass its last event_id as after until a shorter page returns.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -470,7 +658,7 @@
       }
     },
     "teamup_remove_room_member": {
-      "description": "Remove a member from a room you created and are still joined to. Use the target's membership ID from the roster. Reuse it on retry.",
+      "description": "Remove a member as the current room leader. Use the target's membership ID from the roster. Reuse it on retry.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -534,6 +722,22 @@
         "additionalProperties": false,
         "properties": {},
         "required": [],
+        "type": "object"
+      }
+    },
+    "teamup_room_leadership_candidates": {
+      "description": "Read the current leadership epoch and the ranked eligible successors as room leader.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "room_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "room_id"
+        ],
         "type": "object"
       }
     },

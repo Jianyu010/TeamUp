@@ -388,7 +388,7 @@ def test_console_departure_and_retirement_reach_mcp_and_persist_history(develope
     asyncio.run(asyncio.wait_for(scenario(), 45))
 
 
-def test_joined_same_account_sessions_manage_room_using_console_and_mcp(developer):
+def test_transferred_leadership_controls_console_and_mcp_room_actions(developer):
     developer, password = developer
 
     async def exercise():
@@ -417,13 +417,36 @@ def test_joined_same_account_sessions_manage_room_using_console_and_mcp(develope
             guest_session = bindings[guest["member_id"]]
             memberships = {row["session"]: row for row in snapshot["rooms"][0]["memberships"]}
             assert memberships[owner_session]["can_remove_members"] is True
-            assert memberships[guest_session]["can_remove_members"] is True
+            assert not memberships[guest_session].get("can_remove_members", False)
             roster = (
                 await console.get("/api/room-members", params={"room": room, "session": guest_session})
             ).json()
             target = next(row for row in roster["members"] if row["id"] == guest["member_id"])
             inputs = {"room_id": room, "member_id": guest["member_id"],
                       "membership_id": target["membership_id"]}
+            board = (
+                await console.get("/api/room-board", params={"room": room, "session": guest_session})
+            ).json()
+            assert board["board"]["can_edit"] is False
+
+            async def transfer(source, destination):
+                async with asyncio.timeout(20):
+                    while True:
+                        ranking = await tool(source, "room_leadership_candidates", room_id=room)
+                        choices = ranking["candidates"]
+                        if choices:
+                            break
+                        await asyncio.sleep(0.1)
+                [choice] = choices
+                assert choice["member_id"] == destination
+                receipt = await tool(
+                    source, "handoff_room_leadership", room_id=room, mode="choose",
+                    leadership_epoch=ranking["leadership_epoch"], member_id=destination,
+                    membership_id=choice["membership_id"],
+                )
+                assert receipt["leader_member_id"] == destination
+
+            await transfer(creator, guest["member_id"])
             board = (
                 await console.get("/api/room-board", params={"room": room, "session": guest_session})
             ).json()
@@ -435,6 +458,7 @@ def test_joined_same_account_sessions_manage_room_using_console_and_mcp(develope
             )
             assert published.status_code == 200, published.text
             assert published.json()["board"]["version"] == 2
+            await transfer(sibling, owner["member_id"])
             params = {"room": room, "member": guest["member_id"], "session": owner_session}
             removed = await console.post(
                 "/api/room-members/remove", params=params,

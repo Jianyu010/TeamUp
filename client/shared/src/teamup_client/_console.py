@@ -36,7 +36,18 @@ STATIC = {
     "/console-board.js": ("console-board.js", "text/javascript; charset=utf-8"),
     "/console-tasks.js": ("console-tasks.js", "text/javascript; charset=utf-8"),
     "/console-sessions.js": ("console-sessions.js", "text/javascript; charset=utf-8"),
+    "/console-focused-rooms.mjs": ("console-focused-rooms.mjs", "text/javascript; charset=utf-8"),
     "/jet-pair.png": ("jet-pair.png", "image/png"),
+}
+FOCUSED_ROOM_READS = {
+    "/api/child-rooms": "children",
+    "/api/room-leadership": "leadership/candidates",
+}
+FOCUSED_ROOM_WRITES = {
+    "/api/child-rooms": "children",
+    "/api/room-invitations": "invitations",
+    "/api/room-lease": "lease/extend",
+    "/api/room-leadership": "leadership/handoff",
 }
 CSP = (
     "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; "
@@ -289,6 +300,15 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError
             return self._reader.room_board(params["session"], params["room"], draft)
 
+        if path in FOCUSED_ROOM_WRITES:
+            params = self._params(query)
+            self._focused_room_scope(params)
+            body = self._action_body(required=True)
+            self._validate_focused_room_write(path, body)
+            return self._reader.focused_room_write(
+                params["session"], params["room"], FOCUSED_ROOM_WRITES[path], body
+            )
+
         parts = path.split("/")
         if len(parts) != 5 or parts[1:3] != ["api", "tasks"]:
             return None
@@ -308,6 +328,59 @@ class Handler(BaseHTTPRequestHandler):
         return self._reader.task_action(
             params["session"], params["room"], task_id, action, data
         )
+
+    def _focused_room_scope(self, params, *, optional=frozenset()):
+        required = {"session", "room"}
+        if (
+            not required <= params.keys() <= required | optional
+            or not self._hex_id(params["session"], 64)
+            or not is_uuid(params["room"])
+        ):
+            raise ValueError
+
+    def _validate_focused_room_write(self, path, body):
+        fields = set(body)
+        if path == "/api/room-invitations":
+            if (
+                fields != {"member_id", "client_request_id"}
+                or not is_uuid(body["member_id"])
+                or not is_string(body["client_request_id"], 128)
+            ):
+                raise ValueError
+        elif path == "/api/child-rooms":
+            required = {"name", "client_request_id"}
+            text = {"rules", "protocol"}
+            if (
+                not required <= fields <= required | text | {"history_policy"}
+                or not is_string(body["name"], 200)
+                or not is_string(body["client_request_id"], 128)
+                or any(not is_string(body[key], 8000) for key in fields & text)
+                or body.get("history_policy", "since_joining") not in ("since_joining", "retained")
+            ):
+                raise ValueError
+        elif path == "/api/room-lease":
+            if (
+                fields != {"seconds", "expected_expires_at"}
+                or not is_integer(body["seconds"], 1, 3600)
+                or not is_string(body["expected_expires_at"], 40)
+            ):
+                raise ValueError
+        elif path == "/api/room-leadership":
+            mode = body.get("mode")
+            required = {"mode", "leadership_epoch"}
+            if mode == "choose":
+                required |= {"member_id", "membership_id"}
+                if not (
+                    is_uuid(body.get("member_id")) and self._hex_id(body.get("membership_id"), 32)
+                ):
+                    raise ValueError
+            if (
+                not required <= fields <= required | {"leave"}
+                or mode not in ("choose", "auto", "defer")
+                or not is_integer(body["leadership_epoch"], 1)
+                or type(body.get("leave", False)) is not bool
+            ):
+                raise ValueError
 
     def _action_body(self, *, required):
         length = int(self.headers.get("Content-Length", "0"))
@@ -357,6 +430,8 @@ class Handler(BaseHTTPRequestHandler):
                     "member_retired": 409,
                     "membership_changed": 409,
                     "room_archived": 409,
+                    "room_has_live_children": 409,
+                    "invalid_peer": 422,
                     "invalid_request": 422,
                     "unavailable": 503,
                 }.get(data.get("state"), 503)
@@ -413,6 +488,16 @@ class Handler(BaseHTTPRequestHandler):
             if set(params) != {"session", "room"} or not is_uuid(params["room"]):
                 raise ValueError
             return self._reader.room_members(params["session"], params["room"])
+        if path in FOCUSED_ROOM_READS:
+            optional = {"after"} if path == "/api/child-rooms" else set()
+            self._focused_room_scope(params, optional=optional)
+            after = params.get("after")
+            if after is not None and not is_uuid(after):
+                raise ValueError
+            return self._reader.focused_room_read(
+                params["session"], params["room"], FOCUSED_ROOM_READS[path],
+                {"after": after} if after is not None else None,
+            )
         if path == "/api/room":
             if (
                 not {"session", "room"}
