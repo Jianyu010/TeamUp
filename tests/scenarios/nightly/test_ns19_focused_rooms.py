@@ -596,13 +596,6 @@ def test_new_leader_receives_the_offer(ws):
 
 
 @pytest.mark.scenario("NS-19D", "One lease notice per window for the same leader")
-@pytest.mark.xfail(
-    strict=True,
-    reason="Provider defect: a second sweep in the same notice window records a second "
-    "child_lease_due notice for the same leader, because the routine leadership "
-    "challenge changed the leadership_epoch. The contract records one notice for "
-    "the current leader and re-offers only when leadership changes.",
-)
 def test_one_offer_per_window(ws):
     async def steps(api, server, clock):
         # The control child's lease ends one minute into the main child's notice window.
