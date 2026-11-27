@@ -32,14 +32,14 @@ function time(stamp) {
   });
 }
 
-export function openTaskLanes(items, localMemberIds, actorMemberId) {
-  const localMembers = new Set(localMemberIds);
-  const available = items.filter((task) => !task.participant_member_ids.length &&
-    (!task.addressed_member_ids.length || task.addressed_member_ids.some((id) => localMembers.has(id))));
-  const taken = actorMemberId
-    ? items.filter((task) => task.participant_member_ids.includes(actorMemberId))
+export function openTaskLanes(items, actor) {
+  const available = items.filter((task) => !task.participant_member_ids.length);
+  const ongoing = items.filter((task) => task.participant_member_ids.length);
+  const taken = actor
+    ? ongoing.filter((task) => task.visible_to.includes(actor.id)
+      && task.participant_member_ids.includes(actor.member_id))
     : [];
-  return [["Available", available], ["Taken", taken], ["Ongoing", items]];
+  return [["Available", available], ["Taken", taken], ["Ongoing", ongoing]];
 }
 
 export function taskPanel(context) {
@@ -110,13 +110,14 @@ export function taskPanel(context) {
     }
     const data = Array.from(new Map(items.map((task) => [task.task_id, task])).values());
     const actor = context.actor();
-    const localMemberIds = finished ? [] : context.sessions().map(({member_id}) => member_id).sort();
-    const key = JSON.stringify([finished, actor?.id, actor?.member_id, localMemberIds, data]);
+    const sessions = context.sessions();
+    const sessionMembers = finished ? [] : sessions.map(({id, member_id}) => [id, member_id]);
+    const key = JSON.stringify([finished, actor?.id, actor?.member_id, sessionMembers, data]);
     more.hidden = next === null;
     if (key === signature && !force) return;
     signature = key;
     if (!busy) status.textContent = "";
-    render(data, localMemberIds, actor?.member_id);
+    render(data, sessions, actor);
   }
 
   function changeActor() {
@@ -126,13 +127,13 @@ export function taskPanel(context) {
     refresh({force: true});
   }
 
-  function render(items, localMemberIds, actorMemberId) {
+  function render(items, sessions, actor) {
     const oldScroll = new Map(Array.from(lanes.querySelectorAll(".task-list"), (list) =>
       [list.parentElement.dataset.lane, list.scrollTop]));
     const active = document.activeElement;
     const focusKey = active?.dataset.taskKey;
     archive.setAttribute("aria-pressed", String(finished));
-    const groups = finished ? [["Finished", items]] : openTaskLanes(items, localMemberIds, actorMemberId);
+    const groups = finished ? [["Finished", items]] : openTaskLanes(items, actor);
     tabs.hidden = finished;
     tabs.replaceChildren(...laneNames.map((name) => {
       const tab = button(name, () => {
@@ -149,8 +150,20 @@ export function taskPanel(context) {
       lane.setAttribute("aria-label", name + " tasks");
       const list = element("div", "", "task-list scroll-frame");
       if (name === "Available") {
-        for (const [label, condition] of [["Assigned to your sessions", true], ["Unassigned", false]]) {
-          const rows = tasks.filter((task) => Boolean(task.addressed_member_ids.length) === condition);
+        const assigned = [];
+        const waiting = [];
+        const unassigned = [];
+        for (const task of tasks) {
+          if (!task.addressed_member_ids.length) unassigned.push(task);
+          else if (sessions.some(({id, member_id}) => task.visible_to.includes(id)
+            && task.addressed_member_ids.includes(member_id))) assigned.push(task);
+          else waiting.push(task);
+        }
+        for (const [label, rows] of [
+          ["Assigned to your sessions", assigned],
+          ["Waiting for addressed members", waiting],
+          ["Unassigned", unassigned],
+        ]) {
           if (rows.length) list.append(element("p", label, "task-group"), ...rows.map((task) => card(task, name)));
         }
       } else list.append(...tasks.map((task) => card(task, name)));
