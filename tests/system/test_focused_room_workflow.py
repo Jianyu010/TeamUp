@@ -67,6 +67,14 @@ async def exercise_focused_room(creator, supervisor, reviewer):
         ) == timedelta(hours=5)
         directory = await tool(lead, "list_child_rooms", room_id=parent)
         assert [entry["room_id"] for entry in directory["rooms"]] == [room]
+        await tool(
+            owner,
+            "create_linked_room",
+            parent_room_id=room,
+            name="Grandchild",
+            client_request_id="grandchild",
+            error="conflict",
+        )
         await tool(lead, "get_board", room_id=room, error="not_found")
 
         found = await tool(owner, "find_members", q="Release Lead")
@@ -78,6 +86,14 @@ async def exercise_focused_room(creator, supervisor, reviewer):
         }
         delivered = await tool(owner, "invite_to_room", **invitation)
         assert await tool(owner, "invite_to_room", **invitation) == delivered
+        await tool(
+            owner,
+            "invite_to_room",
+            room_id=parent,
+            member_id=lead_id,
+            client_request_id="lead-invitation",
+            error="conflict",
+        )
         dm = delivered["dm_id"]
         notified = await wait_for_notification(
             lead, lambda notice: notice.get("message_id") == delivered["message_id"]
@@ -127,8 +143,31 @@ async def exercise_focused_room(creator, supervisor, reviewer):
         assert "board" in notice["text"].lower()
         await tool(owner, "archive_room", room_id=room, error="forbidden")
 
+        # Lease renewal follows the HTTP contract: members only, the leader only,
+        # the notice window only, and the published bounds.
+        lease = {"room_id": room, "expected_expires_at": child["expires_at"]}
+        for member in (owner, peer):
+            await tool(
+                member, "extend_room_lease", seconds=600, **lease, error="forbidden"
+            )
+        await tool(
+            lead, "extend_room_lease", seconds=0, **lease, error="invalid_request"
+        )
+        await tool(
+            lead, "extend_room_lease", seconds=3601, **lease, error="invalid_request"
+        )
+        await tool(lead, "extend_room_lease", seconds=600, **lease, error="conflict")
+
         await tool(lead, "archive_room", room_id=room)
         await tool(lead, "archive_room", room_id=room)
+        rolled = await wait_for_notification(
+            owner,
+            lambda row: (
+                row.get("kind") == "child_tasks_rolled_up"
+                and row.get("room_id") == parent
+            ),
+        )
+        assert parent in rolled["text"] and room in rolled["text"]
         [continuation] = (await tool(owner, "list_tasks", room_id=parent))["tasks"]
         assert continuation["title"] == work["title"]
         assert continuation["origin"] == {"room_id": room, "task_id": work["task_id"]}
@@ -141,3 +180,45 @@ async def exercise_focused_room(creator, supervisor, reviewer):
 def test_invite_handoff_and_child_close_over_stdio(ws):
     _, developers = deploy(ws, names=("creator", "lead", "reviewer"), notify=False)
     asyncio.run(asyncio.wait_for(exercise_focused_room(*developers), 65))
+
+
+FOCUSED_TOOLS = {
+    "teamup_create_linked_room": {"parent_room_id", "name", "client_request_id"},
+    "teamup_list_child_rooms": {"room_id"},
+    "teamup_invite_to_room": {"room_id", "member_id", "client_request_id"},
+    "teamup_extend_room_lease": {"room_id", "seconds", "expected_expires_at"},
+    "teamup_room_leadership_candidates": {"room_id"},
+    "teamup_handoff_room_leadership": {"room_id", "leadership_epoch", "mode"},
+    "teamup_confirm_room_leadership": {"room_id", "leadership_epoch"},
+}
+
+
+async def check_focused_tools(developer):
+    """The daemon's stdio server publishes the focused-room contract: closed schemas
+    with the documented required fields, bounds and modes."""
+    async with developer.agent() as session:
+        tools = {
+            tool.name: tool.inputSchema for tool in (await session.list_tools()).tools
+        }
+    for name, required in FOCUSED_TOOLS.items():
+        schema = tools[name]
+        assert set(schema["required"]) == required, (name, schema["required"])
+        assert schema["additionalProperties"] is False, name
+        assert required <= schema["properties"].keys(), name
+    lease = tools["teamup_extend_room_lease"]["properties"]
+    assert lease["seconds"] == {"type": "integer", "minimum": 1, "maximum": 3600}
+    assert lease["expected_expires_at"] == {"type": "string", "format": "date-time"}
+    handoff = tools["teamup_handoff_room_leadership"]["properties"]
+    assert handoff["mode"]["enum"] == ["choose", "auto", "defer"]
+    assert handoff["leave"] == {"type": "boolean", "default": False}
+    assert tools["teamup_create_linked_room"]["properties"]["history_policy"][
+        "enum"
+    ] == [
+        "retained",
+        "since_joining",
+    ]
+
+
+def test_focused_tools_publish_the_contract_schema(ws):
+    _, (developer,) = deploy(ws, names=("solo",), notify=False)
+    asyncio.run(asyncio.wait_for(check_focused_tools(developer), 30))

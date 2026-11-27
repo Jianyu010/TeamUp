@@ -109,6 +109,14 @@ Nightly reports individual Client Console, Admin Console, archive, and task chec
 
 The pressure profiles vary room count, simultaneous posts, idle SSE streams, heartbeats, and task participants. Nightly covers 100 and 300 rooms. Weekly covers 1,000 and 10,000 rooms and runs a synthetic online backup and recovery drill. The weekly load phase runs after the real-agent phase on the same runner, with its own time limit. The workflow publishes both phases in the weekly report. A weekly failure opens an issue without freezing merges.
 
+### Focused rooms
+
+The [focused room contract](../modules/focused-rooms.md) adds checks to each scheduled suite.
+
+- **Nightly NS-19** drives the real Server lifespan on a controlled clock. It covers the lease notice at 15 minutes through the periodic sweep, acknowledgment that is scoped to the recipient and safe to repeat, renewal within the window, the new window an extension opens, expiry at equality with late operations rejected, the continuation of unfinished work in the parent with restricted content left in the child, and the offer moving to a new leader. Restarts exercise the startup sweep and confirm that a later sweep adds no duplicate continuation.
+- **Nightly and weekly NP-16** runs concurrent parents and children, parent archive races against child creation, repeated renewal with racing duplicate requests, and roll-up without orphaned or duplicated work. Nightly uses 4 parents with 16 children and three renewal rounds. Weekly uses 10 parents with 100 children and four rounds. Leases follow the controlled clock and the sweeps under test are startup sweeps, so the wall-clock stays within the level's budget. The report contains request latency under contention, the time from restart until each expiry is visible, and the time until the whole sweep settles.
+- **Weekly WE-07** is a compact real-agent scenario. An agent opens a focused room and invites a teammate by DM, the teammate joins through its notifications without a wake, leadership is handed over, and the new leader finishes the verified work and closes the room so the remaining work continues in the parent. The verdict reads DM history, membership, board acknowledgment, task events, leadership notices and the archived room through MCP.
+
 Scenario databases, browser profiles, and recovered snapshots live under a disposable runner directory. The workflow removes the directory after the tests. The recovery drill runs the capture, validation, publication, and restore scripts using a local transport adapter. Deployment SSH and off-host storage remain part of the operator recovery procedure.
 
 ## Scheduling

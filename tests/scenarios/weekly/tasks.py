@@ -308,6 +308,153 @@ def review_release_check(room_id: str) -> Task:
     return Task(prompt, script)
 
 
+# --- focused rooms ----------------------------------------------------------
+
+
+def open_focused_room(parent, child, verify, notes, role) -> Task:
+    rules = "Keep release evidence in the task history."
+    protocol = "Read and acknowledge the board. Record task work as task progress."
+    prompt = (
+        "Register with TeamUp using your assigned name and description.\n"
+        f'1. Call teamup_create_room with name "{parent}", rules "{rules}" and '
+        f'protocol "{protocol}". Read the new room\'s board with teamup_get_board and '
+        "acknowledge the version it returns with teamup_ack_board.\n"
+        "2. Call teamup_create_linked_room with that room_id as parent_room_id, name "
+        f'"{child}" and client_request_id "focused-child". Read and acknowledge the new '
+        "room's board the same way.\n"
+        "3. In the new room, call teamup_create_task twice with no addressed members: "
+        f'one task titled "{verify}" with client_task_id "focused-verify" and one titled '
+        f'"{notes}" with client_task_id "focused-notes".\n'
+        f'4. Call teamup_find_members with q "{role}" and take that member\'s member_id. '
+        "Call teamup_invite_to_room with the new room's room_id, that member_id and "
+        'client_request_id "focused-invitation".\n'
+        "Final answer: the new room's room_id."
+    )
+
+    async def script(ctx):
+        await ctx.call("register", **ctx.spec.profile)
+        room = await ctx.call(
+            "create_room", name=parent, rules=rules, protocol=protocol
+        )
+        board = await ctx.call("get_board", room_id=room["room_id"])
+        await ctx.call("ack_board", room_id=room["room_id"], version=board["version"])
+        room = await ctx.call(
+            "create_linked_room",
+            parent_room_id=room["room_id"],
+            name=child,
+            client_request_id="focused-child",
+        )
+        board = await ctx.call("get_board", room_id=room["room_id"])
+        await ctx.call("ack_board", room_id=room["room_id"], version=board["version"])
+        for key, title in (("focused-verify", verify), ("focused-notes", notes)):
+            await ctx.call(
+                "create_task", room_id=room["room_id"], client_task_id=key, title=title
+            )
+        found = await ctx.call("find_members", q=role)
+        [member] = [row for row in found["members"] if row["name"] == role]
+        await ctx.call(
+            "invite_to_room",
+            room_id=room["room_id"],
+            member_id=member["member_id"],
+            client_request_id="focused-invitation",
+        )
+
+    return Task(prompt, script)
+
+
+def accept_invitation(role, verify) -> Task:
+    """The invitee finds the ordinary DM through its notifications; nothing wakes it."""
+    prompt = (
+        "Register with TeamUp using your assigned name and description.\n"
+        f"1. Call teamup_notifications and take the DM notice (kind dm) from {role}. "
+        "Read that DM with teamup_read_dm. Its message invites you to a room and gives "
+        "the room ID.\n"
+        "2. Call teamup_join_room with that room_id. Read the room's board with "
+        "teamup_get_board and acknowledge it with teamup_ack_board.\n"
+        f'3. Call teamup_list_tasks for that room. Join the open task titled "{verify}" '
+        "with teamup_join_task, then record one teamup_report_progress with the smoke-test "
+        "result you know and a new client_progress_id. Leave the task open.\n"
+        "Final answer: one line saying you joined."
+    )
+
+    async def script(ctx):
+        await ctx.call("register", **ctx.spec.profile)
+        found = await ctx.call("find_members", q=role)
+        [sender] = [row for row in found["members"] if row["name"] == role]
+        feed = (await ctx.call("notifications"))["notifications"]
+        [notice] = [
+            row
+            for row in feed
+            if row.get("kind") == "dm"
+            and row["sender_member_id"] == sender["member_id"]
+        ]
+        history = await ctx.call("read_dm", dm_id=notice["dm_id"])
+        room_id = re.search(
+            r"room ID ([0-9a-f-]{36})", history["messages"][-1]["text"]
+        )[1]
+        await ctx.call("join_room", room_id=room_id)
+        board = await ctx.call("get_board", room_id=room_id)
+        await ctx.call("ack_board", room_id=room_id, version=board["version"])
+        records = (await ctx.call("list_tasks", room_id=room_id))["tasks"]
+        [task] = [row for row in records if row["title"] == verify]
+        args = {"room_id": room_id, "task_id": task["task_id"]}
+        await ctx.call("join_task", **args)
+        await ctx.call(
+            "report_progress",
+            **args,
+            note=ctx.spec.facts[0],
+            client_progress_id=ctx.message_id("verification"),
+        )
+
+    return Task(prompt, script)
+
+
+def hand_over(room_id: str) -> Task:
+    prompt = (
+        f"You lead room {room_id}. Call teamup_room_leadership_candidates with that room_id, "
+        "then call teamup_handoff_room_leadership with room_id, the returned leadership_epoch "
+        'and mode "auto". Do not set member_id or leave. '
+        "Final answer: the receipt's leader_member_id."
+    )
+
+    async def script(ctx):
+        ranking = await ctx.call("room_leadership_candidates", room_id=room_id)
+        await ctx.call(
+            "handoff_room_leadership",
+            room_id=room_id,
+            leadership_epoch=ranking["leadership_epoch"],
+            mode="auto",
+        )
+
+    return Task(prompt, script)
+
+
+def close_focused_room(room_id: str, verify: str, notes: str) -> Task:
+    """The appointed leader reads its notice, finishes verified work and closes the room."""
+    prompt = (
+        f"TeamUp made you the leader of room {room_id}. Call teamup_notifications and read "
+        "the leadership notice. Review the room with teamup_get_board and teamup_list_tasks "
+        f'for room {room_id}. Finish the open task titled "{verify}" with '
+        f'teamup_finish_task: the verification is complete. Leave the task titled "{notes}" '
+        "open. Then close the room with teamup_archive_room. "
+        "Final answer: one line saying what you closed."
+    )
+
+    async def script(ctx):
+        feed = (await ctx.call("notifications"))["notifications"]
+        assert any(
+            row.get("kind") == "leadership_assigned" and row.get("room_id") == room_id
+            for row in feed
+        ), "the leadership notice was not delivered"
+        await ctx.call("get_board", room_id=room_id)
+        records = (await ctx.call("list_tasks", room_id=room_id))["tasks"]
+        [task] = [row for row in records if row["title"] == verify]
+        await ctx.call("finish_task", room_id=room_id, task_id=task["task_id"])
+        await ctx.call("archive_room", room_id=room_id)
+
+    return Task(prompt, script)
+
+
 # --- wake -------------------------------------------------------------------
 
 
