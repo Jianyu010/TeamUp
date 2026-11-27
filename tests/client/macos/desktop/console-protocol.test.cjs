@@ -94,10 +94,20 @@ test("relays named reads and writes with the main process credential", async (t)
   assert.equal((await handle(consoleRequest(roomMembers, { method: "POST" }))).status, 404);
   assert.equal((await handle(consoleRequest(roomMembers, {}, "https://example.com"))).status, 403);
 
-  const leadership = "/api/room-leadership?room=01234567-89ab-4cde-8123-456789abcdef&session=local";
+  const scoped = "?room=01234567-89ab-4cde-8123-456789abcdef&session=local";
+  const leadership = "/api/room-leadership" + scoped;
   assert.equal((await handle(consoleRequest(leadership))).status, 200);
   assert.equal((await handle(consoleRequest(leadership, { method: "POST" }))).status, 409);
   assert.equal((await handle(consoleRequest(leadership, { method: "POST" }, "https://example.com"))).status, 403);
+  const children = "/api/child-rooms" + scoped;
+  assert.equal((await handle(consoleRequest(children))).status, 200);
+  assert.equal((await handle(consoleRequest(children, { method: "POST" }))).status, 409);
+  for (const write of ["/api/room-invitations" + scoped, "/api/room-lease" + scoped]) {
+    assert.equal((await handle(consoleRequest(write))).status, 404);
+    assert.equal((await handle(consoleRequest(write, { method: "POST" }, "https://example.com"))).status, 403);
+    assert.equal((await handle(consoleRequest(write, { method: "DELETE" }))).status, 404);
+    assert.equal((await handle(consoleRequest(write, { method: "POST" }))).status, 409);
+  }
 
   const versions = await handle(consoleRequest("/api/versions"));
   assert.equal(versions.status, 200);
@@ -151,6 +161,12 @@ test("relays named reads and writes with the main process credential", async (t)
   assert.deepEqual(received, [
     ["/api/team?session=local", "GET", ""],
     [roomMembers, "GET", ""],
+    [leadership, "GET", ""],
+    [leadership, "POST", ""],
+    [children, "GET", ""],
+    [children, "POST", ""],
+    ["/api/room-invitations" + scoped, "POST", ""],
+    ["/api/room-lease" + scoped, "POST", ""],
     ["/api/versions", "GET", ""],
     [archive, "GET", ""],
     [leave, "POST", ""],

@@ -35,6 +35,12 @@ When the MCP endpoint does not expose a room roster, the room sidebar explicitly
 shows the team directory and suppresses membership actions. Presence and team
 public room discovery require the full Client console connection.
 
+The Focused rooms tab lists and creates child rooms, sends invitations, renews a
+lease, and reads leadership candidates through the matching `teamup_*` tools of
+the same binding. The adapter passes a room's leadership, lease and membership
+metadata when `teamup_list_rooms` reports it, and returns TeamUp's published
+error code as the action state instead of an unavailable result.
+
 ## Send mentions to Codex
 
 Open **我的 @ / Codex** and enter the target Codex session UUID. Choose a room

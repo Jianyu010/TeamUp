@@ -1,6 +1,8 @@
 """The browser Console works against a real signed-in Client and Server."""
 
+import re
 from contextlib import closing
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from _stack import Api, Server, new_secret
@@ -434,3 +436,188 @@ def test_browser_client_moves_tasks_between_lanes(client_workspace):
         finished = page.get_by_role("region", name="Finished tasks")
         expect(finished.get_by_role("heading")).to_have_text("Finished (1)")
         expect(finished.get_by_text(open_title, exact=True)).to_be_visible()
+
+
+def heartbeat(api, member):
+    api.call("POST", "/v1/presence/heartbeat", member.token)
+
+
+def child_names(api, member, room):
+    children = api.call("GET", f"/v1/rooms/{room}/children", member.token)["rooms"]
+    return sorted(entry["name"] for entry in children)
+
+
+def open_leave_dialog(page, expect, room, member_id):
+    page.locator(f'#rooms button[data-room="{room}"]').click()
+    row = page.locator(f'#roster .member-row[data-member="{member_id}"]')
+    row.hover()
+    row.get_by_role("button", name="Leave this room").click()
+    expect(page.get_by_role("dialog")).to_be_visible()
+    return page.locator("#leadership-candidate")
+
+
+def joined_rooms(api, member):
+    return [room["room_id"] for room in api.call("GET", "/v1/rooms", member.token)["rooms"]]
+
+
+@pytest.mark.scenario("NS-15.09", "Browser child rooms, invitations, and lease renewal")
+def test_browser_creates_child_room_and_invites(client_workspace):
+    api, _, console, url, password, local, peer = client_workspace
+    console_login(console, "alice", password)
+    room = api.create_room(local, "Browser focused", rules="Share drafts.")
+    heartbeat(api, peer)
+    children = f"/v1/rooms/{room}/children"
+
+    with browser_page(
+        str(console.base_url), redact=(password, url.split("#", 1)[1])
+    ) as (page, expect):
+        page.goto(url, wait_until="domcontentloaded")
+        page.locator(f'#rooms button[data-room="{room}"]').click()
+        page.get_by_role("button", name="Focused rooms").click()
+        expect(page.locator("#focus-invite-member")).to_have_value(peer.member_id, timeout=12000)
+        page.get_by_role("button", name="Send invitation").click()
+        expect(page.locator("#focus-status")).to_have_text(
+            "Invitation sent to Remote reviewer.", timeout=12000
+        )
+        events = api.call("GET", "/v1/inbox", peer.token, params={"kinds": "dm"})["events"]
+        assert [event["kind"] for event in events] == ["dm"]
+        assert f"room ID {room}" in events[0]["message"]["text"]
+
+        page.get_by_label("Child name", exact=True).fill("Investigation")
+        page.get_by_role("button", name="Create child room").click()
+        expect(page.locator("#focus-children")).to_contain_text(
+            "Investigation", timeout=12000
+        )
+        (child,) = api.call("GET", children, local.token)["rooms"]
+        assert child["name"] == "Investigation"
+        expect(page.get_by_label("Child name", exact=True)).to_have_value("")
+
+        attempts = []
+
+        def create(route):
+            if route.request.method != "POST":
+                return route.continue_()
+            attempts.append(route.request.post_data_json)
+            if len(attempts) == 1:
+                route.fulfill(status=503, json={"state": "unavailable"})
+            else:
+                route.continue_()
+
+        page.route(re.compile(r"/api/child-rooms\?"), create)
+        page.get_by_label("Child name", exact=True).fill("Follow-up")
+        page.get_by_role("button", name="Create child room").click()
+        expect(page.locator("#focus-status")).to_contain_text(
+            "A retry repeats the same request", timeout=12000
+        )
+        page.get_by_role("button", name="Create child room").click()
+        expect(page.locator("#focus-children")).to_contain_text("Follow-up", timeout=12000)
+        assert len(attempts) == 2
+        assert attempts[0] == attempts[1]
+        assert child_names(api, local, room) == ["Follow-up", "Investigation"]
+
+        page.locator("#focus-children .focus-child").filter(has_text="Investigation").get_by_role(
+            "button", name="Open"
+        ).click()
+        expect(page.locator("#focus-lease")).to_contain_text("Part of Browser focused")
+        expect(page.locator("#focus-create-section")).to_be_hidden()
+        expect(page.locator("#focus-children-section")).to_be_hidden()
+        expect(page.locator("#focus-lease-hint")).to_contain_text(
+            "Renewal opens 15 minutes before"
+        )
+        assert page.get_by_role("button", name="Extend lease").is_disabled()
+
+        due = (datetime.now(UTC) + timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        extended = (datetime.now(UTC) + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        renewals = []
+
+        def lease_workspace(route):
+            response = route.fetch()
+            payload = response.json()
+            for entry in payload["rooms"]:
+                if entry["id"] == child["room_id"]:
+                    entry["expires_at"] = due
+            route.fulfill(response=response, json=payload)
+
+        def renew(route):
+            renewals.append(route.request.post_data_json)
+            route.fulfill(json={"state": "ready", "room_id": child["room_id"], "expires_at": extended})
+
+        page.route(re.compile(r"/api/workspace$"), lease_workspace)
+        page.route(re.compile(r"/api/room-lease\?"), renew)
+        extend = page.get_by_role("button", name="Extend lease")
+        expect(extend).to_be_enabled(timeout=12000)
+        page.get_by_label("Extend by").select_option("1800")
+        extend.click()
+        expect(page.locator("#focus-status")).to_contain_text(
+            "Lease extended. Investigation now closes", timeout=12000
+        )
+        assert renewals == [{"seconds": 1800, "expected_expires_at": due}]
+        page.locator("#focus-lease").get_by_role("button", name="Browser focused").click()
+        expect(page.locator("#focus-create-section")).to_be_visible()
+
+
+@pytest.mark.scenario("NS-15.10", "Browser leader Leave successor dialog")
+def test_browser_leader_leaves_through_successor_dialog(client_workspace):
+    api, _, console, url, password, local, peer = client_workspace
+    console_login(console, "alice", password)
+    room = api.create_room(local, "Browser handoff", rules="Share drafts.")
+    deferral = api.create_room(local, "Browser deferral", rules="Share drafts.")
+    for joined in (room, deferral):
+        api.join(peer, joined)
+        api.read_and_ack_board(peer, joined)
+    heartbeat(api, peer)
+    candidates = f"/v1/rooms/{room}/leadership/candidates"
+    assert api.call("GET", candidates, peer.token, error="forbidden") == 403
+
+    with browser_page(
+        str(console.base_url), redact=(password, url.split("#", 1)[1])
+    ) as (page, expect):
+        page.goto(url, wait_until="domcontentloaded")
+        dialog = page.get_by_role("dialog")
+        successor = open_leave_dialog(page, expect, room, local.member_id)
+        expect(dialog).to_contain_text("Local reviewer leads Browser handoff")
+        expect(successor.locator("option")).to_have_text(
+            ["Choose a successor", "1. Remote reviewer"], timeout=12000
+        )
+        assert page.get_by_role("button", name="Hand off and leave").is_disabled()
+
+        page.get_by_role("button", name="Stay in room").click()
+        expect(dialog).not_to_be_visible()
+        assert api.call("GET", candidates, peer.token, error="forbidden") == 403
+        assert room in joined_rooms(api, local)
+
+        open_leave_dialog(page, expect, room, local.member_id).select_option(peer.member_id)
+        expect(page.locator("#leadership-detail")).to_contain_text("Recent room activity")
+        page.get_by_role("button", name="Hand off and leave").click()
+        expect(dialog).not_to_be_visible()
+        expect(page.locator("#session-action-status")).to_have_text(
+            "Local reviewer left Browser handoff."
+        )
+        assert room not in joined_rooms(api, local)
+        assert api.call("GET", candidates, local.token, error="not_found") == 404
+        assert api.call("GET", candidates, peer.token)["candidates"] == []
+
+        deferred = f"/v1/rooms/{deferral}/leadership/candidates"
+        successor = open_leave_dialog(page, expect, deferral, local.member_id)
+        expect(successor.locator("option")).to_have_text(
+            ["Choose a successor", "1. Remote reviewer"], timeout=12000
+        )
+        page.get_by_role("button", name="Let Leader Decide").click()
+        expect(dialog).not_to_be_visible()
+        expect(page.locator("#session-action-status")).to_have_text(
+            "Leadership decision pending. Local reviewer is still in the room."
+        )
+        assert deferral in joined_rooms(api, local)
+        assert api.call("GET", deferred, local.token)["candidates"][0]["member_id"] == peer.member_id
+
+        successor = open_leave_dialog(page, expect, deferral, local.member_id)
+        expect(successor.locator("option")).to_have_text(
+            ["Choose a successor", "1. Remote reviewer"], timeout=12000
+        )
+        successor.select_option(peer.member_id)
+        page.get_by_role("button", name="Hand off and leave").click()
+        expect(dialog).not_to_be_visible()
+        expect(page.locator("#session-action-status")).to_have_text(
+            "Local reviewer left Browser deferral."
+        )
+        assert deferral not in joined_rooms(api, local)

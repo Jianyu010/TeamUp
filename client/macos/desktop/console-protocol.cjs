@@ -15,15 +15,18 @@ const assets = new Map([
   ["/console-board.js", ["console-board.js", "text/javascript; charset=utf-8"]],
   ["/console-tasks.js", ["console-tasks.js", "text/javascript; charset=utf-8"]],
   ["/console-sessions.js", ["console-sessions.js", "text/javascript; charset=utf-8"]],
+  ["/console-focused-rooms.mjs", ["console-focused-rooms.mjs", "text/javascript; charset=utf-8"]],
   ["/jet-pair.png", ["jet-pair.png", "image/png"]],
 ]);
 const reads = new Set([
   "/api/workspace", "/api/access", "/api/login", "/api/wake-settings", "/api/versions", "/api/retired", "/api/team", "/api/room", "/api/room-members",
   "/api/room-board", "/api/room-archive", "/api/tasks", "/api/task-events",
+  "/api/room-leadership", "/api/child-rooms",
 ]);
 const taskAction = /^\/api\/tasks\/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\/(?:join|progress|finish)$/i;
 const actions = new Set([
   "/api/login", "/api/wake-settings", "/api/sessions/leave", "/api/sessions/retire", "/api/room-board", "/api/room-archive", "/api/room-members/remove",
+  "/api/room-leadership", "/api/room-invitations", "/api/room-lease", "/api/child-rooms",
 ]);
 const requestLimit = 128 * 1024;
 const headers = {

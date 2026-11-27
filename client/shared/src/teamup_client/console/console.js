@@ -4,6 +4,7 @@ import {memberNames, roomMembers, renderSessionChoices, renderTeam} from "/conso
 import {taskPanel} from "/console-tasks.js";
 import {sessionControls} from "/console-sessions.js";
 import {sessionPage} from "/console-sessions.mjs";
+import {focusedRoomPanel, isRoomLeader, leadershipDialog} from "/console-focused-rooms.mjs";
 
 const get = (id) => document.getElementById(id);
 const svg = (name) => document.createElementNS("http://www.w3.org/2000/svg", name);
@@ -19,6 +20,7 @@ const state = {
   teamMember: null,
   teamPending: false,
   actor: null,
+  focusActor: null,
   chat: null,
   roomView: "chats",
   requestNumber: 0,
@@ -101,6 +103,14 @@ function selectRoomSubjects(room) {
     state.reader = preferredSession(eligible.length ? eligible : joined);
   }
   if (!eligible.some((item) => item.session === state.actor)) state.actor = preferredSession(eligible);
+  if (!joined.some((item) => item.session === state.focusActor)) {
+    state.focusActor = preferredSession(eligible.length ? eligible : joined);
+  }
+}
+
+function roomLeader(room) {
+  return (room && readyMemberships(room).find((item) =>
+    isRoomLeader(room, sessionFor(item.session), item))) ?? null;
 }
 
 const boardPanel = roomBoard({get, request: read});
@@ -113,32 +123,46 @@ const tasks = taskPanel({
   active: () => state.page === "room" && Boolean(state.reader) && state.roomView === "tasks",
 });
 
-const lifecycle = sessionControls({
-  request: read,
-  changed(session, room, result, membershipId) {
-    if (room?.id === state.room) members.reset({preserveNames: true});
-    const snapshot = state.workspace;
-    const retired = snapshot.retired_sessions ?? [];
-    const sessions = room ? snapshot.sessions : snapshot.sessions.filter((item) => item.id !== session.id);
-    const directory = snapshot.directory_available && sessions.some((item) => item.state === "ready");
-    const rooms = snapshot.rooms.flatMap((item) => {
-      if (room && item.id !== room.id) return [item];
-      const memberships = item.memberships.filter((link) => link.session !== session.id ||
-        (membershipId && link.membership_id !== membershipId));
-      if (memberships.length) return [{...item, memberships}];
-      if (directory && item.history_policy) return [{...item, memberships, latest_message_id: null}];
-      return [];
-    });
-    applyWorkspace({
-      ...snapshot,
-      sessions,
-      rooms,
-      directory_available: directory,
-      retired_sessions: room || retired.some((item) => item.id === session.id) ? retired
-        : [...retired, {...session, role_description: result.role_description}],
-    });
-    return refresh();
-  },
+function membershipEnded(session, room, result, membershipId) {
+  if (room?.id === state.room) members.reset({preserveNames: true});
+  const snapshot = state.workspace;
+  const retired = snapshot.retired_sessions ?? [];
+  const sessions = room ? snapshot.sessions : snapshot.sessions.filter((item) => item.id !== session.id);
+  const directory = snapshot.directory_available && sessions.some((item) => item.state === "ready");
+  const rooms = snapshot.rooms.flatMap((item) => {
+    if (room && item.id !== room.id) return [item];
+    const memberships = item.memberships.filter((link) => link.session !== session.id ||
+      (membershipId && link.membership_id !== membershipId));
+    if (memberships.length) return [{...item, memberships}];
+    if (directory && item.history_policy) return [{...item, memberships, latest_message_id: null}];
+    return [];
+  });
+  applyWorkspace({
+    ...snapshot,
+    sessions,
+    rooms,
+    directory_available: directory,
+    retired_sessions: room || retired.some((item) => item.id === session.id) ? retired
+      : [...retired, {...session, role_description: result.role_description}],
+  });
+  return refresh();
+}
+
+const lifecycle = sessionControls({request: read, changed: membershipEnded});
+
+const leadership = leadershipDialog({
+  get, node, request: read, departed: membershipEnded, refresh,
+});
+
+const focused = focusedRoomPanel({
+  get, node, request: read,
+  room: activeRoom,
+  actor: () => sessionFor(state.focusActor),
+  sessions: () => state.workspace.sessions,
+  rooms: () => state.workspace.rooms,
+  active: () => state.page === "room" && state.roomView === "focus",
+  openRoom,
+  changed: refresh,
 });
 
 const members = roomMembers({
@@ -153,15 +177,17 @@ const members = roomMembers({
 function rosterAction(member) {
   const room = activeRoom();
   if (!room) return;
-  const joined = readyMemberships(room);
-  const local = joined.find(({session}) => sessionFor(session)?.member_id === member.id);
+  const local = readyMemberships(room)
+    .find(({session}) => sessionFor(session)?.member_id === member.id);
   if (local?.membership_id && (!member.membership_id || member.membership_id === local.membership_id)) {
     const session = sessionFor(local.session);
-    return {kind: "leave", run: () => lifecycle.leave(session, room, local.membership_id)};
+    return {kind: "leave", run: () => isRoomLeader(room, session, local)
+      ? leadership.open(session, room, local.membership_id)
+      : lifecycle.leave(session, room, local.membership_id)};
   }
-  const creator = joined.find(({can_remove_members}) => can_remove_members === true);
-  if (creator && !local && member.membership_id) {
-    return {kind: "remove", run: () => removeRoomMember(room, creator.session, member)};
+  const leader = roomLeader(room);
+  if (leader && !local && member.membership_id) {
+    return {kind: "remove", run: () => removeRoomMember(room, leader.session, member)};
   }
 }
 
@@ -201,19 +227,21 @@ let archiveBefore = null;
 
 async function markGoalReached() {
   const room = activeRoom();
-  const creator = room && readyMemberships(room).find((item) => item.can_remove_members);
-  if (!creator || !window.confirm("Mark the goal reached and archive this room?")) return;
+  const leader = roomLeader(room);
+  if (!leader || !window.confirm("Mark the goal reached and archive this room?")) return;
   const button = get("archive-room");
   const status = get("session-action-status");
   button.disabled = true;
   try {
-    const receipt = await read("/api/room-archive", {session: creator.session, room: room.id}, {});
+    const receipt = await read("/api/room-archive", {session: leader.session, room: room.id}, {});
     if (receipt.state === "ready") {
       status.textContent = room.name + " was archived.";
       show("workspace");
       await refresh();
     } else {
-      status.textContent = "TeamUp could not archive this room.";
+      status.textContent = receipt.state === "room_has_live_children"
+        ? "Close the active child rooms before archiving " + room.name + "."
+        : "TeamUp could not archive this room.";
     }
   } catch {
     status.textContent = "TeamUp could not confirm that the room was archived.";
@@ -308,21 +336,28 @@ async function loadArchivedRoom(before = null) {
 
 function renderRoomView() {
   const joined = Boolean(state.reader);
-  const isTasks = state.roomView === "tasks";
+  const view = state.roomView;
   get("detail").toggleAttribute("data-preview", !joined);
   get("room-preview").hidden = joined;
   get("chat-heading").hidden = !joined;
   get("member-rail").hidden = !joined;
-  get("tasks-tab").setAttribute("aria-pressed", String(isTasks));
-  get("chats-tab").setAttribute("aria-pressed", String(!isTasks));
-  get("task-board").hidden = !joined || !isTasks;
-  get("chat-scroll").hidden = !joined || isTasks;
+  get("tasks-tab").setAttribute("aria-pressed", String(view === "tasks"));
+  get("focus-tab").setAttribute("aria-pressed", String(view === "focus"));
+  get("chats-tab").setAttribute("aria-pressed", String(view === "chats"));
+  get("task-board").hidden = !joined || view !== "tasks";
+  get("focus-board").hidden = !joined || view !== "focus";
+  get("chat-scroll").hidden = !joined || view !== "chats";
+}
+
+function refreshRoomView() {
+  if (state.roomView === "tasks") tasks.refresh();
+  if (state.roomView === "focus") focused.refresh();
 }
 
 function setRoomView(view) {
   state.roomView = view;
   renderRoomView();
-  if (view === "tasks") tasks.refresh();
+  refreshRoomView();
 }
 
 function card(label, description) {
@@ -495,7 +530,10 @@ function show(page) {
   get("back").hidden = page !== "room";
   get("team-panel").hidden = page !== "team";
   renderWorkspace();
-  if (page !== "room") tasks.reset();
+  if (page !== "room") {
+    tasks.reset();
+    focused.reset();
+  }
   if (page === "team") refreshTeam();
   if (page === "workspace") setTimeout(drawWires, 450);
 }
@@ -510,10 +548,14 @@ function renderRoomHeader() {
   const actors = readyMemberships(room).filter(acknowledged).map(({session}) => sessionFor(session));
   chooser.disabled = actors.length === 0;
   renderSessionChoices(chooser, actors, state.actor, "No acknowledged session");
+  const joined = readyMemberships(room).map(({session}) => sessionFor(session));
+  const focusChooser = get("focus-actor");
+  focusChooser.disabled = joined.length === 0;
+  renderSessionChoices(focusChooser, joined, state.focusActor, "No available session");
   const membership = room.memberships.find((item) => item.session === state.reader);
   get("room-heading").textContent = room.name;
   get("room-heading").hidden = Boolean(membership);
-  get("archive-room").hidden = !readyMemberships(room).some((item) => item.can_remove_members);
+  get("archive-room").hidden = !roomLeader(room);
   const boardSessions = readyMemberships(room).map((entry) => ({
     ...sessionFor(entry.session),
     current: entry.current,
@@ -542,7 +584,7 @@ function openRoom(id) {
   show("room");
   renderRoomHeader();
   renderChat();
-  if (state.roomView === "tasks") tasks.refresh();
+  refreshRoomView();
   get("back").focus({preventScroll:true});
   refreshRoom();
   members.refresh();
@@ -694,6 +736,7 @@ function applyWorkspace(snapshot) {
   const oldMember = sessionFor(oldReader)?.member_id;
   const oldBoard = activeRoom()?.memberships.find((item) => item.session === oldReader);
   state.workspace = snapshot;
+  leadership.observe(snapshot);
   if (!sessionFor(state.focused)) state.focused = null;
   const active = activeRoom();
   setConnection(snapshot.sessions.some((session) => session.state === "ready") ? "Live" : "Client ready",
@@ -727,7 +770,7 @@ function applyWorkspace(snapshot) {
   if (state.page === "team") refreshTeam();
   if (state.page === "room") {
     boardPanel.refresh();
-    if (state.roomView === "tasks") tasks.refresh();
+    refreshRoomView();
   }
 }
 
@@ -983,6 +1026,7 @@ get("rooms").addEventListener("click", (event) => {
   if (clicked) openRoom(clicked.dataset.room);
 });
 get("tasks-tab").addEventListener("click", () => setRoomView("tasks"));
+get("focus-tab").addEventListener("click", () => setRoomView("focus"));
 get("chats-tab").addEventListener("click", () => setRoomView("chats"));
 get("task-actor").addEventListener("change", (event) => {
   const room = activeRoom();
@@ -990,6 +1034,13 @@ get("task-actor").addEventListener("change", (event) => {
     item.session === event.target.value && acknowledged(item))) return;
   state.actor = event.target.value;
   tasks.changeActor();
+});
+get("focus-actor").addEventListener("change", (event) => {
+  const room = activeRoom();
+  if (state.roomView !== "focus" || !room || !readyMemberships(room).some((item) =>
+    item.session === event.target.value)) return;
+  state.focusActor = event.target.value;
+  focused.refresh();
 });
 get("copy-room").addEventListener("click", copyId);
 get("older").addEventListener("click", () => {
@@ -1001,7 +1052,9 @@ for (const area of ["session-scroll", "room-scroll"]) {
 get("retired-sessions").addEventListener("toggle", drawWires);
 window.addEventListener("resize", drawWires);
 window.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && state.page !== "workspace") show("workspace");
+  if (event.key === "Escape" && state.page !== "workspace" && !get("leadership-dialog").open) {
+    show("workspace");
+  }
 });
 if (desktop || key) {
   refresh();

@@ -117,6 +117,7 @@
           <div class="chat-heading" id="chat-heading">
             <nav class="room-tabs" aria-label="Room views">
               <button type="button" id="tasks-tab" aria-pressed="false">Tasks</button>
+              <button type="button" id="focus-tab" aria-pressed="false">Focused rooms</button>
               <button type="button" id="chats-tab" aria-pressed="true">Chats</button>
             </nav>
           </div>
@@ -139,6 +140,63 @@
             </div>
             <p id="task-status" class="muted" role="status"></p>
             <div id="task-lanes" class="task-lanes"></div>
+          </section>
+          <section id="focus-board" class="task-board" aria-label="Focused rooms" hidden>
+            <div class="task-toolbar">
+              <div class="session-picker">
+                <label for="focus-actor">Acting as</label>
+                <select id="focus-actor" aria-describedby="focus-actor-owner"></select>
+                <small class="session-picker-owner" id="focus-actor-owner" hidden></small>
+              </div>
+            </div>
+            <p id="focus-status" class="muted" role="status"></p>
+            <div class="focus-columns scroll-frame">
+              <section id="focus-lease-section" class="focus-section" aria-labelledby="focus-lease-title" hidden>
+                <h3 id="focus-lease-title">Lease</h3>
+                <div id="focus-lease"></div>
+                <form id="focus-extend-form" hidden>
+                  <label>Extend by
+                    <select id="focus-extend-seconds">
+                      <option value="900">15 minutes</option>
+                      <option value="1800">30 minutes</option>
+                      <option value="3600" selected>1 hour</option>
+                    </select>
+                  </label>
+                  <button type="submit" id="focus-extend">Extend lease</button>
+                </form>
+                <p id="focus-lease-hint" class="muted"></p>
+              </section>
+              <section id="focus-children-section" class="focus-section" aria-labelledby="focus-children-title">
+                <h3 id="focus-children-title">Child rooms</h3>
+                <p id="focus-children-status" class="muted" role="status"></p>
+                <ul id="focus-children"></ul>
+                <button type="button" id="focus-children-more" hidden>More child rooms</button>
+              </section>
+              <section id="focus-invite-section" class="focus-section" aria-labelledby="focus-invite-title">
+                <h3 id="focus-invite-title">Invite a member</h3>
+                <form id="focus-invite-form">
+                  <label>Invitee <select id="focus-invite-member" aria-describedby="focus-invite-hint"></select></label>
+                  <button type="submit" id="focus-invite">Send invitation</button>
+                </form>
+                <p id="focus-invite-hint" class="muted"></p>
+              </section>
+              <section id="focus-create-section" class="focus-section" aria-labelledby="focus-create-title">
+                <h3 id="focus-create-title">Create a child room</h3>
+                <form id="focus-create-form">
+                  <label>Child name <input id="focus-create-name" maxlength="200" autocomplete="off" required></label>
+                  <label>Child rules <textarea id="focus-create-rules" rows="2" maxlength="8000"></textarea></label>
+                  <label>Child protocol <textarea id="focus-create-protocol" rows="2" maxlength="8000"></textarea></label>
+                  <label>Child history
+                    <select id="focus-create-history">
+                      <option value="since_joining" selected>Starts when joining</option>
+                      <option value="retained">Includes earlier messages</option>
+                    </select>
+                  </label>
+                  <button type="submit" id="focus-create">Create child room</button>
+                </form>
+                <p class="muted">The acting session joins and leads the new room. Its lease lasts five hours.</p>
+              </section>
+            </div>
           </section>
         </div>
         <aside class="roster" id="member-rail" aria-labelledby="roster-title">
@@ -210,6 +268,20 @@
       <button type="button" id="room-archive-older" hidden>Older messages</button>
       <div id="room-archive-messages"></div>
     </section>
+  </dialog>
+  <dialog id="leadership-dialog" class="session-dialog" aria-labelledby="leadership-title" aria-describedby="leadership-description">
+    <h2 id="leadership-title">Leave as room leader</h2>
+    <p id="leadership-description"><span id="leadership-session"></span> leads <span id="leadership-room-name"></span>. Choose how leadership continues before this session leaves.</p>
+    <label class="leadership-choice">Successor <select id="leadership-candidate"></select></label>
+    <p id="leadership-detail" class="muted"></p>
+    <p id="leadership-status" role="status"></p>
+    <button type="button" id="leadership-retry" hidden>Try again</button>
+    <div class="session-dialog-actions leadership-actions">
+      <button type="button" id="leadership-defer" title="Record the departure and give this session’s agent two minutes to choose. TeamUp appoints the top candidate if it does not.">Let Leader Decide</button>
+      <button type="button" id="leadership-auto" title="Appoint the highest-ranked eligible successor and leave.">TeamUp will decide</button>
+      <button type="button" id="leadership-choose" title="Appoint the selected successor and leave." disabled>Hand off and leave</button>
+      <button type="button" id="leadership-dismiss" autofocus>Stay in room</button>
+    </div>
   </dialog>
   <section id="member-detail" popover="manual" aria-label="Room member details"></section>
 </body>
