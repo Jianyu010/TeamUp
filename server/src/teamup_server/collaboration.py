@@ -3228,12 +3228,12 @@ class Collaboration:
             FROM {_PROFILE_TABLES} JOIN room_members AS rm ON rm.member_id = m.member_id
             JOIN leadership_heartbeats AS h ON h.member_id = m.member_id
             LEFT JOIN latest ON latest.actor = m.member_id
-            WHERE rm.room_id = :room AND m.member_id IS NOT :viewer AND rm.membership_id IS NOT :blocked
+            WHERE rm.room_id = :room AND m.member_id IS NOT :viewer
                 AND m.retired = 0 AND COALESCE(a.disabled, 0) = 0 AND h.observed_at > :cutoff
             ORDER BY m.member_id
             """,
             {"room": room_id, "viewer": incumbent, "automatic": incumbent is None, "previous": previous,
-                 "blocked": state["blocked_membership_id"], "cutoff": now - _HEARTBEAT_MICROS},
+                 "cutoff": now - _HEARTBEAT_MICROS},
         )
         ranked = []
         for row in rows:
@@ -3272,27 +3272,20 @@ class Collaboration:
 
     def _appoint_room_leader(
         self, connection: sqlite3.Connection, state: sqlite3.Row, successor: str | None, now: int,
-        notified: set[str], *, block_unresponsive: bool = False,
+        notified: set[str],
     ) -> sqlite3.Row:
         room_id = state["room_id"]
-        previous = state["leader_member_id"]
-        blocked = None
-        if block_unresponsive and previous is not None:
-            membership = connection.execute(
-                "SELECT membership_id FROM room_members WHERE room_id = ? AND member_id = ?",
-                (room_id, previous),
-            ).fetchone()
-            blocked = membership[0] if membership is not None else None
         if successor is not None and not _active_room_member(connection, room_id, successor):
             raise CollaborationError("conflict")
+        challenge_at = now + _CHALLENGE_INTERVAL
         updated = connection.execute(
             """
             UPDATE room_leadership SET leader_member_id = ?, previous_member_id = COALESCE(leader_member_id, previous_member_id),
-                leadership_epoch = leadership_epoch + 1, blocked_membership_id = ?, pending_kind = NULL,
+                leadership_epoch = leadership_epoch + 1, blocked_membership_id = NULL, pending_kind = NULL,
                 deadline = NULL, leave_after = 0, challenge_at = ?, next_check_at = ?
             WHERE room_id = ? RETURNING *
             """,
-            (successor, blocked, now + _CHALLENGE_INTERVAL, now + _LEADERSHIP_GRACE if successor else None, room_id),
+            (successor, challenge_at, challenge_at if successor else None, room_id),
         ).fetchone()
         if successor is not None:
             self._add_room_notice(
@@ -3429,13 +3422,14 @@ class Collaboration:
     def _reset_leadership_challenge(
         connection: sqlite3.Connection, room_id: str, now: int
     ) -> sqlite3.Row:
+        challenge_at = now + _CHALLENGE_INTERVAL
         return connection.execute(
             """
             UPDATE room_leadership SET leadership_epoch = leadership_epoch + 1,
                 pending_kind = NULL, deadline = NULL, challenge_at = ?, next_check_at = ?
             WHERE room_id = ? RETURNING *
             """,
-            (now + _CHALLENGE_INTERVAL, now + _LEADERSHIP_GRACE, room_id),
+            (challenge_at, challenge_at, room_id),
         ).fetchone()
 
     def _sweep_leader(
@@ -3444,42 +3438,26 @@ class Collaboration:
         room_id = state["room_id"]
         incumbent = state["leader_member_id"]
         kind = state["pending_kind"]
-        if incumbent is not None:
-            heartbeat = connection.execute(
-                "SELECT observed_at FROM leadership_heartbeats WHERE member_id = ?", (incumbent,)
-            ).fetchone()
-            lost = heartbeat is not None and heartbeat[0] + _LEADERSHIP_GRACE <= now
-            if kind is None and not lost:
-                if now >= state["challenge_at"]:
-                    self._request_leadership_decision(connection, state, "challenge", False, now, notified)
-                else:
-                    connection.execute(
-                        "UPDATE room_leadership SET next_check_at = ? WHERE room_id = ?",
-                        (min(state["challenge_at"], (heartbeat[0] if heartbeat else now) + _LEADERSHIP_GRACE), room_id),
-                    )
-                return
+        if incumbent is not None and kind != "defer":
+            if kind == "challenge":
+                self._reset_leadership_challenge(connection, room_id, now)
+            elif now >= state["challenge_at"]:
+                self._request_leadership_decision(connection, state, "challenge", False, now, notified)
+            else:
+                connection.execute(
+                    "UPDATE room_leadership SET next_check_at = ? WHERE room_id = ?",
+                    (state["challenge_at"], room_id),
+                )
+            return
         candidates = self._rank_successors(connection, state, now)
         successor = candidates[0]["member_id"] if candidates else None
-        if kind == "challenge" and incumbent is not None and heartbeat is not None and not lost:
-            probe_received = connection.execute(
-                """
-                SELECT 1 FROM room_control_notices
-                WHERE room_id = ? AND kind = 'leadership_challenge' AND member_id = ?
-                    AND leadership_epoch = ? AND acknowledged = 1
-                """,
-                (room_id, incumbent, state["leadership_epoch"]),
-            ).fetchone()
-            if successor is None or probe_received is None:
-                self._reset_leadership_challenge(connection, room_id, now)
-                return
-        if not successor and (kind == "defer" or incumbent is None):
+        if not successor:
             connection.execute(
                 "UPDATE room_leadership SET next_check_at = ? WHERE room_id = ?",
                 (now + _HEARTBEAT_MICROS if kind else None, room_id),
             )
             return
-        self._appoint_room_leader(connection, state, successor, now, notified,
-                                 block_unresponsive=kind == "challenge")
+        self._appoint_room_leader(connection, state, successor, now, notified)
         if state["leave_after"]:
             self._end_room_membership(connection, room_id, incumbent, None, notify=True)
             notified.add(incumbent)
