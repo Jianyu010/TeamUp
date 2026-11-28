@@ -351,6 +351,9 @@ def test_browser_selects_and_opens_workspace_rooms(client_workspace):
         expect(related_sessions).to_have_text(["Local designer", "Local planner"])
         expect(wires).to_have_count(2)
         expect(focused_wires).to_have_count(2)
+        # The next pointer event can target a different room if a refresh reorders the cards.
+        directory_card.dispatch_event("dblclick")
+        expect(stage).to_have_attribute("data-page", "workspace", timeout=1500)
 
         search = page.get_by_role("searchbox", name="Find a session")
         search.fill("planner")
@@ -383,6 +386,18 @@ def test_browser_selects_and_opens_workspace_rooms(client_workspace):
 
         page.locator("#back").click()
         expect(shared_card).to_have_attribute("aria-pressed", "true")
+
+        snapshot = console_read(console, "/api/workspace")
+        joined = next(room["memberships"] for room in snapshot["rooms"] if room["id"] == shared)
+        preferred = joined[1]["session"]
+        preferred_card = page.locator(f'#sessions button[data-session="{preferred}"]')
+        actor = page.locator("#task-actor")
+        for open_shared in (shared_card.dblclick, lambda: shared_card.press("Enter")):
+            preferred_card.click()
+            open_shared()
+            expect(actor).to_have_value(preferred)
+            page.locator("#back").click()
+
         directory_card.press("Enter")
         expect(page.locator("#room-id")).to_have_value(preview)
         expect(page.locator("#room-preview")).to_contain_text("Copy the room ID")

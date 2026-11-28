@@ -92,19 +92,19 @@ function acknowledged(item) {
   return item.current === item.acknowledged;
 }
 
-function preferredSession(memberships) {
-  return (memberships.find((item) => item.session === state.focused) || memberships[0])?.session ?? null;
+function preferredSession(memberships, preferred) {
+  return (memberships.find((item) => item.session === preferred) || memberships[0])?.session ?? null;
 }
 
-function selectRoomSubjects(room) {
+function selectRoomSubjects(room, preferred = state.focused) {
   const joined = readyMemberships(room);
   const eligible = joined.filter(acknowledged);
   if (!joined.some((item) => item.session === state.reader)) {
-    state.reader = preferredSession(eligible.length ? eligible : joined);
+    state.reader = preferredSession(eligible.length ? eligible : joined, preferred);
   }
-  if (!eligible.some((item) => item.session === state.actor)) state.actor = preferredSession(eligible);
+  if (!eligible.some((item) => item.session === state.actor)) state.actor = preferredSession(eligible, preferred);
   if (!joined.some((item) => item.session === state.focusActor)) {
-    state.focusActor = preferredSession(eligible.length ? eligible : joined);
+    state.focusActor = preferredSession(eligible.length ? eligible : joined, preferred);
   }
 }
 
@@ -593,7 +593,7 @@ function renderRoomHeader() {
   renderRoomView();
 }
 
-function openRoom(id) {
+function openRoom(id, preferred = state.focused) {
   if (state.room === id && state.page === "room") return;
   const room = state.workspace.rooms.find((item) => item.id === id);
   if (!room) return;
@@ -601,7 +601,7 @@ function openRoom(id) {
   state.room = id;
   state.reader = null;
   state.actor = null;
-  selectRoomSubjects(room);
+  selectRoomSubjects(room, preferred);
   state.chat = null;
   members.reset();
   show("room");
@@ -1045,13 +1045,16 @@ get("sessions").addEventListener("click", (event) => {
   state.selectedRoom = null;
   renderWorkspace();
 });
+let firstRoomClick = null;
 get("rooms").addEventListener("click", (event) => {
+  if (event.detail <= 1) firstRoomClick = null;
   const clicked = event.target.closest("[data-room]");
   if (!clicked) return;
   const room = clicked.dataset.room;
   if (state.page === "room") {
     openRoom(room);
   } else if (state.page === "workspace" && event.detail <= 1) {
+    if (event.detail === 1) firstRoomClick = {room, session: state.focused};
     state.focused = null;
     state.selectedRoom = state.selectedRoom === room ? null : room;
     // Keep the card in place so the second click can reach the same button.
@@ -1061,7 +1064,12 @@ get("rooms").addEventListener("click", (event) => {
 });
 get("rooms").addEventListener("dblclick", (event) => {
   const clicked = event.target.closest("[data-room]");
-  if (clicked && state.page === "workspace") openRoom(clicked.dataset.room);
+  const first = firstRoomClick;
+  firstRoomClick = null;
+  // A refresh can move a different room under the pointer between clicks.
+  if (first && state.page === "workspace" && first.room === clicked?.dataset.room) {
+    openRoom(first.room, first.session);
+  }
 });
 get("rooms").addEventListener("keydown", (event) => {
   const clicked = event.target.closest("[data-room]");
@@ -1096,6 +1104,7 @@ for (const area of ["session-scroll", "room-scroll"]) {
   panel.addEventListener("scroll", drawWires, {passive:true});
   wireLayout.observe(panel);
 }
+wireLayout.observe(get("sessions"));
 get("retired-sessions").addEventListener("toggle", drawWires);
 window.addEventListener("resize", drawWires);
 window.addEventListener("keydown", (event) => {
