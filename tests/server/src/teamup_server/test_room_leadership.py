@@ -285,16 +285,28 @@ def test_challenge_requires_bound_agent_and_survives_server_restart(team):
     for token in (peer, team.leader):
         team.db.record_leadership_heartbeat(token)
     team.db.sweep_room_leadership()
-    assert team.db.view_board(peer, team.room)["can_edit"]
+    assert team.db.view_board(team.leader, team.room)["can_edit"]
+    assert not team.db.view_board(peer, team.room)["can_edit"]
+    assert team.db.room_notices(peer)["notices"] == []
 
 
-def test_sweep_recovers_from_lost_client_heartbeat(team):
+def test_disconnected_child_leader_keeps_authority_to_renew_on_reconnect(team):
+    child = team.db.create_linked_room(
+        team.leader, team.room, "Child", None, None, "since_joining", "lease"
+    )
+    room_id = child["room_id"]
     peer = team.join("peer")
+    team.db.join_room(peer, room_id)
     team.db.record_leadership_heartbeat(team.leader)
-    team.now += timedelta(minutes=2, seconds=1)
+    team.now += timedelta(hours=4, minutes=45)
     team.db.record_leadership_heartbeat(peer)
-    team.db.sweep_room_leadership()
-    assert team.db.view_board(peer, team.room)["can_edit"]
+    team.db.maintain_rooms()
+    team.restart()
+    team.db.record_leadership_heartbeat(team.leader)
+    renewed = team.db.extend_room_lease(team.leader, room_id, 3_600, child["expires_at"])
+    assert renewed["expires_at"] != child["expires_at"]
+    assert not team.db.view_board(peer, room_id)["can_edit"]
+    assert team.db.room_notices(peer)["notices"] == []
 
 
 def test_migrate_v12_seeds_only_joined_enabled_creators(team):
@@ -333,7 +345,7 @@ def test_disabling_an_account_recovers_every_led_room(team):
     assert sorted(n["room_id"] for n in team.db.room_notices(peer)["notices"]) == sorted(rooms)
 
 
-def test_sweep_recovers_every_room_whose_leader_heartbeat_was_lost(team):
+def test_all_rooms_keep_their_leader_through_disconnect_and_restart(team):
     peer = team.join("peer")
     rooms = [team.room]
     for index in (2, 3):
@@ -344,9 +356,14 @@ def test_sweep_recovers_every_room_whose_leader_heartbeat_was_lost(team):
     team.now += timedelta(minutes=2, seconds=1)
     team.db.record_leadership_heartbeat(peer)
     team.db.sweep_room_leadership()
+    team.restart()
     for room_id in rooms:
-        assert team.db.view_board(peer, room_id)["can_edit"]
-    assert len(team.db.room_notices(peer)["notices"]) == len(rooms)
+        assert team.db.view_board(team.leader, room_id)["can_edit"]
+        assert not team.db.view_board(peer, room_id)["can_edit"]
+    assert team.db.room_notices(peer)["notices"] == []
+    team.db.record_leadership_heartbeat(team.leader)
+    for room_id in rooms:
+        assert team.db.view_board(team.leader, room_id)["can_edit"]
 
 
 def test_vacancy_recovers_on_the_join_or_heartbeat_that_restores_eligibility(team):
@@ -372,22 +389,22 @@ def test_vacancy_recovers_on_the_join_or_heartbeat_that_restores_eligibility(tea
     assert team.candidates(early)["leadership_epoch"] == epoch + 2
 
 
-def test_deposed_leader_cannot_return_by_heartbeat_but_a_peer_can(team):
-    peer = team.join("peer", heartbeat=False)
-    team.db.record_leadership_heartbeat(team.leader)
-    team.now += timedelta(minutes=30)
-    team.db.record_leadership_heartbeat(team.leader)
-    team.db.sweep_room_leadership()
-    team.now += timedelta(minutes=2)
-    team.db.sweep_room_leadership()
+def test_returning_leader_can_fill_a_legacy_probe_vacancy(team):
+    with closing(sqlite3.connect(team.path)) as conn, conn:
+        # The former sweep recorded a block against this still-joined member.
+        conn.execute(
+            """
+            UPDATE room_leadership SET leader_member_id = NULL,
+                previous_member_id = ?, blocked_membership_id = (
+                    SELECT membership_id FROM room_members WHERE room_id = ? AND member_id = ?
+                ), next_check_at = NULL WHERE room_id = ?
+            """,
+            (team.id(team.leader), team.room, team.id(team.leader), team.room),
+        )
+    team.restart()
     assert not team.db.view_board(team.leader, team.room)["can_edit"]
     team.db.record_leadership_heartbeat(team.leader)
-    assert not team.db.view_board(team.leader, team.room)["can_edit"]
-    team.db.sweep_room_leadership()
-    assert not team.db.view_board(team.leader, team.room)["can_edit"]
-    team.db.record_leadership_heartbeat(peer)
-    assert team.db.view_board(peer, team.room)["can_edit"]
-    assert not team.db.view_board(team.leader, team.room)["can_edit"]
+    assert team.db.view_board(team.leader, team.room)["can_edit"]
 
 
 def test_only_the_unanswered_challenge_is_delivered(team):
@@ -500,8 +517,8 @@ def test_confirm_at_the_challenge_deadline_is_stale(team):
         sweeping = pool.submit(race, together, team.db.sweep_room_leadership)
         assert confirming.result() == "conflict"
         sweeping.result()
-    assert team.db.view_board(peer, team.room)["can_edit"]
-    assert not team.db.view_board(team.leader, team.room)["can_edit"]
+    assert team.db.view_board(team.leader, team.room)["can_edit"]
+    assert not team.db.view_board(peer, team.room)["can_edit"]
     assert team.db.room_notices(team.leader)["notices"] == []
 
 
