@@ -2,7 +2,7 @@
 
 Wall-clock stays bounded because leases follow a controlled clock: renewal rounds
 and expiries are clock moves, and the sweeps under test are the Server's startup
-sweep. Leaders answer leadership challenges the way responsive agents do.
+sweep.
 """
 
 import asyncio
@@ -94,12 +94,12 @@ class Workload:
     def parallel(self, operations):
         return asyncio.gather(*(self.limited(operation) for operation in operations))
 
-    async def respond(self):
-        """Every leader answers its challenges before the clock moves on."""
-        await asyncio.gather(*(self.api.respond(lead.token) for lead in self.leaders))
+    async def acknowledge_notices(self):
+        """Acknowledge the leaders’ current notices before advancing the clock."""
+        await asyncio.gather(*(self.api.acknowledge_notices(lead.token) for lead in self.leaders))
 
     async def move(self, now):
-        await self.respond()
+        await self.acknowledge_notices()
         self.clock.now = now
 
     # --- building blocks ------------------------------------------------------
@@ -357,20 +357,27 @@ class Workload:
         return rows
 
     async def pass_notices(self):
-        """Each leader's notices once the pass has reached its last step."""
+        """Wait for each leader's lease offers after the final startup sweep."""
 
         async def read(lead, parent):
-            async def challenged():
-                return any(
-                    notice["kind"] == "leadership_challenge"
-                    and notice["room_id"] == parent["room_id"]
-                    for notice in await self.api.notices(lead.token)
-                )
+            expected = {
+                record["room"]["room_id"] for _, record in self.of_role("notice", parent)
+            }
 
-            await until(challenged, what="a leadership challenge", timeout=30)
-            return await self.api.notices(lead.token)
+            async def offered():
+                notices = await self.api.notices(lead.token)
+                ready = {
+                    notice["room_id"] for notice in notices
+                    if notice["kind"] == "child_lease_due"
+                }
+                if expected <= ready:
+                    return notices
 
-        return await asyncio.gather(*(read(lead, room) for lead, room in self.pairs))
+            return await until(offered, what="the child lease offers", timeout=30)
+
+        return await asyncio.gather(
+            *(read(lead, parent) for parent, lead in enumerate(self.leaders))
+        )
 
     # --- verification -------------------------------------------------------------
 
@@ -491,6 +498,7 @@ class Workload:
             for _, record in renewed
         )
         for parent, feed in enumerate(await self.pass_notices()):
+            assert all(notice["kind"] != "leadership_challenge" for notice in feed)
             offered = {
                 notice["room_id"]: notice["expires_at"]
                 for notice in feed
@@ -501,7 +509,7 @@ class Workload:
                 for _, record in self.of_role("notice", parent)
             ), offered
             assert any(notice["kind"] == "child_tasks_rolled_up" for notice in feed)
-        await self.respond()
+        await self.acknowledge_notices()
         # Leaders close the noticed children; unfinished work continues in the parent.
         closed = await self.parallel(
             partial(
@@ -554,10 +562,10 @@ class Workload:
         task = await self.task(lead, child, "long-task", "Continue long-lived work")
         deadline = child["expires_at"]
         for _ in range(renewals):
-            await self.api.respond(lead.token)
+            await self.api.acknowledge_notices(lead.token)
             self.clock.now = datetime.fromisoformat(deadline) - NOTICE_WINDOW
             deadline = await self.renew(lead, child, deadline)
-        await self.api.respond(lead.token)
+        await self.api.acknowledge_notices(lead.token)
         self.clock.now = datetime.fromisoformat(deadline)
         await self.sweep([(lead, {"room": child}, self.clock.now)], what="long-lease expiry")
         self.assert_work(

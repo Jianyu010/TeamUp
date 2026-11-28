@@ -171,8 +171,7 @@ _VISIBLE_TASK = """
 _ROOM_IDLE_MICROS = 24 * 60 * 60 * 1_000_000
 _ROOM_ARCHIVE_BATCH = 100
 _HEARTBEAT_MICROS = 45_000_000
-_LEADERSHIP_GRACE = 120_000_000
-_CHALLENGE_INTERVAL = 30 * 60_000_000
+_HANDOFF_WINDOW_MICROS = 120_000_000
 _LEADERSHIP_BATCH = 100
 _LEADERSHIP_TERMS = re.compile(
     r"\b(?:lead|leader|coordinator|manager|supervisor|director|captain|chief)\b|负责人|组长|队长|主管|协调员",
@@ -1763,6 +1762,16 @@ class Collaboration:
 
             if not _has_table(connection, "room_leadership"):
                 self._migrate_room_leadership(connection)
+            # A queued legacy prompt becomes stale when its epoch advances.
+            connection.execute(
+                """
+                UPDATE room_leadership SET next_check_at = NULL,
+                    leadership_epoch = leadership_epoch + CASE WHEN pending_kind = 'challenge' THEN 1 ELSE 0 END,
+                    pending_kind = NULL, deadline = NULL, leave_after = 0
+                WHERE pending_kind = 'challenge'
+                   OR (pending_kind IS NULL AND leader_member_id IS NOT NULL AND next_check_at IS NOT NULL)
+                """
+            )
             initialize_room_changes(connection, self._db_path.stat())
             connection.execute(
                 "DELETE FROM room_command_receipts WHERE server_generation <> ?",
@@ -1799,30 +1808,28 @@ class Collaboration:
         connection.execute(
             """
             INSERT INTO room_leadership (
-                room_id, leader_member_id, previous_member_id, challenge_at, next_check_at
+                room_id, leader_member_id, previous_member_id, challenge_at
             )
             SELECT r.room_id,
                 CASE WHEN m.retired = 0 AND COALESCE(a.disabled, 0) = 0 THEN rm.member_id END,
-                r.creator_member_id, ?, ?
+                r.creator_member_id, 0
             FROM rooms AS r LEFT JOIN room_members AS rm
                 ON rm.room_id = r.room_id AND rm.member_id = r.creator_member_id
             LEFT JOIN members AS m ON m.member_id = rm.member_id
             LEFT JOIN accounts AS a ON a.owner_id = m.owner_id
-            """,
-            ( _utc_micros(self._now_datetime()) + _CHALLENGE_INTERVAL,
-              _utc_micros(self._now_datetime()) + _LEADERSHIP_GRACE ),
+            """
         )
 
     def _initialize_room_leadership(
         self, connection: sqlite3.Connection, room_id: str, member_id: str
     ) -> None:
-        now = _utc_micros(self._now_datetime())
+        # Populate the legacy challenge_at column for existing databases.
         connection.execute(
             """
-            INSERT INTO room_leadership (room_id, leader_member_id, challenge_at, next_check_at)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO room_leadership (room_id, leader_member_id, challenge_at)
+            VALUES (?, ?, 0)
             """,
-            (room_id, member_id, now + _CHALLENGE_INTERVAL, now + _LEADERSHIP_GRACE),
+            (room_id, member_id),
         )
 
     def _migrate_room_archive(self, connection: sqlite3.Connection) -> None:
@@ -3662,21 +3669,20 @@ class Collaboration:
         }
 
     def _appoint_room_leader(
-        self, connection: sqlite3.Connection, state: sqlite3.Row, successor: str | None, now: int,
+        self, connection: sqlite3.Connection, state: sqlite3.Row, successor: str | None,
         notified: set[str],
     ) -> sqlite3.Row:
         room_id = state["room_id"]
         if successor is not None and not _active_room_member(connection, room_id, successor):
             raise CollaborationError("conflict")
-        challenge_at = now + _CHALLENGE_INTERVAL
         updated = connection.execute(
             """
             UPDATE room_leadership SET leader_member_id = ?, previous_member_id = COALESCE(leader_member_id, previous_member_id),
                 leadership_epoch = leadership_epoch + 1, blocked_membership_id = NULL, pending_kind = NULL,
-                deadline = NULL, leave_after = 0, challenge_at = ?, next_check_at = ?
+                deadline = NULL, leave_after = 0, next_check_at = NULL
             WHERE room_id = ? RETURNING *
             """,
-            (successor, challenge_at, challenge_at if successor else None, room_id),
+            (successor, room_id),
         ).fetchone()
         if successor is not None:
             self._add_room_notice(
@@ -3693,7 +3699,7 @@ class Collaboration:
         now = _utc_micros(self._now_datetime())
         candidates = self._rank_successors(connection, state, now)
         successor = candidates[0]["member_id"] if candidates else None
-        self._appoint_room_leader(connection, state, successor, now, notified)
+        self._appoint_room_leader(connection, state, successor, notified)
 
     def _recover_member_rooms(
         self, connection: sqlite3.Connection, member_id: str, notified: set[str]
@@ -3723,37 +3729,29 @@ class Collaboration:
             candidates = self._rank_successors(connection, state, now)
             if candidates:
                 self._appoint_room_leader(
-                    connection, state, candidates[0]["member_id"], now, notified
+                    connection, state, candidates[0]["member_id"], notified
                 )
 
-    def _request_leadership_decision(
-        self, connection: sqlite3.Connection, state: sqlite3.Row, kind: str, leave: bool, now: int,
+    def _defer_leadership_handoff(
+        self, connection: sqlite3.Connection, state: sqlite3.Row, leave: bool, now: int,
         notified: set[str],
     ) -> sqlite3.Row:
         room_id = state["room_id"]
-        deadline = now + _LEADERSHIP_GRACE
+        deadline = now + _HANDOFF_WINDOW_MICROS
         updated = connection.execute(
             """
-            UPDATE room_leadership SET leadership_epoch = leadership_epoch + 1, pending_kind = ?,
+            UPDATE room_leadership SET leadership_epoch = leadership_epoch + 1, pending_kind = 'defer',
                 deadline = ?, next_check_at = ?, leave_after = ? WHERE room_id = ? RETURNING *
             """,
-            (kind, deadline, deadline, leave, room_id),
+            (deadline, deadline, leave, room_id),
         ).fetchone()
         epoch = updated["leadership_epoch"]
         member_id = updated["leader_member_id"]
-        if kind == "defer":
-            notice = "leadership_deferred"
-            instruction = (
-                f"Choose a successor within two minutes. Use teamup_room_leadership_candidates for {room_id}, "
-                f"then teamup_handoff_room_leadership with leadership_epoch {epoch}."
-            )
-        else:
-            notice = "leadership_challenge"
-            instruction = (
-                f"Confirm you are available to lead {room_id} within two minutes. "
-                f"Call teamup_confirm_room_leadership with room_id {room_id} and leadership_epoch {epoch}."
-            )
-        self._add_room_notice(connection, member_id, room_id, notice, instruction, leadership_epoch=epoch)
+        instruction = (
+            f"Choose a successor within two minutes. Use teamup_room_leadership_candidates "
+            f"for {room_id}, then teamup_handoff_room_leadership with leadership_epoch {epoch}."
+        )
+        self._add_room_notice(connection, member_id, room_id, "leadership_deferred", instruction, leadership_epoch=epoch)
         notified.add(member_id)
         return updated
 
@@ -3777,7 +3775,7 @@ class Collaboration:
             left = False
             if mode == "defer":
                 if state["pending_kind"] != "defer":
-                    state = self._request_leadership_decision(connection, state, "defer", leave, now, notified)
+                    state = self._defer_leadership_handoff(connection, state, leave, now, notified)
                 elif leave != bool(state["leave_after"]):
                     raise CollaborationError("conflict")
             else:
@@ -3791,7 +3789,7 @@ class Collaboration:
                     raise CollaborationError("conflict")
                 previous = state["leader_member_id"]
                 left = bool(leave or state["leave_after"])
-                state = self._appoint_room_leader(connection, state, candidates[0]["member_id"], now, notified)
+                state = self._appoint_room_leader(connection, state, candidates[0]["member_id"], notified)
                 if left:
                     self._end_room_membership(connection, room_id, previous, None, notify=True)
                     notified.add(previous)
@@ -3799,29 +3797,12 @@ class Collaboration:
         return self._leadership_receipt(state, left=left)
 
     def confirm_room_leadership(self, token: str, room_id: str, leadership_epoch: int) -> dict:
+        """Return the stale-challenge response through the existing authorization checks."""
         if type(leadership_epoch) is not int or leadership_epoch < 1:
             raise CollaborationError("invalid_request")
-        with self._transaction(write=True) as connection:
-            state = self._leadership_actor(connection, token, room_id, leadership_epoch)
-            now = _utc_micros(self._now_datetime())
-            if state["pending_kind"] != "challenge" or state["deadline"] <= now:
-                raise CollaborationError("conflict")
-            state = self._reset_leadership_challenge(connection, room_id, now)
-        return self._leadership_receipt(state)
-
-    @staticmethod
-    def _reset_leadership_challenge(
-        connection: sqlite3.Connection, room_id: str, now: int
-    ) -> sqlite3.Row:
-        challenge_at = now + _CHALLENGE_INTERVAL
-        return connection.execute(
-            """
-            UPDATE room_leadership SET leadership_epoch = leadership_epoch + 1,
-                pending_kind = NULL, deadline = NULL, challenge_at = ?, next_check_at = ?
-            WHERE room_id = ? RETURNING *
-            """,
-            (challenge_at, challenge_at, room_id),
-        ).fetchone()
+        with self._transaction() as connection:
+            self._leadership_actor(connection, token, room_id, leadership_epoch)
+            raise CollaborationError("conflict")
 
     def _sweep_leader(
         self, connection: sqlite3.Connection, state: sqlite3.Row, now: int, notified: set[str]
@@ -3829,17 +3810,6 @@ class Collaboration:
         room_id = state["room_id"]
         incumbent = state["leader_member_id"]
         kind = state["pending_kind"]
-        if incumbent is not None and kind != "defer":
-            if kind == "challenge":
-                self._reset_leadership_challenge(connection, room_id, now)
-            elif now >= state["challenge_at"]:
-                self._request_leadership_decision(connection, state, "challenge", False, now, notified)
-            else:
-                connection.execute(
-                    "UPDATE room_leadership SET next_check_at = ? WHERE room_id = ?",
-                    (state["challenge_at"], room_id),
-                )
-            return
         candidates = self._rank_successors(connection, state, now)
         successor = candidates[0]["member_id"] if candidates else None
         if not successor:
@@ -3848,7 +3818,7 @@ class Collaboration:
                 (now + _HEARTBEAT_MICROS if kind else None, room_id),
             )
             return
-        self._appoint_room_leader(connection, state, successor, now, notified)
+        self._appoint_room_leader(connection, state, successor, notified)
         if state["leave_after"]:
             self._end_room_membership(connection, room_id, incumbent, None, notify=True)
             notified.add(incumbent)
@@ -3861,6 +3831,7 @@ class Collaboration:
                 """
                 SELECT l.* FROM room_leadership AS l JOIN rooms AS r USING (room_id)
                 WHERE l.next_check_at <= ? AND r.archived_at IS NULL
+                  AND (l.pending_kind = 'defer' OR l.leader_member_id IS NULL)
                 ORDER BY l.next_check_at, l.room_id LIMIT ?
                 """,
                 (now, _LEADERSHIP_BATCH),

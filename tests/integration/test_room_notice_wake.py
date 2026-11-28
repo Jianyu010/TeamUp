@@ -29,9 +29,11 @@ async def run_deferred_handoff(root, port):
     leader = Developer(root, "alice", port)
     peer = Developer(root, "bob", port)
     harness = FakeClaudeCode(root, "leader")
-    config = json.loads(leader.config_path.read_text())
-    config["bindings"][0]["session_key"] = harness.session_id
-    leader.config_path.write_text(json.dumps(config))
+    successor_harness = FakeClaudeCode(root, "successor")
+    for developer, session in ((leader, harness), (peer, successor_harness)):
+        config = json.loads(developer.config_path.read_text())
+        config["bindings"][0]["session_key"] = session.session_id
+        developer.config_path.write_text(json.dumps(config))
     keys = json.dumps({"alice": leader.enrollment_key, "bob": peer.enrollment_key})
 
     with (
@@ -48,8 +50,9 @@ async def run_deferred_handoff(root, port):
         wait_for(lambda: tcp_is_ready(port), server)
         async with (
             harness.running(),
+            successor_harness.running(),
             leader.agent(harness.env()) as incumbent,
-            peer.agent() as successor,
+            peer.agent(successor_harness.env()) as successor,
         ):
             await tool(
                 incumbent, "register", name="Coordinator",
@@ -72,6 +75,11 @@ async def run_deferred_handoff(root, port):
             InstallDeveloper.owner(
                 leader, "wake", "--config", str(leader.config_path),
                 "desktop", harness.session_id, "--room", room_id,
+            )
+
+            InstallDeveloper.owner(
+                peer, "wake", "--config", str(peer.config_path),
+                "desktop", successor_harness.session_id, "--room", room_id,
             )
 
             pending = await tool(
@@ -111,8 +119,23 @@ async def run_deferred_handoff(root, port):
                 "leadership_epoch": pending["leadership_epoch"],
             }
 
+            appointed = await tool(
+                incumbent, "handoff_room_leadership", room_id=room_id,
+                leadership_epoch=pending["leadership_epoch"], mode="choose",
+                member_id=brief["member_id"], membership_id=brief["membership_id"],
+            )
+            assert appointed["leader_member_id"] == candidate["member_id"]
+            [auth, user] = await until(
+                lambda: successor_harness.received and successor_harness.received[0]
+            )
+            assert auth == {"type": "auth", "token": successor_harness.token}
+            assert user["message"]["content"] == (
+                f"TeamUp room {room_id}: You now lead room {room_id}. "
+                "Read its Board, review open tasks and manage the room."
+            )
 
-def test_deferred_handoff_wakes_the_leader_with_ranked_successors():
+
+def test_deferred_handoff_wakes_the_incumbent_and_successor():
     with tempfile.TemporaryDirectory(prefix="tu-room-notice-", dir="/tmp") as directory:
 
         async def run():

@@ -61,7 +61,7 @@ Each call uses one connection and sends one newline-terminated UTF-8 JSON reques
 | `teamup_extend_room_lease` | `extend_room_lease` | `room_id`, `seconds` (1–3600), `expected_expires_at` | Linked room with the extended `expires_at`. Requires leadership of the child room. |
 | `teamup_room_leadership_candidates` | `room_leadership_candidates` | `room_id` | `{leadership_epoch,candidates:[…]}` in ranked order. Requires current leadership. |
 | `teamup_handoff_room_leadership` | `handoff_room_leadership` | `room_id`, `leadership_epoch`, `mode` (`choose`, `auto` or `defer`), `member_id` and `membership_id` for `choose`, optional `leave` (default false) | `{room_id,leader_member_id,leadership_epoch,pending,left}`. Requires current leadership. |
-| `teamup_confirm_room_leadership` | `confirm_room_leadership` | `room_id`, `leadership_epoch` | The same receipt shape. Answers the incumbent's current challenge. |
+| `teamup_confirm_room_leadership` | `confirm_room_leadership` | `room_id`, `leadership_epoch` | The same receipt shape. Answers the incumbent's challenge on older Servers. A retired challenge returns `conflict`. |
 | `teamup_join_room` | `join_room` | `room_id`, optional `client_request_id` | Room |
 | `teamup_list_room_members` | `list_room_members` | `room_id` | `{members:[…]}`, including the `membership_id` of each current membership |
 | `teamup_remove_room_member` | `remove_room_member` | `room_id,member_id,membership_id` | `{room_id,member_id,departure_event_id}`. Requires room leadership. |
@@ -112,7 +112,7 @@ The MCP plugin calls `mention_status` after a successful tool call, except after
 
 ### Room control notices
 
-[Focused rooms](focused-rooms.md#delivery-and-callers) adds durable notices for leadership and child leases. The Client reads them through `GET /v1/room-notices` when it connects, reconnects or receives a hint and every 15 seconds while connected, stores each one before acknowledging it with `POST /v1/room-notices/{notice_id}/ack`, and retries a failed acknowledgment without adding a duplicate row. The kinds are `child_lease_due`, `child_tasks_rolled_up`, `leadership_assigned`, `leadership_challenge` and `leadership_deferred`. A row is `{event_id,kind,room_id,text}` with `leadership_epoch` or `expires_at` when the Server supplies it. Its `event_id` is the Server `notice_id`, which comes from the same sequence as inbox events and room departures, so the single `notifications` cursor orders it with the other kinds. A row counts as unread until a `notifications` call returns it.
+[Focused rooms](focused-rooms.md#delivery-and-callers) adds durable notices for leadership and child leases. The Client reads them through `GET /v1/room-notices` when it connects, reconnects or receives a hint and every 15 seconds while connected, stores each one before acknowledging it with `POST /v1/room-notices/{notice_id}/ack`, and retries a failed acknowledgment without adding a duplicate row. The Server emits `child_lease_due`, `child_tasks_rolled_up`, `leadership_assigned` and `leadership_deferred`. Clients also accept `leadership_challenge` from older Servers. A row is `{event_id,kind,room_id,text}` with `leadership_epoch` or `expires_at` when the Server supplies it. Its `event_id` is the Server `notice_id`, which comes from the same sequence as inbox events and room departures, so the single `notifications` cursor orders it with the other kinds. A row counts as unread until a `notifications` call returns it.
 
 ## Session attachment
 
@@ -149,7 +149,7 @@ Each session identity can have one local wake permission that lists allowed `roo
 
 After storing a notification, the Client processes each session's `mention` notices one at a time in `event_id` order and records the result in the notification's `harness_state`. Typed `dm` notices are outside this flow.
 
-Room control notices use the same permission and have no sender. When the permission admits the room and a harness is attached, the Client hands each notice to the harness once as `TeamUp room {room_id}: {text}`, and the delivery can start a turn. A permission with a nonempty `senders` list does not admit them, so they stay available only through `teamup_notifications`. The Client skips a notice when the room is archived, the session has left the room, or a `child_lease_due` notice no longer matches the room's `expires_at`. It never confirms a leadership challenge itself. The Agent answers with `teamup_confirm_room_leadership` and the notice's `leadership_epoch`.
+Room control notices use the same permission and have no sender. When the permission admits the room and a harness is attached, the Client hands each notice to the harness once as `TeamUp room {room_id}: {text}`, and the delivery can start a turn. A permission with a nonempty `senders` list does not admit them, so they stay available only through `teamup_notifications`. The Client skips a notice when the room is archived, the session has left the room, or a `child_lease_due` notice no longer matches the room's `expires_at`. When connected to an older Server, the Agent can answer a current leadership challenge with `teamup_confirm_room_leadership` and the notice's `leadership_epoch`. The Client checks the epoch before it wakes the Agent.
 
 | `harness_state` | Meaning |
 | --- | --- |

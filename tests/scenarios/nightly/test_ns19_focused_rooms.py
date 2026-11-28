@@ -17,7 +17,6 @@ from _focused_rooms import (
     FocusedApi,
     FocusedServer,
     RoomClock,
-    answer_challenges,
     room_path,
     task_path,
     until,
@@ -203,16 +202,22 @@ def run(ws, steps, *, timeout=90):
 )
 def test_lease_notice_ack_and_extension(ws):
     async def steps(api, server, clock):
-        team = await seed(api, clock)
+        team = await seed(api, clock, lead=NOTICE_WINDOW + timedelta(seconds=1))
         child, parent = team.child, team.parent
         room = child["room_id"]
         due = team.expires - NOTICE_WINDOW
 
-        # Outside the window the leader is challenged, not offered, and cannot renew.
+        # The control room's archive shows the new Server has run its startup sweep.
+        await server.stop()
         clock.now = due - timedelta(seconds=1)
-        await server.restart()
-        await answer_challenges(api, team.owner, (room, parent))
-        assert await lease_notices(api, team.owner, room) == []
+        await server.start()
+        control = await until(
+            lambda: archived_row(api, team.owner, team.control),
+            what="the control room's startup archive",
+            timeout=10,
+        )
+        assert control["archive_reason"] == "lease_expired"
+        assert await api.notices(team.owner.token) == []
         assert await api.reject(
             "POST",
             room_path(child) + "/lease/extend",
@@ -314,9 +319,10 @@ def test_lease_notice_ack_and_extension(ws):
         assert (await api.call("GET", room_path(child), team.owner.token))[
             "expires_at"
         ] == extended["expires_at"]
-        [listed] = await api.pages(
+        children = await api.pages(
             room_path(parent) + "/children", team.owner.token, "rooms"
         )
+        [listed] = [row for row in children if row["room_id"] == room]
         assert listed["expires_at"] == extended["expires_at"]
 
         # The first deadline passes; the extended room stays open and opens a new window.
@@ -490,7 +496,7 @@ def test_expiry_and_private_continuation(ws):
             ] == expected
 
         # A later sweep of the same database adds no duplicate continuation.
-        await api.respond(team.owner.token)
+        await api.acknowledge_notices(team.owner.token)
         clock.now = team.expires + timedelta(seconds=1)
         await server.restart()
         control = team.sentinels[0]["room_id"]
@@ -531,7 +537,7 @@ def test_new_leader_receives_the_offer(ws):
             timeout=10,
         )
         assert len(offers) == 1
-        await api.respond(team.owner.token)
+        await api.acknowledge_notices(team.owner.token)
 
         await api.heartbeat(team.worker)
         ranking = await api.call(
