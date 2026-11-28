@@ -25,16 +25,14 @@ function historyError(state) {
   return "TeamUp could not load the history.";
 }
 
-export function sessionControls({request, changed, roomCommandError}) {
+export function sessionControls({request, changed, roomCommandError, sessionFor, restoreSessionFocus}) {
   const get = (id) => document.getElementById(id);
   const panel = get("retired-sessions");
-  const retire = get("retire-identity");
   const confirm = get("retire-dialog");
   const archive = get("retired-history");
   const status = get("session-action-status");
   const selector = get("archive-conversation");
   const notices = get("archived-notices");
-  let focused;
   let retiring;
   const busy = new Set();
   let subject;
@@ -42,10 +40,15 @@ export function sessionControls({request, changed, roomCommandError}) {
   let historyRead = 0;
   let retiredKey;
 
+  function canRetire(session) {
+    if (session?.state !== "ready" || !session.member_id || busy.has(session.id)) return false;
+    const current = sessionFor(session.id);
+    return current?.state === "ready" && current.member_id === session.member_id;
+  }
+
   async function act(session, room, membershipId) {
     if (busy.has(session.id)) return;
     busy.add(session.id);
-    retire.disabled = true;
     status.textContent = room ? "Leaving room…" : "Retiring identity…";
     try {
       const path = room ? "/api/sessions/leave" : "/api/sessions/retire";
@@ -66,14 +69,10 @@ export function sessionControls({request, changed, roomCommandError}) {
       status.textContent = actionError("unavailable");
     } finally {
       busy.delete(session.id);
-      retire.disabled = Boolean(focused && busy.has(focused.id));
     }
   }
 
-  function workspace(session, retired) {
-    focused = session;
-    retire.hidden = session?.state !== "ready";
-    retire.disabled = Boolean(session && busy.has(session.id));
+  function workspace(retired) {
     const key = JSON.stringify(retired);
     if (key === retiredKey) return;
     retiredKey = key;
@@ -200,18 +199,31 @@ export function sessionControls({request, changed, roomCommandError}) {
     older.hidden = !page.older;
   }
 
-  retire.addEventListener("click", () => {
-    retiring = focused;
-    if (retiring?.state !== "ready") return;
-    get("retire-description").textContent = retiring.label +
+  function confirmRetirement(session, label) {
+    if (confirm.open || !canRetire(session)) return;
+    retiring = {...session};
+    get("retire-description").textContent = (label ?? session.label) +
       " will leave all rooms and move to Retired sessions. This identity cannot be registered again.";
     confirm.showModal();
-  });
+  }
+
   get("cancel-retirement").addEventListener("click", () => confirm.close());
-  get("confirm-retirement").addEventListener("click", () => {
-    confirm.close();
-    if (retiring) act(retiring);
+  confirm.addEventListener("close", () => {
+    if (confirm.open || !retiring) return;
+    const {id} = retiring;
     retiring = null;
+    restoreSessionFocus(id);
+  });
+  get("confirm-retirement").addEventListener("click", () => {
+    if (!confirm.open) return;
+    const session = retiring;
+    retiring = null;
+    confirm.close();
+    if (canRetire(session)) act(session);
+    else if (session && !busy.has(session.id)) {
+      status.textContent = actionError("not_found");
+      restoreSessionFocus(session.id);
+    }
   });
   get("close-archive").addEventListener("click", () => archive.close());
   archive.addEventListener("close", () => {
@@ -222,5 +234,5 @@ export function sessionControls({request, changed, roomCommandError}) {
   selector.addEventListener("change", () => readHistory());
   get("archive-older").addEventListener("click", (event) => readHistory(event.currentTarget.dataset.before));
 
-  return {workspace, leave: act};
+  return {workspace, leave: act, canRetire, confirmRetirement};
 }

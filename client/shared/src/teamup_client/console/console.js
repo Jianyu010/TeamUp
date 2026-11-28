@@ -148,7 +148,12 @@ function membershipEnded(session, room, result, membershipId) {
   return refresh();
 }
 
-const lifecycle = sessionControls({request: read, changed: membershipEnded, roomCommandError});
+const lifecycle = sessionControls({
+  request: read, changed: membershipEnded, roomCommandError, sessionFor, restoreSessionFocus,
+});
+const sessionMenu = get("session-menu");
+const retireIdentity = get("retire-identity");
+let sessionMenuTarget = null;
 
 const leadership = leadershipDialog({
   get, node, request: read, departed: membershipEnded, refresh,
@@ -369,6 +374,55 @@ function card(label, description) {
   return button;
 }
 
+function restoreSessionFocus(sessionId) {
+  if (state.page !== "workspace" || stage.hidden) return;
+  const cards = get("sessions").querySelectorAll("button[data-session]");
+  const card = Array.from(cards).find((button) => button.dataset.session === sessionId);
+  (card ?? get("session-search")).focus({preventScroll:true});
+}
+
+function closeSessionMenu(restoreFocus = false) {
+  if (!sessionMenuTarget) return;
+  const {trigger} = sessionMenuTarget;
+  sessionMenuTarget = null;
+  sessionMenu.hidden = true;
+  trigger.setAttribute("aria-expanded", "false");
+  wireLayout.unobserve(trigger);
+  if (restoreFocus) trigger.focus({preventScroll:true});
+}
+
+function closeMovedSessionMenu() {
+  if (!sessionMenuTarget) return;
+  // A scroll event may arrive after its new position was measured at opening.
+  const {trigger, bounds} = sessionMenuTarget;
+  const {left, top, width, height} = trigger.getBoundingClientRect();
+  if (left !== bounds.left || top !== bounds.top || width !== bounds.width || height !== bounds.height) {
+    closeSessionMenu(true);
+  }
+}
+
+function openSessionMenu(event) {
+  const trigger = event.target.closest("button[data-session]");
+  if (!trigger || state.page !== "workspace" || stage.hidden) return;
+  const session = sessionFor(trigger.dataset.session);
+  if (!lifecycle.canRetire(session)) return;
+  event.preventDefault();
+  closeSessionMenu();
+  trigger.setAttribute("aria-expanded", "true");
+  sessionMenu.hidden = false;
+  retireIdentity.focus({preventScroll:true});
+  const bounds = trigger.getBoundingClientRect();
+  const atPointer = event.type === "contextmenu" && (event.clientX !== 0 || event.clientY !== 0);
+  const x = atPointer ? event.clientX : bounds.left;
+  const y = atPointer ? event.clientY : bounds.bottom;
+  const {clientWidth, clientHeight} = document.documentElement;
+  const inset = 6;
+  sessionMenu.style.left = Math.max(inset, Math.min(x, clientWidth - sessionMenu.offsetWidth - inset)) + "px";
+  sessionMenu.style.top = Math.max(inset, Math.min(y, clientHeight - sessionMenu.offsetHeight - inset)) + "px";
+  sessionMenuTarget = {trigger, session, bounds};
+  wireLayout.observe(trigger);
+}
+
 function renderWorkspaceSelection() {
   const workspace = state.page === "workspace";
   const room = workspace ? state.workspace.rooms.find(({id}) => id === state.selectedRoom) : null;
@@ -390,11 +444,11 @@ function renderWorkspaceSelection() {
     button.classList.toggle("related", joined);
     button.classList.toggle("dimmed", (sessionFocused && !joined) || Boolean(room && room.id !== id));
   }
-  lifecycle.workspace(sessionFor(state.focused), state.workspace.retired_sessions ?? []);
 }
 
 function renderWorkspace() {
-  const selected = document.activeElement;
+  const selected = sessionMenuTarget?.trigger ?? document.activeElement;
+  closeSessionMenu();
   const oldSession = selected?.dataset.session;
   const oldRoom = selected?.dataset.room;
   const animate = state.page === "workspace" && !matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -429,7 +483,13 @@ function renderWorkspace() {
     const name = namesBySession.get(session.id);
     name.view.title = name.label;
     const button = card(name.view, label);
-    button.classList.toggle("session-ready", session.state === "ready");
+    if (session.state === "ready") {
+      button.classList.add("session-ready");
+      button.dataset.label = name.label;
+      button.setAttribute("aria-controls", sessionMenu.id);
+      button.setAttribute("aria-expanded", "false");
+      button.setAttribute("aria-keyshortcuts", "Shift+F10 ContextMenu");
+    }
     if (session.owner_username) {
       const owner = "by " + session.owner_username;
       const detail = button.firstElementChild.lastElementChild;
@@ -463,6 +523,7 @@ function renderWorkspace() {
   }
   get("rooms").replaceChildren(...roomRows);
   renderWorkspaceSelection();
+  lifecycle.workspace(state.workspace.retired_sessions ?? []);
   const focus = sessionButtons.find((button) => button.dataset.session === oldSession) ||
     roomButtons.find((button) => button.dataset.room === oldRoom);
   focus?.focus({preventScroll:true});
@@ -858,6 +919,7 @@ const loginMessages = {
 };
 
 function displaySignIn() {
+  closeSessionMenu();
   const opening = signIn.hidden;
   signIn.hidden = false;
   stage.hidden = true;
@@ -1038,6 +1100,10 @@ get("previous-sessions").addEventListener("click", () =>
   changeSessionView({page: state.sessionView.page - 1}));
 get("next-sessions").addEventListener("click", () =>
   changeSessionView({page: state.sessionView.page + 1}));
+get("sessions").addEventListener("contextmenu", openSessionMenu);
+get("sessions").addEventListener("keydown", (event) => {
+  if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) openSessionMenu(event);
+});
 get("sessions").addEventListener("click", (event) => {
   const clicked = event.target.closest("[data-session]");
   if (!clicked) return;
@@ -1045,6 +1111,19 @@ get("sessions").addEventListener("click", (event) => {
   state.selectedRoom = null;
   renderWorkspace();
 });
+retireIdentity.addEventListener("click", () => {
+  if (!sessionMenuTarget) return;
+  const {session, trigger} = sessionMenuTarget;
+  closeSessionMenu(true);
+  lifecycle.confirmRetirement(session, trigger.dataset.label);
+});
+for (const type of ["pointerdown", "click", "focusin"]) {
+  document.addEventListener(type, (event) => {
+    if (!sessionMenu.contains(event.target)) closeSessionMenu();
+  }, true);
+}
+document.addEventListener("scroll", closeMovedSessionMenu, {capture:true, passive:true});
+window.addEventListener("blur", () => closeSessionMenu());
 let firstRoomClick = null;
 get("rooms").addEventListener("click", (event) => {
   if (event.detail <= 1) firstRoomClick = null;
@@ -1098,7 +1177,10 @@ get("copy-room").addEventListener("click", copyId);
 get("older").addEventListener("click", () => {
   if (state.chat?.older) refreshRoom(state.chat.older);
 });
-const wireLayout = new ResizeObserver(drawWires);
+const wireLayout = new ResizeObserver(() => {
+  closeMovedSessionMenu();
+  drawWires();
+});
 for (const area of ["session-scroll", "room-scroll"]) {
   const panel = get(area);
   panel.addEventListener("scroll", drawWires, {passive:true});
@@ -1106,9 +1188,17 @@ for (const area of ["session-scroll", "room-scroll"]) {
 }
 wireLayout.observe(get("sessions"));
 get("retired-sessions").addEventListener("toggle", drawWires);
-window.addEventListener("resize", drawWires);
+window.addEventListener("resize", () => {
+  closeSessionMenu(true);
+  drawWires();
+});
 window.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && state.page !== "workspace" && !get("leadership-dialog").open) {
+  if (sessionMenuTarget && event.key === "Tab") closeSessionMenu(true);
+  if (event.key !== "Escape") return;
+  if (sessionMenuTarget) {
+    event.preventDefault();
+    closeSessionMenu(true);
+  } else if (state.page !== "workspace" && !get("leadership-dialog").open) {
     show("workspace");
   }
 });

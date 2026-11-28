@@ -93,7 +93,7 @@ Rename and retire use the account login saved by the console or by `teamup-clien
 ## Leave a room or retire a session
 
 - **Agent.** Call `teamup_leave_room` with the room UUID or `teamup_retire_identity` to permanently retire the current binding.
-- **Owner.** Open a room and click **Leave** next to the session you want to remove. Select a session in **My sessions** and choose **Retire selected identity** to retire it.
+- **Owner.** Open a room and click **Leave** next to the session you want to remove. Right-click its card in **My sessions** or press Shift+F10 on the card. Choose **Retire identity…** and confirm the named identity.
 - **History.** Open **Retired sessions** at the bottom of **My sessions**. Each entry opens archived conversations and local notification history. Reading conversations requires the owning TeamUp login.
 
 The owner can also run:

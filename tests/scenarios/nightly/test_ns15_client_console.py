@@ -3,6 +3,7 @@
 import re
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from _stack import Api, Server, new_secret
@@ -290,6 +291,91 @@ def test_browser_client_signs_in(client_workspace):
         page.get_by_role("button", name="Sign in", exact=True).click()
         expect(heading).to_be_hidden()
         room_session(console, local)
+
+        page.locator("#sessions button").click()
+        expect(page.get_by_role("button", name=re.compile(r"^Retire (selected )?identity"))).to_have_count(
+            0, timeout=1500
+        )
+
+
+@pytest.mark.parametrize("client_workspace", [2], indirect=True)
+@pytest.mark.scenario("NS-15.13", "Browser confirms retirement from the session context menu")
+def test_browser_retires_the_session_from_its_context_menu(client_workspace):
+    api, developer, console, url, password, local, peer = client_workspace
+    enrollment = api.call(
+        "POST",
+        "/v1/auth/login",
+        json={"username": "alice", "password": password},
+    )["access_token"]
+    binding = developer.bindings[1]
+    editor = api.enroll(
+        enrollment,
+        "Local reviewer",
+        harness=binding["harness_instance_id"],
+        session=binding["session_key"],
+        token=binding["member_token"],
+    )
+    console_login(console, "alice", password)
+    workspace = console_read(console, "/api/workspace")
+    session_ids = {session["member_id"]: session["id"] for session in workspace["sessions"]}
+    editor_id = session_ids[editor.member_id]
+    retirement_posts = []
+
+    def record_request(request):
+        parts = urlsplit(request.url)
+        if request.method == "POST" and parts.path == "/api/sessions/retire":
+            retirement_posts.extend(parse_qs(parts.query)["session"])
+
+    with browser_page(
+        str(console.base_url), redact=(password, url.split("#", 1)[1])
+    ) as (page, expect):
+        page.on("request", record_request)
+        page.set_viewport_size({"width": 860, "height": 350})
+        page.goto(url, wait_until="domcontentloaded")
+        reviewer = page.locator(f'#sessions button[data-session="{session_ids[local.member_id]}"]')
+        editor_card = page.locator(f'#sessions button[data-session="{editor_id}"]')
+        menu_action = page.get_by_role("button", name="Retire identity…", exact=True)
+        dialog = page.get_by_role("dialog", name="Retire this identity?")
+        cancel = dialog.get_by_role("button", name="Cancel", exact=True)
+
+        reviewer.click()
+        expect(reviewer).to_have_attribute("aria-pressed", "true")
+        editor_card.click(button="right")
+        page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
+        expect(menu_action).to_be_visible(timeout=1500)
+        expect(reviewer).to_have_attribute("aria-pressed", "true")
+        expect(dialog).to_be_hidden()
+        page.get_by_role("searchbox", name="Find a session").click()
+        expect(menu_action).to_be_hidden()
+        assert retirement_posts == []
+
+        editor_card.press("Shift+F10")
+        expect(menu_action).to_be_focused()
+        page.keyboard.press("Escape")
+        expect(editor_card).to_be_focused()
+        expect(menu_action).to_be_hidden()
+
+        editor_card.click(button="right")
+        menu_action.click()
+        expect(dialog).to_contain_text(f"Local reviewer ({editor.member_id[:8]})", timeout=1500)
+        expect(cancel).to_be_focused()
+        original_card = editor_card.element_handle()
+        api.create_room(peer, "Retirement refresh check")
+        marker = page.locator("#rooms").get_by_text("Retirement refresh check", exact=True)
+        expect(marker).to_have_count(1, timeout=12000)
+        assert original_card.evaluate("(card) => !card.isConnected")
+        page.keyboard.press("Enter")
+        expect(dialog).to_be_hidden()
+        expect(editor_card).to_be_focused(timeout=1500)
+        assert retirement_posts == []
+
+        editor_card.click(button="right")
+        menu_action.click()
+        dialog.get_by_role("button", name="Retire identity", exact=True).click()
+        expect(editor_card).to_have_count(0)
+        expect(page.locator("#retired-summary")).to_have_text("Retired sessions (1)")
+        expect(reviewer).to_have_attribute("aria-pressed", "true")
+        assert retirement_posts == [editor_id]
 
 
 @pytest.mark.parametrize("client_workspace", [3], indirect=True)
