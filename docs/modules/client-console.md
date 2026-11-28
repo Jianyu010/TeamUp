@@ -80,6 +80,11 @@ available when no registered sessions exist. Pagination changes presentation onl
 room inventory, member-name disambiguation, scoped read and action contexts, and
 Retired sessions continue to use all approved sessions and their existing rules.
 
+Workspace draws a membership connection only while the vertical midpoints of
+both cards are visible inside their scroll panels. Connections update as either
+panel scrolls or changes size. This visibility check applies regardless of the
+total membership count.
+
 ### Room Board
 
 The room header keeps the Room ID and Board version visible with the Board panel collapsed. Joined sessions can expand it to read Rules and Protocol while acknowledgment is pending. The panel has its own session selection when multiple approved local sessions have joined. Opening or switching rooms starts with the panel collapsed.

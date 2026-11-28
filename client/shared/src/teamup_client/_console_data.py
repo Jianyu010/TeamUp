@@ -15,7 +15,6 @@ from ._upstream import Request, unavailable
 from .ipc import ClientError
 
 PAGE = 30
-VISIBLE_WIRE_LIMIT = 20
 TASK_OBSERVATION_SECONDS = 2
 TASK_OBSERVATION_PAGES = 2
 DIRECTORY_OBSERVATION_SECONDS = 3
@@ -391,28 +390,24 @@ class ConsoleReader:
                         **({"membership_id": room["membership_id"]} if room.get("membership_id") else {}),
                     }
                 )
-        if (
-            sum(len(room["memberships"]) for room in rooms.values())
-            <= VISIBLE_WIRE_LIMIT
-        ):
-            by_session = {
-                reference.id: (reference, session["member_id"])
-                for reference, session, _ in reports
-            }
-            work = [
-                (membership, room["id"])
-                for room in rooms.values()
-                for membership in room["memberships"]
-                if membership["acknowledged"] == membership["current"]
-            ]
-            observations = await asyncio.gather(
-                *(
-                    self._participating(*by_session[membership["session"]], room_id)
-                    for membership, room_id in work
-                )
+        by_session = {
+            reference.id: (reference, session["member_id"])
+            for reference, session, _ in reports
+        }
+        work = [
+            (membership, room["id"])
+            for room in rooms.values()
+            for membership in room["memberships"]
+            if membership["acknowledged"] == membership["current"]
+        ]
+        observations = await asyncio.gather(
+            *(
+                self._participating(*by_session[membership["session"]], room_id)
+                for membership, room_id in work
             )
-            for (membership, _), active in zip(work, observations, strict=True):
-                membership["active_task"] = active
+        )
+        for (membership, _), active in zip(work, observations, strict=True):
+            membership["active_task"] = active
         directory_session, directory = await self._directory(
             [
                 reference

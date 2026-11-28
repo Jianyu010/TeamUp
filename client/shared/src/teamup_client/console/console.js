@@ -29,7 +29,6 @@ const state = {
   teamNumber: 0,
   connected: false,
 };
-const wireLimit = 20;
 const refreshInterval = 5000;
 const desktop = location.protocol === "teamup:";
 let key;
@@ -492,26 +491,26 @@ function drawWires() {
   if (state.page !== "workspace") return;
   const from = new Map(Array.from(get("sessions").querySelectorAll("button"), (button) =>
     [button.dataset.session, button.getBoundingClientRect()]));
-  const count = state.workspace.rooms.reduce((total, room) => total +
-    room.memberships.filter((item) => from.has(item.session)).length, 0);
-  if (count > wireLimit) return;
   const to = new Map(Array.from(get("rooms").querySelectorAll("button"), (button) =>
     [button.dataset.room, button.getBoundingClientRect()]));
   const origin = stage.getBoundingClientRect();
-  const sessions = get("session-scroll").getBoundingClientRect();
-  const rooms = get("room-scroll").getBoundingClientRect();
+  const [sessions, rooms] = ["session-scroll", "room-scroll"].map((id) => {
+    const panel = get(id);
+    const top = panel.getBoundingClientRect().top + panel.clientTop;
+    return {top, bottom: top + panel.clientHeight};
+  });
   for (const room of state.workspace.rooms) {
     const end = to.get(room.id);
     if (!end) continue;
     const endY = end.top + end.height / 2;
-    if (endY < rooms.top || endY > rooms.bottom) continue;
+    if (endY < rooms.top || endY >= rooms.bottom) continue;
     for (const membership of room.memberships) {
       if ((state.focused && membership.session !== state.focused) ||
           (state.selectedRoom && room.id !== state.selectedRoom)) continue;
       const start = from.get(membership.session);
       if (!start) continue;
       const startY = start.top + start.height / 2;
-      if (startY < sessions.top || startY > sessions.bottom) continue;
+      if (startY < sessions.top || startY >= sessions.bottom) continue;
       const x1 = start.right - origin.left;
       const x2 = end.left - origin.left;
       const y1 = startY - origin.top;
@@ -1091,8 +1090,11 @@ get("copy-room").addEventListener("click", copyId);
 get("older").addEventListener("click", () => {
   if (state.chat?.older) refreshRoom(state.chat.older);
 });
+const wireLayout = new ResizeObserver(drawWires);
 for (const area of ["session-scroll", "room-scroll"]) {
-  get(area).addEventListener("scroll", drawWires, {passive:true});
+  const panel = get(area);
+  panel.addEventListener("scroll", drawWires, {passive:true});
+  wireLayout.observe(panel);
 }
 get("retired-sessions").addEventListener("toggle", drawWires);
 window.addEventListener("resize", drawWires);
