@@ -75,7 +75,7 @@ Active task participants appear first, followed by joined-room sessions and then
 the remaining registered sessions. Labels determine order within each group.
 
 Refresh keeps the selected session visible. Changing search, scope or page clears
-the workspace selection and its retirement action. The All sessions entry remains
+the selected session and its retirement action. The All sessions entry remains
 available when no registered sessions exist. Pagination changes presentation only:
 room inventory, member-name disambiguation, scoped read and action contexts, and
 Retired sessions continue to use all approved sessions and their existing rules.
