@@ -202,14 +202,21 @@ def run(ws, steps, *, timeout=90):
 )
 def test_lease_notice_ack_and_extension(ws):
     async def steps(api, server, clock):
-        team = await seed(api, clock)
+        team = await seed(api, clock, lead=NOTICE_WINDOW + timedelta(seconds=1))
         child, parent = team.child, team.parent
         room = child["room_id"]
         due = team.expires - NOTICE_WINDOW
 
-        # The leader stays quiet and cannot renew outside the offer window.
+        # The control room's archive shows the new Server has run its startup sweep.
+        await server.stop()
         clock.now = due - timedelta(seconds=1)
-        await server.restart()
+        await server.start()
+        control = await until(
+            lambda: archived_row(api, team.owner, team.control),
+            what="the control room's startup archive",
+            timeout=10,
+        )
+        assert control["archive_reason"] == "lease_expired"
         assert await api.notices(team.owner.token) == []
         assert await api.reject(
             "POST",
@@ -312,9 +319,10 @@ def test_lease_notice_ack_and_extension(ws):
         assert (await api.call("GET", room_path(child), team.owner.token))[
             "expires_at"
         ] == extended["expires_at"]
-        [listed] = await api.pages(
+        children = await api.pages(
             room_path(parent) + "/children", team.owner.token, "rooms"
         )
+        [listed] = [row for row in children if row["room_id"] == room]
         assert listed["expires_at"] == extended["expires_at"]
 
         # The first deadline passes; the extended room stays open and opens a new window.
