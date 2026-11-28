@@ -119,11 +119,7 @@ class FocusedApi:
         return status
 
     async def enroll(self, key, name, *, heartbeat=False):
-        """Enroll a member.
-
-        Without ``heartbeat`` the member sends no presence. A clock jump then
-        never makes a leader look lost; it only owes answers to challenges.
-        """
+        """Enroll a member and record optional presence for successor eligibility."""
         token = new_secret()
         profile = await self.call(
             "POST",
@@ -186,26 +182,12 @@ class FocusedApi:
                 return rows
             after = page["notices"][-1]["notice_id"]
 
-    async def respond(self, token):
-        """Handle every pending notice as a responsive leader does.
-
-        Confirms each leadership challenge with its epoch, then acknowledges all
-        notices. No clock move or sweep may pass an unanswered challenge.
-        """
-        handled = []
+    async def acknowledge_notices(self, token):
+        """Acknowledge every currently visible notice for this member."""
         for notice in await self.notices(token):
-            if notice["kind"] == "leadership_challenge":
-                await self.call(
-                    "POST",
-                    f"/v1/rooms/{notice['room_id']}/leadership/confirm",
-                    token,
-                    json={"leadership_epoch": notice["leadership_epoch"]},
-                )
             await self.call(
                 "POST", f"/v1/room-notices/{notice['notice_id']}/ack", token
             )
-            handled.append(notice)
-        return handled
 
     async def led_rooms(self, token):
         """The member's live rooms with their current leaders."""
@@ -234,21 +216,3 @@ async def until(predicate, *, what, timeout, interval=0.05):
             return value
     except TimeoutError:
         raise AssertionError(f"Timed out after {timeout}s waiting for {what}") from None
-
-
-async def answer_challenges(api, member, rooms, *, timeout=10):
-    """Wait for a sweep to challenge ``rooms`` and answer as that leader.
-
-    A sweep after the challenge interval is the visible proof that it has run.
-    """
-    rooms = {room["room_id"] if isinstance(room, dict) else room for room in rooms}
-
-    async def pending():
-        return rooms <= {
-            notice["room_id"]
-            for notice in await api.notices(member.token)
-            if notice["kind"] == "leadership_challenge"
-        }
-
-    await until(pending, what="leadership challenges", timeout=timeout)
-    return await api.respond(member.token)

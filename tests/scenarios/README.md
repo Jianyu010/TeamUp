@@ -88,7 +88,7 @@ uv run --no-sync python -m tests.scenarios.perf --suite weekly
 
 `_stack.py` 提供临时工作区（位于 `/tmp`，避免 socket 路径过长）、Server 与 Client 守护进程启动、HTTP 客户端、MCP stdio 会话和通知记录器。失败或中断时进程会被清理，失败时把各进程日志输出到 stderr。`_results.py` 负责结果文件和统计。
 
-`_focused_rooms.py` 为 NS-19 和 NP-16 提供受控时钟的进程内 Server（`FocusedServer`）。它沿用生产的生命周期，所以启动清扫和 15 秒周期的维护照常运行；`restart()` 在同一数据库上重新启动并立即触发启动清扫。回环 HTTP 客户端设置 `trust_env=False`，系统或环境里的代理不会截留本机流量。`FocusedApi.respond` 模拟响应中的 leader：按 epoch 确认领导权质询并确认所有通知，时钟前进前必须先调用它。
+`_focused_rooms.py` 为 NS-19 和 NP-16 提供受控时钟的进程内 Server（`FocusedServer`）。它沿用生产的生命周期，所以启动清扫和 15 秒周期的维护照常运行；`restart()` 在同一数据库上重新启动并立即触发启动清扫。回环 HTTP 客户端设置 `trust_env=False`，系统或环境里的代理不会截留本机流量。`FocusedApi.acknowledge_notices` 确认当前可见的房间通知。性能场景通过到期归档和租期提醒观察清扫进度。
 
 ## 2026-11-28 聚焦房间实测
 

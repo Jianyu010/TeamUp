@@ -6,32 +6,25 @@ from test_room_leadership import Team
 
 
 @pytest.mark.parametrize("with_successor", [True, False])
-def test_connected_incumbent_survives_challenge_without_delivery_or_successor(
+def test_connected_incumbent_stays_quiet_with_or_without_successor(
     tmp_path, with_successor
 ):
     team = Team(tmp_path / "live-room.sqlite3")
     successor = team.join("peer") if with_successor else None
-    team.db.record_leadership_heartbeat(team.leader)
-    team.now += timedelta(minutes=30)
-    team.db.record_leadership_heartbeat(team.leader)
-    if successor:
-        team.db.record_leadership_heartbeat(successor)
-    team.db.sweep_room_leadership()
-    [probe] = team.db.room_notices(team.leader)["notices"]
-    assert probe["kind"] == "leadership_challenge"
-
-    if successor is None:
-        team.db.ack_room_notice(team.leader, probe["notice_id"])
-    team.now += timedelta(minutes=2)
-    team.db.record_leadership_heartbeat(team.leader)
-    if successor:
-        team.db.record_leadership_heartbeat(successor)
-    team.db.sweep_room_leadership()
+    epoch = team.candidates()["leadership_epoch"]
+    for _ in range(2):
+        team.now += timedelta(minutes=30)
+        team.db.record_leadership_heartbeat(team.leader)
+        if successor:
+            team.db.record_leadership_heartbeat(successor)
+        team.db.sweep_room_leadership()
+        assert team.db.room_notices(team.leader)["notices"] == []
+        assert team.candidates()["leadership_epoch"] == epoch
 
     assert team.db.view_board(team.leader, team.room)["can_edit"]
 
 
-def test_leadership_challenge_does_not_duplicate_a_lease_offer(tmp_path):
+def test_deferred_handoff_does_not_duplicate_a_lease_offer(tmp_path):
     team = Team(tmp_path / "live-lease.sqlite3")
     child = team.db.create_linked_room(
         team.leader, team.room, "Short work", None, None, "since_joining", "lease"
@@ -39,6 +32,9 @@ def test_leadership_challenge_does_not_duplicate_a_lease_offer(tmp_path):
     team.now += timedelta(hours=4, minutes=45)
     team.db.record_leadership_heartbeat(team.leader)
     team.db.sweep_child_rooms()
+    room_id = child["room_id"]
+    epoch = team.db.room_leadership_candidates(team.leader, room_id)["leadership_epoch"]
+    team.db.handoff_room_leadership(team.leader, room_id, epoch, "defer")
     team.db.sweep_room_leadership()
     team.db.sweep_child_rooms()
     offers = [

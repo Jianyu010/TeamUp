@@ -256,7 +256,9 @@ def test_roll_up_keeps_an_idle_parent_live_until_the_inherited_work_is_seen(tmp_
 def test_maintenance_pass_isolates_a_failing_sweep(tmp_path):
     clock = Clock()
     service = collaboration(tmp_path, clock)
-    team(service)
+    _, parent = team(service)
+    ranking = service.room_leadership_candidates(token("sender"), parent)
+    service.handoff_room_leadership(token("sender"), parent, ranking["leadership_epoch"], "defer")
     idle = service.create_room(token("sender"), "Idle", None, None)["room_id"]
     with closing(sqlite3.connect(tmp_path / "team.sqlite3")) as connection, connection:
         connection.execute(
@@ -270,10 +272,11 @@ def test_maintenance_pass_isolates_a_failing_sweep(tmp_path):
     broken = Broken(tmp_path / "team.sqlite3", {}, clock=clock)
     assert broken.maintain_rooms() is False
     assert broken.room_detail(token("sender"), idle)["archive_reason"] == "inactive"
-    clock.advance(30 * 60)
+    clock.advance(120)
+    broken.record_leadership_heartbeat(token("target"))
     assert broken.maintain_rooms() is False
-    notices = broken.room_notices(token("sender"))["notices"]
-    assert [notice["kind"] for notice in notices] == ["leadership_challenge"]
+    [notice] = broken.room_notices(token("target"))["notices"]
+    assert (notice["kind"], notice["room_id"]) == ("leadership_assigned", parent)
 
 
 def test_only_the_current_lease_offer_is_delivered(tmp_path):

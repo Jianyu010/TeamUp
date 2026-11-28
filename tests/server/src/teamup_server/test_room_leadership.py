@@ -259,35 +259,18 @@ def test_vacancy_recovers_from_subsequent_member_heartbeat(team):
     assert team.db.view_board(peer, team.room)["can_edit"]
 
 
-def test_challenge_requires_bound_agent_and_survives_server_restart(team):
+def test_idle_leader_keeps_its_epoch_without_routine_notices(team):
     peer = team.join("peer")
-    team.db.record_leadership_heartbeat(team.leader)
-    team.now += timedelta(minutes=30)
-    team.db.record_leadership_heartbeat(team.leader)
-    team.db.sweep_room_leadership()
     epoch = team.candidates()["leadership_epoch"]
-    assert epoch > 1
-    with pytest.raises(CollaborationError, match="forbidden"):
-        team.db.confirm_room_leadership(peer, team.room, epoch)
-    answer = team.db.confirm_room_leadership(team.leader, team.room, epoch)
-    assert not answer["pending"]
-    team.now += timedelta(minutes=30)
-    team.db.record_leadership_heartbeat(team.leader)
-    team.db.sweep_room_leadership()
-    with pytest.raises(CollaborationError, match="conflict"):
-        team.db.confirm_room_leadership(team.leader, team.room, epoch)
-    probes = team.db.room_notices(team.leader)["notices"]
-    current_epoch = team.candidates()["leadership_epoch"]
-    [current_probe] = [probe for probe in probes if probe["leadership_epoch"] == current_epoch]
-    team.db.ack_room_notice(team.leader, current_probe["notice_id"])
-    team.now += timedelta(minutes=2)
-    team.restart()
-    for token in (peer, team.leader):
-        team.db.record_leadership_heartbeat(token)
-    team.db.sweep_room_leadership()
-    assert team.db.view_board(team.leader, team.room)["can_edit"]
-    assert not team.db.view_board(peer, team.room)["can_edit"]
-    assert team.db.room_notices(peer)["notices"] == []
+    for advance in (30, 2, 30):
+        team.now += timedelta(minutes=advance)
+        team.db.record_leadership_heartbeat(team.leader)
+        team.db.record_leadership_heartbeat(peer)
+        team.db.sweep_room_leadership()
+        team.restart()
+        assert team.db.room_notices(team.leader)["notices"] == []
+        assert team.db.room_notices(peer)["notices"] == []
+        assert team.candidates()["leadership_epoch"] == epoch
 
 
 def test_disconnected_child_leader_keeps_authority_to_renew_on_reconnect(team):
@@ -407,19 +390,59 @@ def test_returning_leader_can_fill_a_legacy_probe_vacancy(team):
     assert team.db.view_board(team.leader, team.room)["can_edit"]
 
 
-def test_only_the_unanswered_challenge_is_delivered(team):
-    team.db.record_leadership_heartbeat(team.leader)
-    team.now += timedelta(minutes=30)
-    team.db.record_leadership_heartbeat(team.leader)
-    team.db.sweep_room_leadership()
-    challenge = team.candidates()["leadership_epoch"]
-    assert [
-        (n["kind"], n["leadership_epoch"]) for n in team.db.room_notices(team.leader)["notices"]
-    ] == [("leadership_challenge", challenge)]
-    assert team.db.confirm_room_leadership(team.leader, team.room, challenge)["pending"] is False
-    assert team.db.room_notices(team.leader)["notices"] == []
+def test_upgrade_retires_pending_probe_and_preserves_deferred_handoff(team):
+    peer = team.join("peer")
+    handoff_room = team.db.create_room(team.leader, "Handoff", None, None)["room_id"]
+    team.db.join_room(peer, handoff_room)
+    pending = team.db.handoff_room_leadership(team.leader, handoff_room, 1, "defer", leave=True)
+
+    # Store the same pending challenge and durable notice an older Server wrote.
+    leader_id = team.id(team.leader)
+    deadline = int((team.now + timedelta(minutes=2)).timestamp()) * 1_000_000
+    with closing(sqlite3.connect(team.path)) as conn, conn:
+        (epoch,) = conn.execute(
+            """
+            UPDATE room_leadership SET pending_kind = 'challenge', deadline = ?,
+                next_check_at = ?, leadership_epoch = leadership_epoch + 1
+            WHERE room_id = ? RETURNING leadership_epoch
+            """,
+            (deadline, deadline, team.room),
+        ).fetchone()
+        (notice_id,) = conn.execute(
+            """
+            UPDATE id_counters SET last_id = last_id + 1
+            WHERE counter = 'event_id' RETURNING last_id
+            """
+        ).fetchone()
+        conn.execute(
+            """
+            INSERT INTO room_control_notices (notice_id, member_id, room_id, kind, text, leadership_epoch)
+            VALUES (?, ?, ?, 'leadership_challenge', 'Confirm availability.', ?)
+            """,
+            (notice_id, leader_id, team.room, epoch),
+        )
+
+    [deferred, challenge] = team.db.room_notices(team.leader)["notices"]
+    assert challenge["notice_id"] == notice_id
+    for _ in range(2):
+        team.restart()
+        assert team.db.room_notices(team.leader)["notices"] == [deferred]
+        assert team.candidates()["leadership_epoch"] == epoch + 1
+        assert team.db.view_board(team.leader, team.room)["can_edit"]
     with pytest.raises(CollaborationError, match="conflict"):
-        team.db.confirm_room_leadership(team.leader, team.room, challenge)
+        team.db.confirm_room_leadership(team.leader, team.room, epoch)
+
+    team.now += timedelta(seconds=119)
+    team.db.record_leadership_heartbeat(peer)
+    team.db.sweep_room_leadership()
+    assert team.db.room_leadership_candidates(team.leader, handoff_room)["leadership_epoch"] == (
+        pending["leadership_epoch"]
+    )
+    team.now += timedelta(seconds=1)
+    team.db.sweep_room_leadership()
+    [appointed] = team.db.room_notices(peer)["notices"]
+    assert (appointed["room_id"], appointed["kind"]) == (handoff_room, "leadership_assigned")
+    assert [room["room_id"] for room in team.db.list_rooms(team.leader)] == [team.room]
 
 
 def test_timed_out_deferral_notice_is_no_longer_delivered(team):
@@ -492,34 +515,16 @@ def test_choice_is_revalidated_at_appointment(team):
     assert team.handoff(epoch, "choose", **chosen)["leader_member_id"] == team.id(peer)
 
 
-def test_confirm_at_the_challenge_deadline_is_stale(team):
+def test_confirm_route_cannot_answer_a_deferred_handoff(team):
     peer = team.join("peer")
-    team.db.record_leadership_heartbeat(team.leader)
-    team.now += timedelta(minutes=30)
-    team.db.record_leadership_heartbeat(team.leader)
-    team.db.sweep_room_leadership()
-    first = team.candidates()["leadership_epoch"]
-    team.now += timedelta(seconds=119)
-    assert team.db.confirm_room_leadership(team.leader, team.room, first)["pending"] is False
-    team.now += timedelta(minutes=30)
-    team.db.record_leadership_heartbeat(team.leader)
-    team.db.sweep_room_leadership()
-    second = team.candidates()["leadership_epoch"]
+    pending = team.handoff(team.candidates()["leadership_epoch"], "defer")
+    epoch = pending["leadership_epoch"]
+    with pytest.raises(CollaborationError, match="forbidden"):
+        team.db.confirm_room_leadership(peer, team.room, epoch)
     with pytest.raises(CollaborationError, match="conflict"):
-        team.db.confirm_room_leadership(team.leader, team.room, first)
-    team.now += timedelta(seconds=120)
-    team.db.record_leadership_heartbeat(peer)
-    together = Barrier(2)
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        confirming = pool.submit(
-            race, together, lambda: team.db.confirm_room_leadership(team.leader, team.room, second)
-        )
-        sweeping = pool.submit(race, together, team.db.sweep_room_leadership)
-        assert confirming.result() == "conflict"
-        sweeping.result()
-    assert team.db.view_board(team.leader, team.room)["can_edit"]
-    assert not team.db.view_board(peer, team.room)["can_edit"]
-    assert team.db.room_notices(team.leader)["notices"] == []
+        team.db.confirm_room_leadership(team.leader, team.room, epoch)
+    [notice] = team.db.room_notices(team.leader)["notices"]
+    assert (notice["kind"], notice["leadership_epoch"]) == ("leadership_deferred", epoch)
 
 
 def test_choosing_a_claimant_who_leaves_concurrently_never_appoints_a_non_member(
