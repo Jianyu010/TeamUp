@@ -13,6 +13,7 @@ const state = {
   workspace: {sessions: [], rooms: []},
   page: "workspace",
   focused: null,
+  selectedRoom: null,
   sessionView: {all: false, query: "", page: 0},
   room: null,
   reader: null,
@@ -28,7 +29,6 @@ const state = {
   teamNumber: 0,
   connected: false,
 };
-const wireLimit = 20;
 const refreshInterval = 5000;
 const desktop = location.protocol === "teamup:";
 let key;
@@ -92,19 +92,19 @@ function acknowledged(item) {
   return item.current === item.acknowledged;
 }
 
-function preferredSession(memberships) {
-  return (memberships.find((item) => item.session === state.focused) || memberships[0])?.session ?? null;
+function preferredSession(memberships, preferred) {
+  return (memberships.find((item) => item.session === preferred) || memberships[0])?.session ?? null;
 }
 
-function selectRoomSubjects(room) {
+function selectRoomSubjects(room, preferred = state.focused) {
   const joined = readyMemberships(room);
   const eligible = joined.filter(acknowledged);
   if (!joined.some((item) => item.session === state.reader)) {
-    state.reader = preferredSession(eligible.length ? eligible : joined);
+    state.reader = preferredSession(eligible.length ? eligible : joined, preferred);
   }
-  if (!eligible.some((item) => item.session === state.actor)) state.actor = preferredSession(eligible);
+  if (!eligible.some((item) => item.session === state.actor)) state.actor = preferredSession(eligible, preferred);
   if (!joined.some((item) => item.session === state.focusActor)) {
-    state.focusActor = preferredSession(eligible.length ? eligible : joined);
+    state.focusActor = preferredSession(eligible.length ? eligible : joined, preferred);
   }
 }
 
@@ -369,6 +369,30 @@ function card(label, description) {
   return button;
 }
 
+function renderWorkspaceSelection() {
+  const workspace = state.page === "workspace";
+  const room = workspace ? state.workspace.rooms.find(({id}) => id === state.selectedRoom) : null;
+  const relatedSessions = new Set(room?.memberships.map(({session}) => session));
+  const sessionFocused = workspace && Boolean(state.focused);
+  const relatedRooms = new Set(sessionFocused ? state.workspace.rooms.filter(related).map(({id}) => id) : []);
+
+  for (const button of get("sessions").querySelectorAll("button[data-session]")) {
+    const id = button.dataset.session;
+    const joined = relatedSessions.has(id);
+    button.setAttribute("aria-pressed", String(state.focused === id));
+    button.classList.toggle("related", joined);
+    button.classList.toggle("dimmed", Boolean((state.focused && state.focused !== id) || (room && !joined)));
+  }
+  for (const button of get("rooms").querySelectorAll("button[data-room]")) {
+    const id = button.dataset.room;
+    const joined = relatedRooms.has(id);
+    if (workspace) button.setAttribute("aria-pressed", String(room?.id === id));
+    button.classList.toggle("related", joined);
+    button.classList.toggle("dimmed", (sessionFocused && !joined) || Boolean(room && room.id !== id));
+  }
+  lifecycle.workspace(sessionFor(state.focused), state.workspace.retired_sessions ?? []);
+}
+
 function renderWorkspace() {
   const selected = document.activeElement;
   const oldSession = selected?.dataset.session;
@@ -381,6 +405,7 @@ function renderWorkspace() {
   state.sessionView.page = view.page;
   if (!view.sessions.some((session) => session.id === state.focused)) state.focused = null;
   const rooms = [...state.workspace.rooms];
+  if (!rooms.some(({id}) => id === state.selectedRoom)) state.selectedRoom = null;
   if (state.focused && state.page === "workspace") {
     rooms.sort((a, b) => Number(related(b)) - Number(related(a)));
   }
@@ -394,7 +419,6 @@ function renderWorkspace() {
   get("previous-sessions").disabled = view.page === 0;
   get("next-sessions").disabled = view.page === view.pages - 1;
   get("rooms-title").textContent = "Rooms (" + rooms.length + ")";
-  lifecycle.workspace(sessionFor(state.focused), state.workspace.retired_sessions ?? []);
   const names = memberNames(sessions.map(({id, member_id, label}) => ({
     id: member_id ?? id, name: label,
   })), "strong");
@@ -413,8 +437,6 @@ function renderWorkspace() {
       else button.firstElementChild.insertBefore(node("small", owner, "member-owner"), detail);
     }
     button.dataset.session = session.id;
-    button.setAttribute("aria-pressed", String(state.focused === session.id));
-    button.classList.toggle("dimmed", Boolean(state.focused && state.focused !== session.id));
     return button;
   });
   const roomButtons = rooms.map((room) => {
@@ -424,8 +446,7 @@ function renderWorkspace() {
     const button = card(room.name, description);
     button.dataset.room = room.id;
     if (state.page === "room" && state.room === room.id) button.setAttribute("aria-current", "page");
-    button.classList.toggle("related", Boolean(state.focused && state.page === "workspace" && related(room)));
-    button.classList.toggle("dimmed", Boolean(state.focused && state.page === "workspace" && !related(room)));
+    if (state.page === "workspace") button.title = "Double-click or press Enter to open";
     return button;
   });
   const empty = state.sessionView.query.trim() ? "No matching sessions"
@@ -441,6 +462,7 @@ function renderWorkspace() {
     roomRows.push(node("p", state.workspace.directory_available ? "No team rooms" : "No rooms available", "empty"));
   }
   get("rooms").replaceChildren(...roomRows);
+  renderWorkspaceSelection();
   const focus = sessionButtons.find((button) => button.dataset.session === oldSession) ||
     roomButtons.find((button) => button.dataset.room === oldRoom);
   focus?.focus({preventScroll:true});
@@ -469,32 +491,33 @@ function drawWires() {
   if (state.page !== "workspace") return;
   const from = new Map(Array.from(get("sessions").querySelectorAll("button"), (button) =>
     [button.dataset.session, button.getBoundingClientRect()]));
-  const count = state.workspace.rooms.reduce((total, room) => total +
-    room.memberships.filter((item) => from.has(item.session)).length, 0);
-  if (count > wireLimit) return;
   const to = new Map(Array.from(get("rooms").querySelectorAll("button"), (button) =>
     [button.dataset.room, button.getBoundingClientRect()]));
   const origin = stage.getBoundingClientRect();
-  const sessions = get("session-scroll").getBoundingClientRect();
-  const rooms = get("room-scroll").getBoundingClientRect();
+  const [sessions, rooms] = ["session-scroll", "room-scroll"].map((id) => {
+    const panel = get(id);
+    const top = panel.getBoundingClientRect().top + panel.clientTop;
+    return {top, bottom: top + panel.clientHeight};
+  });
   for (const room of state.workspace.rooms) {
     const end = to.get(room.id);
     if (!end) continue;
     const endY = end.top + end.height / 2;
-    if (endY < rooms.top || endY > rooms.bottom) continue;
+    if (endY < rooms.top || endY >= rooms.bottom) continue;
     for (const membership of room.memberships) {
-      if (state.focused && membership.session !== state.focused) continue;
+      if ((state.focused && membership.session !== state.focused) ||
+          (state.selectedRoom && room.id !== state.selectedRoom)) continue;
       const start = from.get(membership.session);
       if (!start) continue;
       const startY = start.top + start.height / 2;
-      if (startY < sessions.top || startY > sessions.bottom) continue;
+      if (startY < sessions.top || startY >= sessions.bottom) continue;
       const x1 = start.right - origin.left;
       const x2 = end.left - origin.left;
       const y1 = startY - origin.top;
       const y2 = endY - origin.top;
       const bend = Math.max(6, (x2 - x1) * .46);
       const path = svg("path");
-      path.dataset.focused = String(Boolean(state.focused));
+      path.dataset.focused = String(Boolean(state.focused || state.selectedRoom));
       path.dataset.active = String(membership.active_task === true);
       path.setAttribute("d", "M " + x1 + " " + y1 + " C " + (x1 + bend) + " " + y1 +
         " " + (x2 - bend) + " " + y2 + " " + x2 + " " + y2);
@@ -570,7 +593,7 @@ function renderRoomHeader() {
   renderRoomView();
 }
 
-function openRoom(id) {
+function openRoom(id, preferred = state.focused) {
   if (state.room === id && state.page === "room") return;
   const room = state.workspace.rooms.find((item) => item.id === id);
   if (!room) return;
@@ -578,7 +601,7 @@ function openRoom(id) {
   state.room = id;
   state.reader = null;
   state.actor = null;
-  selectRoomSubjects(room);
+  selectRoomSubjects(room, preferred);
   state.chat = null;
   members.reset();
   show("room");
@@ -1019,11 +1042,40 @@ get("sessions").addEventListener("click", (event) => {
   const clicked = event.target.closest("[data-session]");
   if (!clicked) return;
   state.focused = state.focused === clicked.dataset.session ? null : clicked.dataset.session;
+  state.selectedRoom = null;
   renderWorkspace();
 });
+let firstRoomClick = null;
 get("rooms").addEventListener("click", (event) => {
+  if (event.detail <= 1) firstRoomClick = null;
   const clicked = event.target.closest("[data-room]");
-  if (clicked) openRoom(clicked.dataset.room);
+  if (!clicked) return;
+  const room = clicked.dataset.room;
+  if (state.page === "room") {
+    openRoom(room);
+  } else if (state.page === "workspace" && event.detail <= 1) {
+    if (event.detail === 1) firstRoomClick = {room, session: state.focused};
+    state.focused = null;
+    state.selectedRoom = state.selectedRoom === room ? null : room;
+    // Keep the card in place so the second click can reach the same button.
+    renderWorkspaceSelection();
+    drawWires();
+  }
+});
+get("rooms").addEventListener("dblclick", (event) => {
+  const clicked = event.target.closest("[data-room]");
+  const first = firstRoomClick;
+  firstRoomClick = null;
+  // A refresh can move a different room under the pointer between clicks.
+  if (first && state.page === "workspace" && first.room === clicked?.dataset.room) {
+    openRoom(first.room, first.session);
+  }
+});
+get("rooms").addEventListener("keydown", (event) => {
+  const clicked = event.target.closest("[data-room]");
+  if (!clicked || event.key !== "Enter" || state.page !== "workspace") return;
+  event.preventDefault();
+  openRoom(clicked.dataset.room);
 });
 get("tasks-tab").addEventListener("click", () => setRoomView("tasks"));
 get("focus-tab").addEventListener("click", () => setRoomView("focus"));
@@ -1046,9 +1098,13 @@ get("copy-room").addEventListener("click", copyId);
 get("older").addEventListener("click", () => {
   if (state.chat?.older) refreshRoom(state.chat.older);
 });
+const wireLayout = new ResizeObserver(drawWires);
 for (const area of ["session-scroll", "room-scroll"]) {
-  get(area).addEventListener("scroll", drawWires, {passive:true});
+  const panel = get(area);
+  panel.addEventListener("scroll", drawWires, {passive:true});
+  wireLayout.observe(panel);
 }
+wireLayout.observe(get("sessions"));
 get("retired-sessions").addEventListener("toggle", drawWires);
 window.addEventListener("resize", drawWires);
 window.addEventListener("keydown", (event) => {

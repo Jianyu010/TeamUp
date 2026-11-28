@@ -1007,6 +1007,48 @@ def test_slow_task_observation_keeps_the_workspace_available(monkeypatch):
     asyncio.run(scenario())
 
 
+def test_workspace_keeps_inventory_when_many_task_reads_miss_the_deadline(monkeypatch):
+    monkeypatch.setattr(_console_data, "TASK_OBSERVATION_SECONDS", 5)
+
+    async def scenario():
+        upstream = Upstream()
+
+        async def request(method, path, token, *, query=None):
+            if path == "/rooms":
+                result = await upstream(method, path, token, query=query)
+                (room,) = result["rooms"]
+                result["rooms"] += [
+                    {**room, "room_id": f"{index:08x}-{ROOM[9:]}"}
+                    for index in range(20)
+                ]
+                return result
+            if path == "/room-directory":
+                return {
+                    "rooms": [{
+                        "room_id": DISCOVERABLE_ROOM,
+                        "name": "Teammate room",
+                        "history_policy": "retained",
+                    }],
+                    "next_after": None,
+                }
+            if path.endswith("/tasks") and path != f"/rooms/{ROOM}/tasks":
+                await asyncio.Event().wait()
+            return await upstream(method, path, token, query=query)
+
+        reader = ConsoleReader(sessions, request)
+        deadline = asyncio.get_running_loop().time() + 0.12
+        workspace = await asyncio.wait_for(reader.workspace(directory_deadline=deadline), 0.75)
+
+        rooms = {room["id"]: room for room in workspace["rooms"]}
+        assert workspace["directory_available"] is True
+        assert len(rooms) == 22
+        assert rooms[DISCOVERABLE_ROOM]["memberships"] == []
+        assert rooms[ROOM]["memberships"][0]["active_task"] is True
+        assert rooms[f"00000000-{ROOM[9:]}"]["memberships"][0]["active_task"] is None
+
+    asyncio.run(scenario())
+
+
 def test_console_catches_up_using_the_last_displayed_message():
     async def scenario():
         upstream = Upstream()

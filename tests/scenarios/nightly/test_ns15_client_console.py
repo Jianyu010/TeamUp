@@ -18,15 +18,16 @@ ROOM_BOARD = "/api/room-board"
 
 
 @pytest.fixture
-def client_workspace(ws):
+def client_workspace(ws, request):
     password = new_secret()
     peer_key = new_secret()
     server = Server(ws, {"remote-owner": peer_key})
     account_cli(server, "create", "alice", password=password)
     server.start()
+    bindings = getattr(request, "param", 1)
     with (
         closing(Api(server.url, trust_env=False)) as api,
-        client_console(ws, server, "alice") as (developer, console, url),
+        client_console(ws, server, "alice", bindings=bindings) as (developer, console, url),
     ):
         enrollment = api.call(
             "POST",
@@ -291,6 +292,117 @@ def test_browser_client_signs_in(client_workspace):
         room_session(console, local)
 
 
+@pytest.mark.parametrize("client_workspace", [3], indirect=True)
+@pytest.mark.scenario("NS-15.12", "Browser selects and opens workspace rooms")
+def test_browser_selects_and_opens_workspace_rooms(client_workspace):
+    api, developer, console, url, password, local, peer = client_workspace
+    console_login(console, "alice", password)
+    enrollment = api.call(
+        "POST",
+        "/v1/auth/login",
+        json={"username": "alice", "password": password},
+    )["access_token"]
+    shared = api.create_room(peer, "Alpha shared room")
+    separate = api.create_room(local, "Zeta separate room")
+    preview = api.create_room(peer, "Directory room")
+    for label, binding in zip(
+        ("Local designer", "Local planner"), developer.bindings[1:], strict=True
+    ):
+        member = api.enroll(
+            enrollment,
+            label,
+            harness=binding["harness_instance_id"],
+            session=binding["session_key"],
+            token=binding["member_token"],
+        )
+        api.join(member, shared)
+        api.read_and_ack_board(member, shared)
+    api.read_and_ack_board(peer, shared)
+    api.send(peer, shared, "Shared planning transcript")
+
+    with browser_page(
+        str(console.base_url), redact=(password, url.split("#", 1)[1])
+    ) as (page, expect):
+        page.goto(url, wait_until="domcontentloaded")
+        stage = page.locator("#stage")
+        cards = page.locator("#rooms button[data-room]")
+        shared_card = page.locator(f'#rooms button[data-room="{shared}"]')
+        directory_card = page.locator(f'#rooms button[data-room="{preview}"]')
+        reviewer = page.locator("#sessions button").filter(has_text="Local reviewer")
+        related_sessions = page.locator("#sessions button.related strong")
+        wires = page.locator("#links path")
+        focused_wires = page.locator('#links path[data-focused="true"]')
+
+        expect(cards.first).to_have_attribute("data-room", shared)
+        expect(wires).to_have_count(3)
+        reviewer.click()
+        expect(cards.first).to_have_attribute("data-room", separate)
+        expect(focused_wires).to_have_count(1)
+
+        shared_button = shared_card.element_handle()
+        shared_card.click()
+        expect(stage).to_have_attribute("data-page", "workspace")
+        expect(shared_card).to_have_attribute("aria-pressed", "true")
+        assert shared_button.evaluate("(button) => button.isConnected")
+        expect(cards.first).to_have_attribute("data-room", separate)
+        expect(reviewer).to_have_attribute("aria-pressed", "false")
+        expect(reviewer).to_have_class(re.compile(r"\bdimmed\b"))
+        expect(page.locator("#retire-identity")).to_be_hidden()
+        expect(related_sessions).to_have_text(["Local designer", "Local planner"])
+        expect(wires).to_have_count(2)
+        expect(focused_wires).to_have_count(2)
+        # The next pointer event can target a different room if a refresh reorders the cards.
+        directory_card.dispatch_event("dblclick")
+        expect(stage).to_have_attribute("data-page", "workspace", timeout=1500)
+
+        search = page.get_by_role("searchbox", name="Find a session")
+        search.fill("planner")
+        expect(shared_card).to_have_attribute("aria-pressed", "true")
+        expect(related_sessions).to_have_text(["Local planner"])
+        expect(wires).to_have_count(1)
+        search.clear()
+        expect(wires).to_have_count(2)
+
+        shared_card.click()
+        expect(shared_card).to_have_attribute("aria-pressed", "false")
+        expect(related_sessions).to_have_count(0)
+        expect(wires).to_have_count(3)
+        expect(focused_wires).to_have_count(0)
+
+        directory_card.press("Space")
+        expect(directory_card).to_have_attribute("aria-pressed", "true")
+        expect(related_sessions).to_have_count(0)
+        expect(wires).to_have_count(0)
+
+        reviewer.click()
+        expect(reviewer).to_have_attribute("aria-pressed", "true")
+        expect(directory_card).to_have_attribute("aria-pressed", "false")
+        expect(cards.first).to_have_attribute("data-room", separate)
+        expect(focused_wires).to_have_count(1)
+        shared_card.dblclick()
+        expect(stage).to_have_attribute("data-page", "room")
+        expect(shared_card).to_have_attribute("aria-current", "page")
+        expect(page.locator("#messages")).to_contain_text("Shared planning transcript")
+
+        page.locator("#back").click()
+        expect(shared_card).to_have_attribute("aria-pressed", "true")
+
+        snapshot = console_read(console, "/api/workspace")
+        joined = next(room["memberships"] for room in snapshot["rooms"] if room["id"] == shared)
+        preferred = joined[1]["session"]
+        preferred_card = page.locator(f'#sessions button[data-session="{preferred}"]')
+        actor = page.locator("#task-actor")
+        for open_shared in (shared_card.dblclick, lambda: shared_card.press("Enter")):
+            preferred_card.click()
+            open_shared()
+            expect(actor).to_have_value(preferred)
+            page.locator("#back").click()
+
+        directory_card.press("Enter")
+        expect(page.locator("#room-id")).to_have_value(preview)
+        expect(page.locator("#room-preview")).to_contain_text("Copy the room ID")
+
+
 @pytest.mark.scenario("NS-15.08", "Browser displays assigned task details")
 def test_browser_displays_assignment_details(client_workspace):
     api, _, console, url, password, local, peer = client_workspace
@@ -317,7 +429,7 @@ def test_browser_displays_assignment_details(client_workspace):
         str(console.base_url), redact=(password, url.split("#", 1)[1])
     ) as (page, expect):
         page.goto(url, wait_until="domcontentloaded")
-        page.locator(f'#rooms button[data-room="{room}"]').click()
+        page.locator(f'#rooms button[data-room="{room}"]').dblclick()
         page.get_by_role("button", name="Tasks", exact=True).click()
         card = page.get_by_role("region", name="Available tasks").locator(".task-card")
         summary = card.locator("summary")
@@ -345,7 +457,7 @@ def test_browser_client_publishes_board(client_workspace):
         str(console.base_url), redact=(password, url.split("#", 1)[1])
     ) as (page, expect):
         page.goto(url, wait_until="domcontentloaded")
-        page.locator(f'#rooms button[data-room="{room}"]').click()
+        page.locator(f'#rooms button[data-room="{room}"]').dblclick()
         expect(page.locator("#messages")).to_contain_text("Review is in progress")
 
         board = page.get_by_role("button", name="Board", exact=True)
@@ -403,7 +515,7 @@ def test_browser_client_moves_tasks_between_lanes(client_workspace):
         str(console.base_url), redact=(password, url.split("#", 1)[1])
     ) as (page, expect):
         page.goto(url, wait_until="domcontentloaded")
-        page.locator(f'#rooms button[data-room="{room}"]').click()
+        page.locator(f'#rooms button[data-room="{room}"]').dblclick()
         page.get_by_role("button", name="Tasks", exact=True).click()
         available = page.get_by_role("region", name="Available tasks")
         taken = page.get_by_role("region", name="Taken tasks")
@@ -448,7 +560,7 @@ def child_names(api, member, room):
 
 
 def open_leave_dialog(page, expect, room, member_id):
-    page.locator(f'#rooms button[data-room="{room}"]').click()
+    page.locator(f'#rooms button[data-room="{room}"]').press("Enter")
     row = page.locator(f'#roster .member-row[data-member="{member_id}"]')
     row.hover()
     row.get_by_role("button", name="Leave this room").click()
@@ -472,7 +584,7 @@ def test_browser_creates_child_room_and_invites(client_workspace):
         str(console.base_url), redact=(password, url.split("#", 1)[1])
     ) as (page, expect):
         page.goto(url, wait_until="domcontentloaded")
-        page.locator(f'#rooms button[data-room="{room}"]').click()
+        page.locator(f'#rooms button[data-room="{room}"]').dblclick()
         page.get_by_role("button", name="Focused rooms").click()
         expect(page.locator("#focus-invite-member")).to_have_value(peer.member_id, timeout=12000)
         page.get_by_role("button", name="Send invitation").click()
@@ -621,3 +733,85 @@ def test_browser_leader_leaves_through_successor_dialog(client_workspace):
             "Local reviewer left Browser deferral."
         )
         assert deferral not in joined_rooms(api, local)
+
+
+@pytest.mark.scenario(
+    "NS-15.11", "Browser connections follow visible session and room cards"
+)
+def test_browser_connections_follow_both_scroll_panels(ws):
+    password = new_secret()
+    server = Server(ws, {})
+    account_cli(server, "create", "alice", password=password)
+    server.start()
+    with (
+        closing(Api(server.url, trust_env=False)) as api,
+        client_console(ws, server, "alice", bindings=8) as (developer, console, url),
+    ):
+        enrollment = api.call(
+            "POST", "/v1/auth/login", json={"username": "alice", "password": password}
+        )["access_token"]
+        members = [
+            api.enroll(
+                enrollment,
+                f"Reviewer {index}",
+                harness=binding["harness_instance_id"],
+                session=binding["session_key"],
+                token=binding["member_token"],
+            )
+            for index, binding in enumerate(developer.bindings)
+        ]
+        lead, *others = members
+        first_room = api.create_room(lead, "Room 00")
+        for member in others:
+            api.join(member, first_room)
+        api.read_and_ack_board(lead, first_room)
+        tasks = f"/v1/rooms/{first_room}/tasks"
+        task = api.call(
+            "POST",
+            tasks,
+            lead.token,
+            json={"client_task_id": "wire-check", "title": "Review the release"},
+        )
+        api.call("POST", f"{tasks}/{task['task_id']}/join", lead.token)
+        for index in range(1, 14):
+            api.create_room(lead, f"Room {index:02}")
+
+        console_login(console, "alice", password)
+        with browser_page(
+            str(console.base_url), redact=(password, url.split("#", 1)[1])
+        ) as (page, expect):
+            page.set_viewport_size({"width": 1000, "height": 460})
+            wake_requests = []
+            page.route(
+                "**/api/wake-settings", lambda route: wake_requests.append(route)
+            )
+            page.goto(url, wait_until="domcontentloaded")
+            expect(page.locator("#sessions button")).to_have_count(8)
+            expect(page.locator("#rooms button")).to_have_count(14)
+            sessions = page.locator("#session-scroll")
+            rooms = page.locator("#room-scroll")
+            wires = page.locator("#links path")
+            active = page.locator('#links path[data-active="true"]')
+
+            expect(wires).not_to_have_count(0)
+            expect(active).to_have_count(1)
+
+            # Revealing this control clips one session midpoint without a scroll.
+            initial_wires = wires.count()
+            wake_requests[0].continue_()
+            expect(page.locator("#wake-settings")).to_be_visible()
+            expect(wires).to_have_count(initial_wires - 1, timeout=1500)
+
+            rooms.evaluate("(panel) => { panel.scrollTop = panel.scrollHeight; }")
+            expect(active).to_have_count(0)
+            expect(wires).not_to_have_count(0)
+
+            sessions.evaluate("(panel) => { panel.scrollTop = panel.scrollHeight; }")
+            expect(wires).to_have_count(0)
+
+            rooms.evaluate("(panel) => { panel.scrollTop = 0; }")
+            expect(wires).not_to_have_count(0)
+            expect(active).to_have_count(0)
+
+            sessions.evaluate("(panel) => { panel.scrollTop = 0; }")
+            expect(active).to_have_count(1)

@@ -37,9 +37,15 @@ def account_cli(server, *args, password=None):
 
 
 @contextmanager
-def client_console(ws, server, username):
+def client_console(ws, server, username, *, bindings=1):
     developer = Developer(
-        ws, username, server, bin_dir=server.bin_dir, credentials=False, notify=False
+        ws,
+        username,
+        server,
+        bindings=bindings,
+        bin_dir=server.bin_dir,
+        credentials=False,
+        notify=False,
     )
     with console_listener(developer) as (console, url):
         yield developer, console, url

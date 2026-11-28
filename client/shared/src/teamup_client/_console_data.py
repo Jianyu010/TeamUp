@@ -15,7 +15,6 @@ from ._upstream import Request, unavailable
 from .ipc import ClientError
 
 PAGE = 30
-VISIBLE_WIRE_LIMIT = 20
 TASK_OBSERVATION_SECONDS = 2
 TASK_OBSERVATION_PAGES = 2
 DIRECTORY_OBSERVATION_SECONDS = 3
@@ -391,10 +390,19 @@ class ConsoleReader:
                         **({"membership_id": room["membership_id"]} if room.get("membership_id") else {}),
                     }
                 )
-        if (
-            sum(len(room["memberships"]) for room in rooms.values())
-            <= VISIBLE_WIRE_LIMIT
-        ):
+        directory_session, directory = await self._directory(
+            [
+                reference
+                for reference, session, _ in reports
+                if session["state"] == "ready"
+            ],
+            directory_deadline,
+        )
+        now = asyncio.get_running_loop().time()
+        task_deadline = now + TASK_OBSERVATION_SECONDS
+        if directory_deadline is not None:
+            task_deadline = min(task_deadline, directory_deadline)
+        if now < task_deadline:
             by_session = {
                 reference.id: (reference, session["member_id"])
                 for reference, session, _ in reports
@@ -407,20 +415,16 @@ class ConsoleReader:
             ]
             observations = await asyncio.gather(
                 *(
-                    self._participating(*by_session[membership["session"]], room_id)
+                    self._participating(
+                        *by_session[membership["session"]],
+                        room_id,
+                        deadline=task_deadline,
+                    )
                     for membership, room_id in work
                 )
             )
             for (membership, _), active in zip(work, observations, strict=True):
                 membership["active_task"] = active
-        directory_session, directory = await self._directory(
-            [
-                reference
-                for reference, session, _ in reports
-                if session["state"] == "ready"
-            ],
-            directory_deadline,
-        )
         approved = {
             reference.id
             for reference, _, _ in reports
@@ -504,11 +508,11 @@ class ConsoleReader:
                 return {"state": exc.code}
 
     async def _participating(
-        self, session: ConsoleSession, member_id: str, room_id: str
+        self, session: ConsoleSession, member_id: str, room_id: str, *, deadline: float
     ) -> bool | None:
         after = 0
         try:
-            async with asyncio.timeout(TASK_OBSERVATION_SECONDS):
+            async with asyncio.timeout_at(deadline):
                 for _ in range(TASK_OBSERVATION_PAGES):
                     page = await self._read(
                         session,
