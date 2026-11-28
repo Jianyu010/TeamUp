@@ -1,6 +1,7 @@
 {
   "version": 1,
   "owner": "Jianyu010",
+  "require_ready": false,
   "required_checks": [
     "2 · Lint",
     "2 · Type Check",

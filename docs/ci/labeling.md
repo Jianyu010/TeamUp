@@ -113,7 +113,7 @@ PR labels describe PR status. The `type/*` labels come from associated issues.
 
 | Label | Applied by | Meaning |
 | --- | --- | --- |
-| `ready` | Maintainer only | A maintainer reviewed the PR and approved bypassing a layer 1 block or AI review, or merging during a freeze. Removed automatically on a new push |
+| `ready` | Maintainer only | A maintainer reviewed the PR and approved bypassing a layer 1 block or AI review, or merging during a freeze. While `require_ready` is off, only untrusted authors and unfixed P0 or P1 findings need it. Removed automatically on a new push |
 | `pr/hold` | Person only | Block merging even when the gate passes |
 | `pr/no-issue` | Automation | The title and body contain no references to an issue in this repository (`#N`, `Closes #N`, `Refs #N`, and similar forms). References to PRs do not count. The `1 · Linked Issue` gate check also blocks merging. The owner can allow the merge with `ready` |
 | `gate/<check>-failed` | Automation | The check failed. The label clears when the check passes again |
@@ -123,7 +123,7 @@ Repository-wide status labels
 
 | Label | Applied by | Meaning |
 | --- | --- | --- |
-| `ci/freeze` | Automation | A failure on `main` or in nightly restricts merges to PRs with `ready` |
+| `ci/freeze` | Automation | A failure on `main` or in nightly. When `require_ready` is on, it restricts merges to PRs with `ready` or a freeze reference. When it is off, it is only a signal |
 | `weekly-failure` | Automation | Weekly end-to-end tests with real agents failed |
 | `opencode-review` | Maintainer | Request one OpenCode review of a PR |
 
@@ -215,7 +215,7 @@ Use the label names, colors, and descriptions in this table. Run `python3 -m scr
 | ready | 0E8A16 | Maintainer approval for a protected change, AI review bypass, or merge during a freeze |
 | pr/hold | B60205 | Block merging |
 | pr/no-issue | FBCA04 | No linked issue |
-| ci/freeze | D93F0B | main or nightly failed, merge only PRs labeled ready |
+| ci/freeze | D93F0B | main or nightly failed; with require_ready on, merge only PRs labeled ready |
 | weekly-failure | FBCA04 | Weekly end-to-end tests with real agents failed |
 | opencode-review | 5319E7 | Request an OpenCode review |
 | area/collaboration | C5DEF5 | Members, rooms, DMs, announcements, messages, and inboxes |

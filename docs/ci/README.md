@@ -8,7 +8,7 @@ TeamUp follows DigitalMate's naming convention. The job display name is `<layer>
 
 | Layer | Jobs or checks | When it runs | What happens on failure |
 | --- | --- | --- | --- |
-| 1 · Routing | The merge gate checks for a missing linked issue, changes to protected paths, deleted tests, new skip or xfail markers, and changes spanning more than 300 files | Every gate evaluation | Link an issue or wait for the owner to review and apply `ready` |
+| 1 · Routing | The merge gate checks for a missing linked issue, changes to protected paths, deleted tests, new skip or xfail markers, and changes spanning more than 300 files | Every gate evaluation | Link an issue. When `require_ready` is on, the other cases also wait for the owner to review and apply `ready` |
 | 2 · Static checks | `2 · Lint` (ruff) and `2 · Architecture` (dependency direction) | Every push, including draft PRs | The gate blocks the merge |
 | 3 · Tests and review | `3 · Linux UT` (component and CI unit tests), `3 · Linux ST` (cross-process and MCP integration), and `3 · AI Review` | After the PR is marked ready for review. The gate dispatches AI Review once CI passes | The gate blocks the merge. `3 · Review Findings` fails when a P0 or P1 finding remains unresolved or a P2 finding goes unanswered |
 | 4 · End-to-end | `4 · Nightly` (model-free scenarios and performance tests) and `4 · Weekly` (real agents) | On a schedule for `main` | A nightly failure freezes `main`. A weekly failure opens a `weekly-failure` issue |
@@ -23,8 +23,8 @@ All checks below are enabled and follow this contract. Checks marked required ap
 | Job | Layer | Runner (label = hyphenated name) | Command or decision rule | Required | Failure label | Status |
 | --- | --- | --- | --- | --- | --- | --- |
 | `1 · PR Routing` | 1 | Commit status written by the gate (`merge-gate-01`) | Reports whether the PR can proceed automatically or needs owner review | No, reports only | – | Enabled |
-| `1 · Protected Changes` | 1 | Same as above | Fails for changes to protected paths, deleted tests, or new skip or xfail markers. The owner can clear it with `ready` | No, reports only | – | Enabled |
-| `1 · Automation Limits` | 1 | Same as above | Fails if the PR changes more than 300 files, has an untrusted author, or has exhausted its review reruns | No, reports only | – | Enabled |
+| `1 · Protected Changes` | 1 | Same as above | Fails for changes to protected paths, deleted tests, or new skip or xfail markers. The owner can clear it with `ready`. When `require_ready` is off, it only reports: it stays green with a note | No, reports only | – | Enabled |
+| `1 · Automation Limits` | 1 | Same as above | Fails if the PR has an untrusted author, has exhausted its review reruns, or (when `require_ready` is on) changes more than 300 files | No, reports only | – | Enabled |
 | `1 · Linked Issue` | 1 | Same as above | Fails if the title or body lacks a reference to an issue in this repository (`#N` or `Jianyu010/TeamUp#N`). References to PRs do not count. The gate blocks the merge unless the owner applies `ready` | No, enforced by the gate | – | Enabled |
 | `3 · Review Findings` | 3 | Same as above | Fails if any P0 or P1 finding remains unresolved or any P2 finding goes unanswered, as described under AI review findings below. Stays pending until the current head has been reviewed | No, enforced by the gate | – | Enabled |
 | `2 · Type Check` | 2 | `type-check-01` | `uv run --no-sync mypy` uses `[tool.mypy]` in the root `pyproject.toml` and covers `server/src`, `client/shared/src`, and `plugin/mcp/src` | Yes | `gate/type-check-failed` | Enabled |
@@ -53,8 +53,20 @@ Protected paths and required checks are listed in [`.github/ci/policy.json`](../
   - The PR links at least one issue. Editing the title or body triggers another evaluation. Removing the reference puts the gate back in pending.
   - No layer 1 routing check blocks the PR.
 - The merge worker runs on `merge-01` on hp-laptop using the `TEAMUP_MERGE_TOKEN` repository secret. It squash-merges one PR at a time.
-- Only users with the admin or maintain role can add `ready`. Pushing new commits automatically removes the label.
+- Only users with the admin or maintain role can add `ready`. Pushing new commits automatically removes the label. See the `require_ready` switch below: when it is off, protected changes, oversized PRs, and freezes no longer need `ready`. PRs from untrusted authors, and P0 or P1 findings whose threads were resolved without a fix, still need a maintainer's `ready`.
 - `pr/hold` blocks the PR until the label is removed.
+
+### Owner review switch (`require_ready`)
+
+`require_ready` in `.github/ci/policy.json` decides which cases need the owner's `ready`. It is currently `false`: the owner turned it off because waiting for `ready` slowed merges down. Any value other than an explicit `false`, including a missing key, counts as on.
+
+| Case | `require_ready: true` | `require_ready: false` (current) |
+| --- | --- | --- |
+| Changes to protected paths, deleted tests, or new skip or xfail markers | Wait for the owner's `ready` | The PR takes the automatic route. `1 · Protected Changes` stays green with a note |
+| More than 300 changed files | Wait for the owner's `ready`. `1 · Automation Limits` fails | Not blocked and not reported. A PR with 3,000 or more files (GitHub's listing cap, so the list may be incomplete) always needs AI review, whatever the switch says |
+| A freeze on `main` or nightly | Only PRs with `ready` or a freeze reference merge | Merges are not blocked. The freeze issue still opens and closes as a signal, so a PR that would close it (`Closes`, `Fixes`, `Resolves`) still waits. If the freeze issues cannot be read, merging goes on with a warning |
+
+These rules hold whatever the switch says: all required checks pass, `3 · AI Review` passes and its findings are addressed as described below, the PR links an issue, `pr/hold` blocks, drafts do not merge, and PRs from untrusted authors wait for a maintainer. `ready` still works as an override (for example, for unfixed P0 or P1 findings), but it is no longer required. The switch is per repository rather than an exception for the owner, because PRs are normally authored by the owner's account, which agents also use, so exempting the owner would turn it off for every PR anyway.
 
 ### AI review findings
 
@@ -69,7 +81,7 @@ The reviewer assigns a severity to each finding. `critical` maps to P0, `high` t
 
 A failed `CI` push run on `main` or a failed nightly run opens an issue labeled `ci/freeze`.
 
-During a freeze, a PR can merge if it has `ready` or if it fixes an open freeze issue and cites that issue in its title or body using `Refs #N`, `Ref #N`, or `Part of #N`. A fix submitted through the second route still needs a passing gate, and it can proceed without waiting for the owner. Closing keywords such as `Closes`, `Fixes`, and `Resolves` make the PR ineligible for that route because GitHub would close the freeze issue as soon as the PR merged. The merge worker rereads the PR before merging and stops if the reference has been removed or changed to a closing keyword. The freeze issue closes automatically once `main` is green again and nightly passes. A weekly failure only opens a `weekly-failure` issue.
+When `require_ready` is on, during a freeze a PR can merge if it has `ready` or if it fixes an open freeze issue and cites that issue in its title or body using `Refs #N`, `Ref #N`, or `Part of #N`. A fix submitted through the second route still needs a passing gate, and it can proceed without waiting for the owner. Closing keywords such as `Closes`, `Fixes`, and `Resolves` make the PR ineligible for that route because GitHub would close the freeze issue as soon as the PR merged. The merge worker rereads the PR before merging and stops if the reference has been removed or changed to a closing keyword. The freeze issue closes automatically once `main` is green again and nightly passes. A weekly failure only opens a `weekly-failure` issue.
 
 ## Runners
 
@@ -165,7 +177,7 @@ The `pr-labels` job in `gate-queue.yml` maintains `gate/*-failed` and `pr/no-iss
 
 ## Maintainer operations
 
-- **Approve a protected change.** Review the diff and apply `ready`.
+- **Approve a protected change.** Review the diff and apply `ready`. This is needed only when `require_ready` is on.
 - **Hold a PR.** Apply `pr/hold`.
 - **Reevaluate the gate.** Run `Gate queue` from Actions. You can optionally provide a PR number.
 - **Rotate the merge token.** Replace the `TEAMUP_MERGE_TOKEN` secret with a fine-grained token scoped to this repository. Grant these permissions.

@@ -91,6 +91,18 @@ def load_policy(path: Path = POLICY_PATH) -> dict[str, Any]:
 
 
 LABEL = "ready"
+
+
+def require_ready(policy: dict[str, Any]) -> bool:
+    """Whether layer 1 and a freeze wait for the owner's ``ready`` (policy ``require_ready``).
+
+    Missing means yes (fail closed); docs/ci/README.md, "owner 审查开关".
+    """
+    return (
+        policy.get("require_ready", True) is not False
+    )  # only an explicit false turns it off
+
+
 MAINTAINER_ROLES = frozenset({"admin", "maintain"})
 HOLD = "pr/hold"
 # The pre-rename name still holds for a transition, so a PR held before the rename stays held.
@@ -592,9 +604,21 @@ REVIEW_RERUNS = 3
 REVIEW_RERUN_AFTER_S = 600
 
 
-def review_exempt(paths: list[str], policy: dict[str, Any] | None = None) -> bool:
-    """Whether the PR changes only files that need no AI review (``review_exempt_paths``)."""
+# ``file_entries`` reads at most 30 pages of 100: a listing this long may be cut off.
+LISTING_CAP = 3000
+
+
+def review_exempt(
+    paths: list[str], policy: dict[str, Any] | None = None, listed: int = 0
+) -> bool:
+    """Whether the PR changes only files that need no AI review (``review_exempt_paths``).
+
+    ``listed`` is how many changed-file entries GitHub returned; at ``LISTING_CAP`` the listing
+    may be cut off, so the PR is never exempt (whatever ``require_ready`` says).
+    """
     roots = tuple((policy or {}).get("review_exempt_paths") or ())
+    if listed >= LISTING_CAP:
+        return False
     return bool(paths) and bool(roots) and all(p.startswith(roots) for p in paths)
 
 
@@ -774,13 +798,15 @@ def layer1_verdicts(
     entries = _file_entries(gh, number)
     limit = int(policy.get("max_changed_files") or 300)
     problems = routing_problems(entries, {**policy, "max_changed_files": NO_LIMIT})
+    owner = require_ready(policy)
+    blocking = problems if owner else []
     issue = linked_issue(gh, pull)
     paths = sorted({str(e.get("filename") or "") for e in entries})
-    exempt = review_exempt(paths, policy)
+    exempt = review_exempt(paths, policy, len(entries))
     labels = {label["name"] for label in pull.get("labels", [])}
 
     limits: list[str] = []
-    if len(entries) >= limit:
+    if owner and len(entries) >= limit:
         limits.append(f"the PR changes {len(entries)} files or more (limit {limit})")
     if not exempt and str(pull.get("author_association") or "") not in TRUSTED_AUTHORS:
         limits.append("the author is not trusted, so no review is dispatched")
@@ -803,7 +829,7 @@ def layer1_verdicts(
         ):
             limits.append(f"the review re-ran {REVIEW_RERUNS} times without a verdict")
 
-    if ready and (problems or limits or issue is None):
+    if ready and (blocking or limits or issue is None):
         route = f"owner route: `{LABEL}` accepted"
     elif ready:
         route = "automatic route (`ready` set)"
@@ -813,8 +839,8 @@ def layer1_verdicts(
         route = f"held: the PR is on `{HOLD}`"
     elif issue is None:
         route = "waits for a linked issue (`Closes #N` or `Refs #N`)"
-    elif problems or limits:
-        reason = _short((problems + limits)[0])
+    elif blocking or limits:
+        reason = _short((blocking + limits)[0])
         route = f"waits for the owner's `{LABEL}`: {reason}"
     else:
         route = "automatic route"
@@ -823,6 +849,11 @@ def layer1_verdicts(
         guarded = ("success", "no protected path, deleted test or new skip/xfail")
     elif ready:
         guarded = ("success", f"passed by `{LABEL}`: {_short(problems[0])}")
+    elif not owner:
+        guarded = (
+            "success",
+            f"not blocking (`require_ready` off): {_short(problems[0])}",
+        )
     else:
         guarded = ("failure", _short(problems[0]))
     if limits:
@@ -1171,11 +1202,12 @@ def auto_problems(gh: GitHub, pull: dict[str, Any], required: list[str]) -> list
     problems = tier1_problems(runs, required)
     policy = load_policy()
     entries = _file_entries(gh, number)
-    problems += routing_problems(entries, policy)
+    if require_ready(policy):
+        problems += routing_problems(entries, policy)
     if linked_issue(gh, pull) is None:
         problems.append(NO_ISSUE)
     paths = sorted({str(e.get("filename") or "") for e in entries})
-    if review_exempt(paths, policy):
+    if review_exempt(paths, policy, len(entries)):
         return problems
     reviews = _reviews(gh, number)
     review_runs = _review_runs(gh, sha) if _own_reviews(sha, reviews) else []
