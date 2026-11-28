@@ -1,6 +1,6 @@
 import {renderSessionChoices} from "./console-members.js";
 
-export function roomBoard({get, request}) {
+export function roomBoard({get, request, roomCommandError}) {
   const toggle = get("board-toggle");
   const panel = get("board-panel");
   const chooser = get("board-session");
@@ -160,9 +160,9 @@ export function roomBoard({get, request}) {
         unavailable();
       } else {
         publish.disabled = false;
-        feedback.textContent = result.state === "invalid_request"
+        feedback.textContent = roomCommandError(result.state) ?? (result.state === "invalid_request"
           ? "Rules and Protocol must each contain text and be at most 8,000 characters."
-          : "Publishing is temporarily unavailable.";
+          : "Publishing is temporarily unavailable.");
       }
     } catch {
       if (write === pending) {

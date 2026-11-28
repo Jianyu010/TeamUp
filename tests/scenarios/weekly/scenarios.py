@@ -7,6 +7,8 @@ import re
 from dataclasses import dataclass
 from uuid import uuid4
 
+import httpx
+
 from . import tasks
 from .agents import Spec
 from .run import Failure, Run
@@ -266,6 +268,161 @@ async def we03(options) -> str:
         return (
             "B's Client was stopped during the mention, backfilled once, B replied once"
         )
+
+
+# --- WE-04 ------------------------------------------------------------------
+
+
+async def we04(options) -> str:
+    secret = f"handoff-{uuid4().hex[:10]}"
+    specs = [Spec("A", "Backend"), Spec("B", "Verifier")]
+    async with Run("WE-04", specs, options) as run:
+        await run.phase(("A", tasks.create_room("Board handoff", RULES, PROTOCOL)))
+        room_id = run.room_id()
+        await run.phase(("B", tasks.join_room(room_id, "Verifier ready.")))
+
+        a = run.stack.developers["A"]
+        b = run.stack.developers["B"]
+        a_auth = {"Authorization": f"Bearer {a.member_token}"}
+        b_auth = {"Authorization": f"Bearer {b.member_token}"}
+        async with httpx.AsyncClient(
+            base_url=f"http://127.0.0.1:{run.stack.port}/v1/", trust_env=False
+        ) as api:
+            a_listing = await api.get(
+                "rooms", params={"include_membership": "true"}, headers=a_auth
+            )
+            b_listing = await api.get(
+                "rooms", params={"include_membership": "true"}, headers=b_auth
+            )
+            capability = await api.get("sync/capabilities", headers=a_auth)
+            if not all(
+                response.is_success for response in (a_listing, b_listing, capability)
+            ):
+                raise Failure("Could not resolve the Board handoff scope")
+            a_room = next(
+                row for row in a_listing.json()["rooms"] if row["room_id"] == room_id
+            )
+            b_room = next(
+                row for row in b_listing.json()["rooms"] if row["room_id"] == room_id
+            )
+            path = f"rooms/{room_id}/sync"
+            scope = {
+                "expected_member_id": run.member_id("B"),
+                "membership_id": b_room["membership_id"],
+            }
+            baseline = await api.get(path, params=scope, headers=b_auth)
+            if not baseline.is_success or baseline.json()["board_version"] != 1:
+                raise Failure("B could not establish a version 1 baseline")
+            since_first_board = {**scope, "cursor": baseline.json()["next_cursor"]}
+
+            b.stop_client()
+            published = await api.post(
+                "room-commands",
+                headers=a_auth,
+                json={
+                    "operation_id": str(uuid4()),
+                    "expected_member_id": run.member_id("A"),
+                    "server_generation": capability.json()["server_generation"],
+                    "kind": "publish_board",
+                    "room_id": room_id,
+                    "parameters": {
+                        "membership_id": a_room["membership_id"],
+                        "expected_leadership_epoch": a_room["leadership_epoch"],
+                        "version": 1,
+                        "rules": "Acknowledge this Board before continuing the handoff.",
+                        "protocol": "The verifier repeats the exact handoff code once.",
+                    },
+                },
+            )
+            if (
+                not published.is_success
+                or published.json()["receipt"].get("version") != 2
+            ):
+                raise Failure(
+                    f"Durable Board publish failed with status {published.status_code}"
+                )
+
+            async def send_handoff(ctx):
+                board = await ctx.call("get_board", room_id=room_id)
+                await ctx.call("ack_board", room_id=room_id, version=board["version"])
+                await ctx.call(
+                    "send_message",
+                    room_id=room_id,
+                    client_message_id=ctx.message_id("handoff"),
+                    text=f"New Board handoff code {secret}. Verifier, confirm this code once.",
+                )
+
+            await run.phase(
+                (
+                    "A",
+                    tasks.Task(
+                        f"Read and acknowledge the latest Board for room {room_id}. Send exactly one "
+                        f"room message containing 'New Board handoff code {secret}'. Do not mention anyone.",
+                        send_handoff,
+                    ),
+                )
+            )
+            await b.start_client()
+            blocked = await api.get(path, params=since_first_board, headers=b_auth)
+            if (
+                blocked.status_code != 409
+                or blocked.json()["error"]["code"] != "board_ack_required"
+            ):
+                raise Failure(
+                    "An obsolete Board cursor could still read protected room data"
+                )
+
+            async def confirm_handoff(ctx):
+                board = await ctx.call("get_board", room_id=room_id)
+                await ctx.call("ack_board", room_id=room_id, version=board["version"])
+                history = await ctx.call("read_messages", room_id=room_id)
+                code = next(
+                    word.rstrip(".")
+                    for row in history["messages"]
+                    for word in row["text"].split()
+                    if word.startswith("handoff-")
+                )
+                await ctx.call(
+                    "send_message",
+                    room_id=room_id,
+                    client_message_id=ctx.message_id("confirm"),
+                    text=f"Confirmed {code}",
+                )
+
+            await run.phase(
+                (
+                    "B",
+                    tasks.Task(
+                        f"Reconnect to room {room_id}, read and acknowledge its current Board, "
+                        "and read the room messages. Find the new Board handoff code and send "
+                        "exactly one room reply containing that exact code. Do not mention anyone.",
+                        confirm_handoff,
+                    ),
+                )
+            )
+            stale = await api.get(path, params=since_first_board, headers=b_auth)
+            if (
+                stale.status_code != 409
+                or stale.json()["error"]["code"] != "sync_reset_required"
+            ):
+                raise Failure(
+                    "The version 1 cursor survived the explicit version 2 acknowledgment"
+                )
+            rebuilt = await api.get(path, params=scope, headers=b_auth)
+            if not rebuilt.is_success or rebuilt.json()["board_version"] != 2:
+                raise Failure("B could not rebuild its authorized projection")
+
+        messages = await run.messages(room_id, "B")
+        confirmations = [
+            row
+            for row in messages
+            if row["sender_member_id"] == run.member_id("B") and secret in row["text"]
+        ]
+        if len(confirmations) != 1:
+            raise Failure(
+                f"Expected one confirmed handoff, got {len(confirmations)}. {run.turn_errors()}"
+            )
+        return "B reconnected, acknowledged the new Board, reset the old cursor, and completed the handoff once"
 
 
 # --- WE-05 ------------------------------------------------------------------
@@ -657,21 +814,135 @@ async def we07(options) -> str:
         )
 
 
+async def we08(options) -> str:
+    specs = [
+        Spec("A", "Original Tester"),
+        Spec("B", "Successor Tester"),
+        Spec("C", "Room Lead"),
+    ]
+    async with Run("WE-08", specs, options) as run:
+        await run.phase(
+            ("C", tasks.create_room("Replacement handoff", RULES, PROTOCOL))
+        )
+        room_id = run.room_id()
+        await run.phase(("A", tasks.join_room(room_id, "Original Tester ready.")))
+        task = await run.read(
+            "C",
+            "create_task",
+            room_id=room_id,
+            client_task_id=str(uuid4()),
+            title="Continue verification",
+        )
+        task_args = {"room_id": room_id, "task_id": task["task_id"]}
+
+        def work(note, key, *, retire=False):
+            async def script(ctx):
+                await ctx.call("join_task", **task_args)
+                await ctx.call(
+                    "report_progress", **task_args, client_progress_id=key, note=note
+                )
+                if retire:
+                    await ctx.call("retire_identity")
+
+            return tasks.Task(
+                f"Join task {task['task_id']} in room {room_id}. Record one progress note "
+                f"containing '{note}' with client_progress_id '{key}'. "
+                + (
+                    "Then call teamup_retire_identity on your own session."
+                    if retire
+                    else ""
+                ),
+                script,
+            )
+
+        original = "Original member checkpoint"
+        successor = "Successor member checkpoint"
+        await run.phase(("A", work(original, "original-checkpoint", retire=True)))
+        old_id = run.member_id("A")
+        before = (await run.read("C", "task_history", **task_args))["events"]
+        original_notes = [row for row in before if row["kind"] == "progress"]
+        if (
+            len(original_notes) != 1
+            or original_notes[0]["actor_member_id"] != old_id
+            or original not in original_notes[0]["note"]
+        ):
+            raise Failure("The original member did not record its checkpoint")
+        if not any(
+            turn.output_of("teamup_retire_identity")
+            for turn in run.turns
+            if turn.agent == "A"
+        ):
+            raise Failure("The original member did not confirm retirement")
+
+        await run.phase(("B", tasks.join_room(room_id, "Successor Tester ready.")))
+        new_id = run.member_id("B")
+        if new_id == old_id:
+            raise Failure("The successor reused the retired member ID")
+        b = run.stack.developers["B"]
+        headers = {"Authorization": f"Bearer {b.member_token}"}
+        async with httpx.AsyncClient(
+            base_url=f"http://127.0.0.1:{run.stack.port}/v1/", trust_env=False
+        ) as api:
+            capabilities = await api.get("sync/capabilities", headers=headers)
+            listing = await api.get(
+                "rooms", params={"include_membership": "true"}, headers=headers
+            )
+            if not capabilities.is_success or not listing.is_success:
+                raise Failure("Could not establish the successor's room scope")
+            membership = next(
+                row for row in listing.json()["rooms"] if row["room_id"] == room_id
+            )
+            wrong_actor = await api.post(
+                "room-commands",
+                headers=headers,
+                json={
+                    "operation_id": str(uuid4()),
+                    "expected_member_id": old_id,
+                    "server_generation": capabilities.json()["server_generation"],
+                    "kind": "record_task_progress",
+                    "room_id": room_id,
+                    "parameters": {
+                        "task_id": task["task_id"],
+                        "membership_id": membership["membership_id"],
+                        "expected_board_version": membership["current_board_version"],
+                        "client_progress_id": "wrong-actor",
+                        "note": "A pending update from the retired member",
+                    },
+                },
+            )
+            if (
+                wrong_actor.status_code != 409
+                or wrong_actor.json()["error"]["code"] != "member_identity_changed"
+            ):
+                raise Failure(
+                    "The old member's intent could be dispatched as the successor"
+                )
+
+        await run.phase(("B", work(successor, "successor-checkpoint")))
+        history = (await run.read("C", "task_history", **task_args))["events"]
+        progress = [row for row in history if row["kind"] == "progress"]
+        if (
+            len(progress) != 2
+            or progress[0]["actor_member_id"] != old_id
+            or original not in progress[0]["note"]
+            or progress[1]["actor_member_id"] != new_id
+            or successor not in progress[1]["note"]
+        ):
+            raise Failure(
+                "Task history did not preserve one update from each distinct member"
+            )
+        return "The successor joined separately and continued the task without replaying the retired member's intent"
+
+
 SCENARIOS = [
     Scenario("WE-01", "Two-agent DM exchange", 2, 4, 600, we01),
     Scenario("WE-02", "Three-agent room with @mentions", 3, 14, 720, we02),
     Scenario("WE-03", "@mention while the Client is offline", 2, 10, 600, we03),
-    Scenario(
-        "WE-04",
-        "Board change mid-conversation",
-        3,
-        0,
-        0,
-        skip="Covered by the model-free Board mid-conversation check NS-15.04.",
-    ),
+    Scenario("WE-04", "Interrupted handoff after a Board change", 2, 6, 600, we04),
     Scenario("WE-05", "Five-agent stand-up hand-off chain", 5, 18, 900, we05),
     Scenario("WE-06", "Directed room task assignment and handoff", 4, 7, 900, we06),
     Scenario(
         "WE-07", "Focused room invitation, handoff and continuation", 2, 5, 600, we07
     ),
+    Scenario("WE-08", "Member replacement during a room task", 3, 7, 600, we08),
 ]

@@ -101,7 +101,7 @@ def test_slow_reminder_does_not_block_the_room_inbox_stream():
         coordinator._notifier = SimpleNamespace(show=show)
         coordinator._drain = drain
         reader = asyncio.create_task(
-            coordinator._drain_with_hints(binding, session, lines())
+            coordinator._drain_with_hints(binding, session, lines(), request)
         )
         try:
             await asyncio.wait_for(another_drain.wait(), 1)
@@ -131,7 +131,7 @@ def test_transient_oserror_does_not_end_the_reminder_watcher(monkeypatch):
         coordinator._notifier = SimpleNamespace(show=None)
         await asyncio.wait_for(
             coordinator._watch_task_reminders(
-                SimpleNamespace(member_token="member"), wake
+                SimpleNamespace(member_token="member"), wake, coordinator._upstream.request
             ),
             timeout=1,
         )

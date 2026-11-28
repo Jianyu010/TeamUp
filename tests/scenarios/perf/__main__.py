@@ -13,6 +13,7 @@ def benchmark_registry(profile):
     from tests.scenarios.perf.focused_rooms import FOCUSED_BENCHMARKS
     from tests.scenarios.perf.pressure import PRESSURE_BENCHMARKS
     from tests.scenarios.perf.recovery import ARCHIVE_BENCHMARKS
+    from tests.scenarios.perf.room_sync import ROOM_SYNC_BENCHMARKS
     from tests.scenarios.perf.task_pressure import TASK_BENCHMARKS
 
     scaled = (
@@ -23,7 +24,7 @@ def benchmark_registry(profile):
         | FOCUSED_BENCHMARKS
     )
     if profile == "weekly":
-        return dict(sorted(scaled.items()))
+        return dict(sorted((scaled | ROOM_SYNC_BENCHMARKS).items()))
     return BENCHMARKS | {
         key: value for key, value in sorted(scaled.items()) if key != "NP-10"
     }

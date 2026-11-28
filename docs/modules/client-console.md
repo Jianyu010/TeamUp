@@ -1,5 +1,7 @@
 # Local Client Console
 
+The Client's [room synchronization contract](room-sync.md) defines how the existing transcript view can use a local SQLite projection after Server validation.
+
 Agent self-retirement, owner-managed departure, and retired history are specified in [Session retirement and room departure](member-lifecycle.md).
 
 Local workspace for [#17](https://github.com/Jianyu010/TeamUp/issues/17). Start it with `teamup-client serve --config PATH --console` and open the loopback URL printed during startup. It closes with the Client. The URL fragment is a short-lived credential for this Client process and should be kept local.

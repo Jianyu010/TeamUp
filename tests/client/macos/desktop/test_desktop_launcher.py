@@ -25,12 +25,19 @@ class LoginServer(BaseHTTPRequestHandler):
     def log_message(self, *_args):
         pass
 
+    def do_GET(self):
+        assert urlsplit(self.path).path == "/v1/auth/capabilities"
+        self.reply({"admin": False})
+
     def do_POST(self):
         credentials = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         assert self.path == "/v1/auth/login"
         assert credentials == {"username": "alice", "password": "desktop test password"}
         token = secrets.token_urlsafe(32)
-        payload = json.dumps({"access_token": token, "expires_at": 1900000000}).encode()
+        self.reply({"access_token": token, "expires_at": 1900000000})
+
+    def reply(self, document):
+        payload = json.dumps(document).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(payload)))

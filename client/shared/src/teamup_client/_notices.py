@@ -8,11 +8,11 @@ from ._local import private_file
 from ._protocol import frame
 
 
-def binding_scope(server_url, binding):
+def binding_scope(server_profile, binding):
     # The stable binding survives rotation of its local handle, but a new member
     # token or server does not inherit an earlier member's notifications.
     identity = [
-        server_url,
+        server_profile,
         binding.harness_instance_id,
         binding.session_key,
         binding.member_token,
@@ -152,6 +152,41 @@ class NoticeStore:
                     PRIMARY KEY (server_url, harness_instance_id, session_key)
                 ) WITHOUT ROWID
             """)
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS binding_members (
+                    binding_scope TEXT NOT NULL PRIMARY KEY,
+                    member_id TEXT NOT NULL,
+                    owner_id TEXT,
+                    retirement_generation TEXT
+                ) WITHOUT ROWID
+            """)
+
+    def binding_member(self, scope):
+        return self._db.execute(
+            "SELECT member_id, owner_id, retirement_generation FROM binding_members "
+            "WHERE binding_scope = ?",
+            (scope,),
+        ).fetchone()
+
+    def confirm_binding_member(self, scope, member_id, owner_id=None):
+        with self._db:
+            self._db.execute(
+                "INSERT INTO binding_members (binding_scope, member_id, owner_id) VALUES (?, ?, ?) "
+                "ON CONFLICT (binding_scope) DO UPDATE SET owner_id = excluded.owner_id "
+                "WHERE binding_members.member_id = excluded.member_id "
+                "AND binding_members.owner_id IS NULL AND excluded.owner_id IS NOT NULL",
+                (scope, member_id, owner_id),
+            )
+            return self.binding_member(scope)
+
+    def begin_retirement(self, scope, member_id, generation):
+        with self._db:
+            self._db.execute(
+                "UPDATE binding_members SET retirement_generation = ? "
+                "WHERE binding_scope = ? AND member_id = ? AND retirement_generation IS NULL",
+                (generation, scope, member_id),
+            )
+            return self.binding_member(scope)
 
     def record_departure(self, scope, event_id, room_id):
         with self._db:
@@ -180,13 +215,20 @@ class NoticeStore:
                 "DELETE FROM wake_permissions WHERE harness_instance_id = ? AND session_key = ?",
                 identity,
             )
+            self._db.execute(
+                "UPDATE binding_members SET retirement_generation = NULL WHERE binding_scope = ?",
+                (scope,),
+            )
 
     def retired_sessions(self, server_url):
         cursor = self._db.execute(
             """
-            SELECT harness_instance_id, session_key, scope, harness, member_id, role_description
-            FROM retired_sessions WHERE server_url = ?
-            ORDER BY harness_instance_id, session_key
+            SELECT r.harness_instance_id, r.session_key, r.scope, r.harness, r.member_id,
+                   r.role_description, b.owner_id
+            FROM retired_sessions AS r
+            LEFT JOIN binding_members AS b ON b.binding_scope = r.scope
+            WHERE r.server_url = ?
+            ORDER BY r.harness_instance_id, r.session_key
             """,
             (server_url,),
         )

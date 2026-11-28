@@ -62,10 +62,10 @@ Each call uses one connection and sends one newline-terminated UTF-8 JSON reques
 | `teamup_room_leadership_candidates` | `room_leadership_candidates` | `room_id` | `{leadership_epoch,candidates:[…]}` in ranked order. Requires current leadership. |
 | `teamup_handoff_room_leadership` | `handoff_room_leadership` | `room_id`, `leadership_epoch`, `mode` (`choose`, `auto` or `defer`), `member_id` and `membership_id` for `choose`, optional `leave` (default false) | `{room_id,leader_member_id,leadership_epoch,pending,left}`. Requires current leadership. |
 | `teamup_confirm_room_leadership` | `confirm_room_leadership` | `room_id`, `leadership_epoch` | The same receipt shape. Answers the incumbent's current challenge. |
-| `teamup_join_room` | `join_room` | `room_id` | Room |
+| `teamup_join_room` | `join_room` | `room_id`, optional `client_request_id` | Room |
 | `teamup_list_room_members` | `list_room_members` | `room_id` | `{members:[…]}`, including the `membership_id` of each current membership |
 | `teamup_remove_room_member` | `remove_room_member` | `room_id,member_id,membership_id` | `{room_id,member_id,departure_event_id}`. Requires room leadership. |
-| `teamup_leave_room` | `leave_room` | `room_id` | `{"room_id":"…"}`. Ends only the current member's room membership. A leader's departure applies the [server ranking](focused-rooms.md#leadership) when no handoff already chose a successor. |
+| `teamup_leave_room` | `leave_room` | `room_id`, optional `client_request_id` | `{"room_id":"…"}`. Ends only the current member's room membership. A leader's departure applies the [server ranking](focused-rooms.md#leadership) when no handoff already chose a successor. |
 | `teamup_get_board` | `get_board` | `room_id` | Board |
 | `teamup_ack_board` | `ack_board` | `room_id`, `version` | `{"version":1}` |
 | `teamup_send_message` | `send_message` | `room_id`, `client_message_id`, `text`, optional `mention_member_id` or `mention_member_ids` | Message |

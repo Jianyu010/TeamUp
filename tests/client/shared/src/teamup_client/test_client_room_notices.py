@@ -68,6 +68,8 @@ class Server:
 
     async def request(self, method, path, token, *, query=None):
         assert method == "GET" and token == BINDING.member_token
+        if path == "/members/me":
+            return {"member_id": RANKING["candidates"][0]["member_id"], "role_description": "Lead"}
         self.reads.append(path)
         response = self.responses[path]
         if isinstance(response, Exception):
@@ -88,6 +90,7 @@ def deliver(tmp_path, server, notices):
             console = Coordinator(
                 config(), server, store, None, None, {"codex": driver}, signed_in_console=True
             )
+            assert await console.confirmed_binding(console._console_id(IDENTITY)) is not None
             session = console._sessions[IDENTITY]
             for item in notices:
                 store.record_room_notice(session.scope, item)
@@ -316,6 +319,7 @@ def test_lease_replaced_during_candidate_read_submits_nothing(tmp_path):
                 config(), server, store, None, None,
                 {"codex": driver, "claude-code": driver}, signed_in_console=True,
             )
+            assert await console.confirmed_binding(console._console_id(IDENTITY)) is not None
             session = console._sessions[IDENTITY]
             notice = control("leadership_challenge", leadership_epoch=3)
             store.record_room_notice(session.scope, notice)

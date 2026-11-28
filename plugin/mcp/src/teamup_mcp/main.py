@@ -177,12 +177,19 @@ TOOLS = [
         "Use the leadership_epoch from the room notice.",
         LEADERSHIP,
     ),
-    tool("join_room", "Join a team-visible room.", ROOM),
+    tool(
+        "join_room",
+        "Join a team-visible room. Use a fresh client_request_id for a new intent and keep it on retry.",
+        ROOM,
+        {"client_request_id": RETRY},
+    ),
     tool(
         "leave_room",
         "Leave this room and allow TeamUp to rank successors if you lead it. "
-        "Use the leadership handoff tool to choose a successor or defer the choice.",
+        "Use the leadership handoff tool to choose a successor or defer the choice. "
+        "Use a fresh client_request_id for a new intent and keep it on retry.",
         ROOM,
+        {"client_request_id": RETRY},
     ),
     tool(
         "list_room_members",

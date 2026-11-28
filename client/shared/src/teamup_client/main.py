@@ -31,6 +31,9 @@ from ._login import login, sign_in_profile
 from ._notice_output import NoticeOutput
 from ._notices import open_store
 from ._protocol import is_string, is_uuid
+from ._room_commands import RoomCommands
+from ._room_store import open_room_store
+from ._room_sync import RoomSync
 from ._session_hook import register_session
 from ._upstream import connect
 from .ipc import ClientError, call
@@ -40,6 +43,7 @@ async def _activate_client(runtime, config, *, signed_in_console=False):
     async with AsyncExitStack() as startup:
         upstream = await startup.enter_async_context(connect(config))
         notices = startup.enter_context(open_store(config.socket_path))
+        room_store = startup.enter_context(open_room_store(config.socket_path))
         command = config.notify_command
         notifier = DesktopNotifier(default_command() if command is None else command)
         codex = config.codex_command
@@ -52,12 +56,22 @@ async def _activate_client(runtime, config, *, signed_in_console=False):
             drivers(default_codex_command() if codex is None else codex),
             signed_in_console=signed_in_console,
         )
+        room_sync = RoomSync(
+            room_store, coordinator.confirmed_binding, coordinator.binding_current,
+        )
+        coordinator.set_room_invalidator(room_sync.invalidate)
+        coordinator.set_room_commands(
+            RoomCommands(room_store, upstream.request, coordinator.binding_current)
+        )
+        await coordinator.verify_console_bindings()
         await startup.enter_async_context(
             listen(config.socket_path, partial(handle, coordinator=coordinator))
         )
         await startup.enter_async_context(coordinator.watching_inboxes())
         runtime.push_async_exit(startup.pop_all())
-        return ConsoleReader(coordinator.console_sessions, upstream.request, coordinator)
+        return ConsoleReader(
+            coordinator.console_sessions, upstream.request, coordinator, room_sync=room_sync,
+        )
 
 
 async def _serve(path, *, console=False, desktop=False):
@@ -309,7 +323,7 @@ def main(argv=None):
         return 1
     except (OSError, sqlite3.Error):
         print(
-            "Could not access the Client socket or notification storage",
+            "Could not access the Client socket or local storage",
             file=sys.stderr,
         )
         return 1

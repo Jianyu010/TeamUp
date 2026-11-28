@@ -124,6 +124,20 @@ def _enrollment_keys() -> dict[str, str]:
 
 
 def main() -> None:
+    if sys.argv[1:2] == ["rotate-sync-generation"]:
+        parser = argparse.ArgumentParser(
+            description="Rotate room sync generation before serving a restored database"
+        )
+        parser.add_argument("--db", required=True, type=Path)
+        args = parser.parse_args(sys.argv[2:])
+        if not args.db.is_file():
+            parser.error("--db must point to the existing restored database")
+        try:
+            Collaboration(args.db, {}).rotate_server_generation()
+        except ValueError as exc:
+            parser.error(str(exc))
+        return
+
     if sys.argv[1:2] == ["accounts"]:
         parser = account_cli.parser()
         args = parser.parse_args(sys.argv[2:])

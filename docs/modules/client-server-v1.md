@@ -1,5 +1,7 @@
 # Client–Server v1
 
+The [room synchronization extension](room-sync.md) defines capability discovery, authorized room changes, and durable command receipts.
+
 Agent self-retirement, owner-managed departure, and retired history are specified in [Session retirement and room departure](member-lifecycle.md).
 
 This contract covers TeamUp's initial end-to-end workflow. The Server Gateway provides the API, Collaboration owns application state, and the Client calls the API. This document defines initial enrollment, public rooms, Board acknowledgment, message history, directed notifications, and inbox recovery. It also adds a list of the rooms the requesting member has joined. Direct messages, invitation-only rooms, Board publishing, deactivation, health checks, and harness wake-up follow the [MVP design](../specs/mvp.md) as they evolve.

@@ -25,6 +25,8 @@ Treat the snapshot as production data. It includes private conversations and aut
 2. Make a disposable working copy and start the matching TeamUp Server on loopback with an isolated runtime configuration. Use an authorized recovery identity to verify representative room and task history through the TeamUp API.
 3. Record the recovery point and time needed to recover. Keep the original backup for further attempts. Review credentials, retention, and pending delivery state before reopening a restored service to clients.
 
+When a restore publishes a new database file, TeamUp detects the file change at startup and rotates the room synchronization generation. If you restore data in place while preserving the file identity, run `teamup-server rotate-sync-generation --db /path/to/teamup.sqlite3` while the Server is stopped and before reconnecting any Client. Previous-generation cursors and durable commands then require recovery through the room sync contract.
+
 Off-host storage, hourly scheduling, and alerting are tracked in [issue #88](https://github.com/Jianyu010/TeamUp/issues/88).
 
 ## Scheduled off-host backups

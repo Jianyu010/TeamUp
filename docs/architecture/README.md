@@ -90,3 +90,4 @@ Within Collaboration, responsibilities are divided among members and credentials
 - [Development view](development-view.md) covers the repository layout, process dependencies, and where checks run.
 - [Technology choices](technology.md) describes the MVP stack and the reasoning behind it.
 - [Module design and interaction sequences](../modules/README.md) covers public operations and end-to-end interactions.
+- [Client local storage and synchronization](local-storage-and-sync.md) describes the proposed SQLite ownership, session reconciliation, and room sync contracts.

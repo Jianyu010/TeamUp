@@ -19,11 +19,11 @@ from tests.scenarios._stack import (
 
 
 def account_cli(server, *args, password=None):
-    argv, env = command("server")
+    argv, env = command("server", server.bin_dir)
     argv += ["accounts", "--db", str(server.db), *args]
     if password is not None:
-        status, _ = run_with_tty(argv, [password, password], env)
-        assert status == 0, f"accounts {args[0]} exited with status {status}"
+        status, output = run_with_tty(argv, [password, password], env)
+        assert status == 0, output.replace(password, "[redacted]")[-1500:]
         return
     result = run_process(
         argv,
@@ -38,27 +38,40 @@ def account_cli(server, *args, password=None):
 
 @contextmanager
 def client_console(ws, server, username):
-    developer = Developer(ws, username, server, credentials=False, notify=False)
-    argv, env = command("client")
-    proc = ws.spawn(
-        f"console-{username}",
+    developer = Developer(
+        ws, username, server, bin_dir=server.bin_dir, credentials=False, notify=False
+    )
+    with console_listener(developer) as (console, url):
+        yield developer, console, url
+
+
+@contextmanager
+def console_listener(developer):
+    argv, env = command("client", developer.bin_dir)
+    proc = developer.ws.spawn(
+        f"console-{developer.name}",
         [*argv, "serve", "--config", str(developer.config_path), "--console"],
         env,
     )
-    pattern = re.compile(r"^(http://127\.0\.0\.1:\d+)/#([A-Za-z0-9_-]+)$", re.MULTILINE)
-    launch = wait_for(
-        lambda: pattern.search(proc.text()), proc, what="Console launch URL"
-    )
-    origin, bearer = launch.groups()
-    # The workspace fixture prints process logs on failure. Keep the launch bearer out.
-    proc.log.write_text(proc.text().replace(bearer, "[redacted]"))
-    with httpx.Client(
-        base_url=origin,
-        headers={"Authorization": f"Bearer {bearer}"},
-        timeout=10,
-        trust_env=False,
-    ) as console:
-        yield developer, console, launch.group()
+    try:
+        pattern = re.compile(
+            r"^(http://127\.0\.0\.1:\d+)/#([A-Za-z0-9_-]+)$", re.MULTILINE
+        )
+        launch = wait_for(
+            lambda: pattern.search(proc.text()), proc, what="Console launch URL"
+        )
+        origin, bearer = launch.groups()
+        # Process logs are printed on failure. Keep the launch bearer out.
+        proc.log.write_text(proc.text().replace(bearer, "[redacted]"))
+        with httpx.Client(
+            base_url=origin,
+            headers={"Authorization": f"Bearer {bearer}"},
+            timeout=10,
+            trust_env=False,
+        ) as console:
+            yield console, launch.group()
+    finally:
+        proc.stop()
 
 
 def console_login(console, username, password):
@@ -67,7 +80,9 @@ def console_login(console, username, password):
         headers={"Origin": str(console.base_url).rstrip("/")},
         json={"username": username, "password": password},
     )
-    assert response.status_code == 200
+    assert response.status_code == 200, (
+        f"Console sign-in returned HTTP {response.status_code}"
+    )
     assert response.json().get("state") == "ready"
     assert set(response.json()) == {"state"}
 
