@@ -127,7 +127,7 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
 .node strong, .node small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .node small, .muted, #chat-status, #team-status { color: var(--muted); font-size: 12px; }
 #sessions .node:not(:hover,:focus-visible) .member-owner,
-#sessions .session-ready:not(:hover,:focus-visible) > span > small { display: none; }
+#sessions .session-ready:not(:hover,:focus-visible,[aria-expanded="true"]) > span > small { display: none; }
 #sessions .session-ready > span > small, .member-owner { color: var(--muted); font-size: 11px; }
 .empty { color: var(--muted); padding: 12px; text-align: center; }
 .detail {
@@ -372,10 +372,16 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
   .task-lane[data-selected="false"] { display: none; }
 }
 
-.session-panel { grid-template-rows: auto minmax(0, 1fr) auto auto auto auto; }
+.session-panel { grid-template-rows: auto minmax(0, 1fr) auto auto auto; }
+#session-menu {
+  position: fixed; z-index: 10; width: max-content; max-width: calc(100% - 12px);
+  max-height: calc(100% - 12px); overflow: auto; padding: 4px; border: 1px solid var(--edge);
+  border-radius: 7px; background: var(--panel); box-shadow: 0 8px 24px #0007;
+}
+#retire-identity { width: 100%; color: #efb095; text-align: left; }
+#retire-identity:focus-visible { outline-offset: -2px; }
 .retire-action {
-  justify-self: end; color: #efb095; border-color: #80584d;
-  background: #332825; white-space: normal;
+  color: #efb095; border-color: #80584d; background: #332825; white-space: normal;
 }
 #retired-sessions {
   max-height: min(30dvh, 240px); overflow: auto; scrollbar-width: thin; padding: 6px 8px;

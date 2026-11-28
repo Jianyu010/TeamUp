@@ -29,6 +29,13 @@ Collaboration owns [room leadership](focused-rooms.md#leadership) and membership
 - The existing account-owner route `POST /v1/members/{member_id}/retire` keeps its `{member_id,retired:true}` response. It and self-retirement execute the same Collaboration transaction. The transaction preserves member and message IDs, removes all room memberships, and discards pending inbox events and reminders. The same stable binding cannot register again, including with a different member token.
 - `teamup_retire_identity` calls IPC `retire_identity` without arguments. `teamup_leave_room` calls IPC `leave_room` with `room_id`. A retired binding reports `member_retired` for other operations. The local owner can also call `POST` on `/api/sessions/retire?session=ID` or `teamup-client sessions --config PATH retire HARNESS SESSION` through owner-only IPC `retire_session`. The coordinator sends the selected approved binding's member bearer for local owner actions. It persists the returned identity and local notification scope, cancels the identity's workers and removes it from the active or pinnable inventory. Approval and new operations on the retired binding return `member_retired`. Retrying retirement returns the cached receipt. A `GET` on `/api/workspace` provides a separate `retired_sessions` list with the public session ID, label, harness, member ID and role.
 
+The local Console opens retirement confirmation from the ready session card's
+context menu. The dialog uses the card's identity label, including the member ID
+qualifier for duplicate names. It focuses **Cancel** and returns focus to the
+session card when the owner cancels. On confirmation, the renderer verifies that
+the same ready session still represents that member before calling the Client's
+retirement route.
+
 ## History access
 
 The workspace places **Retired sessions** at the bottom of **My sessions**. Its entries open read-only history. A `GET` on `/api/retired?session=ID` lists conversations. Add `kind=room|dm`, `conversation=UUID` and an optional `before=ID` to read one page. Locally recorded notification history is also available by passing `after=ID` to the same route, including for legacy bindings. Session IDs and message cursors exposed to the renderer are opaque strings. The archived entry cannot select an actor or provide live membership.

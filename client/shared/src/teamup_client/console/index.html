@@ -53,7 +53,6 @@
           <button type="button" id="next-sessions" aria-controls="sessions">Next</button>
         </nav>
         <label id="wake-settings" class="checkbox-label" hidden><input id="wake-on-mention" type="checkbox"> Wake sessions by default</label>
-        <button type="button" id="retire-identity" class="retire-action" hidden>Retire selected identity</button>
         <details id="retired-sessions">
           <summary id="retired-summary">Retired sessions (0)</summary>
           <div id="retired-list"></div>
@@ -229,6 +228,9 @@
       <p id="login-preference-status" role="status" hidden></p>
     </footer>
   </main>
+  <div id="session-menu" role="group" aria-label="Session actions" hidden>
+    <button type="button" id="retire-identity">Retire identity…</button>
+  </div>
   <dialog id="retire-dialog" aria-labelledby="retire-title" aria-describedby="retire-description" class="session-dialog">
     <h2 id="retire-title">Retire this identity?</h2>
     <p id="retire-description"></p>

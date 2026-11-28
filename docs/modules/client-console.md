@@ -75,10 +75,14 @@ Active task participants appear first, followed by joined-room sessions and then
 the remaining registered sessions. Labels determine order within each group.
 
 Refresh keeps the selected session visible. Changing search, scope or page clears
-the selected session and its retirement action. The All sessions entry remains
-available when no registered sessions exist. Pagination changes presentation only:
-room inventory, member-name disambiguation, scoped read and action contexts, and
-Retired sessions continue to use all approved sessions and their existing rules.
+the selected session. The All sessions entry remains available when no registered
+sessions exist. Room inventory, member-name disambiguation, scoped read and action
+contexts, and Retired sessions continue to use all approved sessions.
+
+Right-click a ready session card or press Shift+F10 or the Context Menu key on it
+to open its actions. **Retire identity…** opens the confirmation for that card.
+The room links continue to follow the Workspace selection. Escape, an outside
+interaction, or a change that removes the card dismisses the menu.
 
 Workspace draws a membership connection only while the vertical midpoints of
 both cards are visible inside their scroll panels. Connections update as either
