@@ -18,15 +18,16 @@ ROOM_BOARD = "/api/room-board"
 
 
 @pytest.fixture
-def client_workspace(ws):
+def client_workspace(ws, request):
     password = new_secret()
     peer_key = new_secret()
     server = Server(ws, {"remote-owner": peer_key})
     account_cli(server, "create", "alice", password=password)
     server.start()
+    bindings = getattr(request, "param", 1)
     with (
         closing(Api(server.url, trust_env=False)) as api,
-        client_console(ws, server, "alice") as (developer, console, url),
+        client_console(ws, server, "alice", bindings=bindings) as (developer, console, url),
     ):
         enrollment = api.call(
             "POST",
@@ -291,6 +292,102 @@ def test_browser_client_signs_in(client_workspace):
         room_session(console, local)
 
 
+@pytest.mark.parametrize("client_workspace", [3], indirect=True)
+@pytest.mark.scenario("NS-15.12", "Browser selects and opens workspace rooms")
+def test_browser_selects_and_opens_workspace_rooms(client_workspace):
+    api, developer, console, url, password, local, peer = client_workspace
+    console_login(console, "alice", password)
+    enrollment = api.call(
+        "POST",
+        "/v1/auth/login",
+        json={"username": "alice", "password": password},
+    )["access_token"]
+    shared = api.create_room(peer, "Alpha shared room")
+    separate = api.create_room(local, "Zeta separate room")
+    preview = api.create_room(peer, "Directory room")
+    for label, binding in zip(
+        ("Local designer", "Local planner"), developer.bindings[1:], strict=True
+    ):
+        member = api.enroll(
+            enrollment,
+            label,
+            harness=binding["harness_instance_id"],
+            session=binding["session_key"],
+            token=binding["member_token"],
+        )
+        api.join(member, shared)
+        api.read_and_ack_board(member, shared)
+    api.read_and_ack_board(peer, shared)
+    api.send(peer, shared, "Shared planning transcript")
+
+    with browser_page(
+        str(console.base_url), redact=(password, url.split("#", 1)[1])
+    ) as (page, expect):
+        page.goto(url, wait_until="domcontentloaded")
+        stage = page.locator("#stage")
+        cards = page.locator("#rooms button[data-room]")
+        shared_card = page.locator(f'#rooms button[data-room="{shared}"]')
+        directory_card = page.locator(f'#rooms button[data-room="{preview}"]')
+        reviewer = page.locator("#sessions button").filter(has_text="Local reviewer")
+        related_sessions = page.locator("#sessions button.related strong")
+        wires = page.locator("#links path")
+        focused_wires = page.locator('#links path[data-focused="true"]')
+
+        expect(cards.first).to_have_attribute("data-room", shared)
+        expect(wires).to_have_count(3)
+        reviewer.click()
+        expect(cards.first).to_have_attribute("data-room", separate)
+        expect(focused_wires).to_have_count(1)
+
+        shared_button = shared_card.element_handle()
+        shared_card.click()
+        expect(stage).to_have_attribute("data-page", "workspace")
+        expect(shared_card).to_have_attribute("aria-pressed", "true")
+        assert shared_button.evaluate("(button) => button.isConnected")
+        expect(cards.first).to_have_attribute("data-room", separate)
+        expect(reviewer).to_have_attribute("aria-pressed", "false")
+        expect(reviewer).to_have_class(re.compile(r"\bdimmed\b"))
+        expect(page.locator("#retire-identity")).to_be_hidden()
+        expect(related_sessions).to_have_text(["Local designer", "Local planner"])
+        expect(wires).to_have_count(2)
+        expect(focused_wires).to_have_count(2)
+
+        search = page.get_by_role("searchbox", name="Find a session")
+        search.fill("planner")
+        expect(shared_card).to_have_attribute("aria-pressed", "true")
+        expect(related_sessions).to_have_text(["Local planner"])
+        expect(wires).to_have_count(1)
+        search.clear()
+        expect(wires).to_have_count(2)
+
+        shared_card.click()
+        expect(shared_card).to_have_attribute("aria-pressed", "false")
+        expect(related_sessions).to_have_count(0)
+        expect(wires).to_have_count(3)
+        expect(focused_wires).to_have_count(0)
+
+        directory_card.press("Space")
+        expect(directory_card).to_have_attribute("aria-pressed", "true")
+        expect(related_sessions).to_have_count(0)
+        expect(wires).to_have_count(0)
+
+        reviewer.click()
+        expect(reviewer).to_have_attribute("aria-pressed", "true")
+        expect(directory_card).to_have_attribute("aria-pressed", "false")
+        expect(cards.first).to_have_attribute("data-room", separate)
+        expect(focused_wires).to_have_count(1)
+        shared_card.dblclick()
+        expect(stage).to_have_attribute("data-page", "room")
+        expect(shared_card).to_have_attribute("aria-current", "page")
+        expect(page.locator("#messages")).to_contain_text("Shared planning transcript")
+
+        page.locator("#back").click()
+        expect(shared_card).to_have_attribute("aria-pressed", "true")
+        directory_card.press("Enter")
+        expect(page.locator("#room-id")).to_have_value(preview)
+        expect(page.locator("#room-preview")).to_contain_text("Copy the room ID")
+
+
 @pytest.mark.scenario("NS-15.08", "Browser displays assigned task details")
 def test_browser_displays_assignment_details(client_workspace):
     api, _, console, url, password, local, peer = client_workspace
@@ -317,7 +414,7 @@ def test_browser_displays_assignment_details(client_workspace):
         str(console.base_url), redact=(password, url.split("#", 1)[1])
     ) as (page, expect):
         page.goto(url, wait_until="domcontentloaded")
-        page.locator(f'#rooms button[data-room="{room}"]').click()
+        page.locator(f'#rooms button[data-room="{room}"]').dblclick()
         page.get_by_role("button", name="Tasks", exact=True).click()
         card = page.get_by_role("region", name="Available tasks").locator(".task-card")
         summary = card.locator("summary")
@@ -345,7 +442,7 @@ def test_browser_client_publishes_board(client_workspace):
         str(console.base_url), redact=(password, url.split("#", 1)[1])
     ) as (page, expect):
         page.goto(url, wait_until="domcontentloaded")
-        page.locator(f'#rooms button[data-room="{room}"]').click()
+        page.locator(f'#rooms button[data-room="{room}"]').dblclick()
         expect(page.locator("#messages")).to_contain_text("Review is in progress")
 
         board = page.get_by_role("button", name="Board", exact=True)
@@ -403,7 +500,7 @@ def test_browser_client_moves_tasks_between_lanes(client_workspace):
         str(console.base_url), redact=(password, url.split("#", 1)[1])
     ) as (page, expect):
         page.goto(url, wait_until="domcontentloaded")
-        page.locator(f'#rooms button[data-room="{room}"]').click()
+        page.locator(f'#rooms button[data-room="{room}"]').dblclick()
         page.get_by_role("button", name="Tasks", exact=True).click()
         available = page.get_by_role("region", name="Available tasks")
         taken = page.get_by_role("region", name="Taken tasks")
@@ -448,7 +545,7 @@ def child_names(api, member, room):
 
 
 def open_leave_dialog(page, expect, room, member_id):
-    page.locator(f'#rooms button[data-room="{room}"]').click()
+    page.locator(f'#rooms button[data-room="{room}"]').press("Enter")
     row = page.locator(f'#roster .member-row[data-member="{member_id}"]')
     row.hover()
     row.get_by_role("button", name="Leave this room").click()
@@ -472,7 +569,7 @@ def test_browser_creates_child_room_and_invites(client_workspace):
         str(console.base_url), redact=(password, url.split("#", 1)[1])
     ) as (page, expect):
         page.goto(url, wait_until="domcontentloaded")
-        page.locator(f'#rooms button[data-room="{room}"]').click()
+        page.locator(f'#rooms button[data-room="{room}"]').dblclick()
         page.get_by_role("button", name="Focused rooms").click()
         expect(page.locator("#focus-invite-member")).to_have_value(peer.member_id, timeout=12000)
         page.get_by_role("button", name="Send invitation").click()
