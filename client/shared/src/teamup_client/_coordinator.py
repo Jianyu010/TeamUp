@@ -165,8 +165,8 @@ OPERATIONS = {
     "confirm_room_leadership": Operation(
         "POST", "/rooms/{room_id}/leadership/confirm", LEADERSHIP
     ),
-    "join_room": Operation("POST", "/rooms/{room_id}/join", ROOM),
-    "leave_room": Operation("POST", "/rooms/{room_id}/leave", ROOM),
+    "join_room": Operation("POST", "/rooms/{room_id}/join", ROOM, {"client_request_id": MESSAGE_KEY}),
+    "leave_room": Operation("POST", "/rooms/{room_id}/leave", ROOM, {"client_request_id": MESSAGE_KEY}),
     "list_room_members": Operation("GET", "/rooms/{room_id}/members", ROOM),
     "remove_room_member": Operation(
         "POST",
@@ -269,6 +269,14 @@ class Lease:
 class Session:
     binding: Binding
     scope: str
+    revision: int
+    member_id: str | None = None
+    owner_id: str | None = None
+    retirement_generation: str | None = None
+    inconsistent: bool = False
+    identity_ready: asyncio.Event = field(default_factory=asyncio.Event)
+    verification: asyncio.Lock = field(default_factory=asyncio.Lock)
+    retirement: asyncio.Lock = field(default_factory=asyncio.Lock)
     inbox_changed: asyncio.Event = field(default_factory=asyncio.Event)
     registered: asyncio.Event = field(default_factory=asyncio.Event)
     presence_ready: asyncio.Event = field(default_factory=asyncio.Event)
@@ -279,6 +287,17 @@ class Session:
     @property
     def identity(self):
         return self.binding.harness_instance_id, self.binding.session_key
+
+
+@dataclass(frozen=True)
+class ConfirmedBinding:
+    session_id: str
+    member_id: str
+    token: str = field(repr=False)
+    scope: str
+    revision: int
+    server_profile: str
+    account_id: str
 
 
 def _valid(operation, params):
@@ -313,9 +332,17 @@ class Coordinator:
         self._server_url = config.server_url
         self._signed_in_console = signed_in_console and config.account_token is not None
         self._account_token = config.account_token
+        self._account_verification = asyncio.Lock()
+        self._account_verified = False
+        self._account_owner = None
         self._registration_token = config.account_token or config.enrollment_key
-        self._legacy_enrollment = config.enrollment_key is not None
         self._owner_key = owner_key(config)
+        server_socket = getattr(config, "server_socket", None)
+        profile = f"{self._server_url}\0{server_socket or ''}"
+        self._server_profile = hashlib.sha256(profile.encode()).hexdigest()
+        self._state_profile = self._server_url if server_socket is None else self._server_profile
+        self._room_commands = None
+        self._room_invalidator = None
         self._upstream = upstream
         self._notices = notices
         self._notice_output = notice_output
@@ -334,10 +361,12 @@ class Coordinator:
         self._install_harnesses = {
             install.harness_instance_id for install in config.installs
         }
-        self._leases = {}
+        self._leases: dict[tuple[str, str], Lease] = {}
         self._watching = False
-        self._sessions = {}
-        self._retired = notices.retired_sessions(self._server_url)
+        self._sessions: dict[tuple[str, str], Session] = {}
+        self._revision = 0
+        self._retired = notices.retired_sessions(self._state_profile)
+        self._authorized_legacy_archives: set[str] = set()
         self._pending_retirements: dict[tuple[str, str], tuple[Session, dict]] = {}
         for binding in config.bindings:
             if (binding.harness_instance_id, binding.session_key) not in self._retired:
@@ -363,11 +392,273 @@ class Coordinator:
         )
 
     def _add_session(self, binding):
-        session = Session(binding, binding_scope(self._server_url, binding))
+        scope = binding_scope(self._state_profile, binding)
+        member, owner, retirement = self._notices.binding_member(scope) or (None, None, None)
+        self._revision += 1
+        session = Session(
+            binding, scope, self._revision, member_id=member, owner_id=owner,
+            retirement_generation=retirement,
+        )
+        if member is None and not self._signed_in_console:
+            session.identity_ready.set()
         self._sessions[session.identity] = session
         if self._watching:
             self._start(session)
         return session
+
+    def _advance_binding(self, session):
+        self._revision += 1
+        session.revision = self._revision
+
+    def _suspend_binding(self, session, *, inconsistent=False):
+        changed = inconsistent and not session.inconsistent
+        if session.identity_ready.is_set() or session.inconsistent != inconsistent:
+            self._advance_binding(session)
+        session.inconsistent = inconsistent
+        session.identity_ready.clear()
+        session.presence_ready.clear()
+        session.inbox_changed.set()
+        if changed:
+            self._invalidate_binding(session)
+
+    def _suspended(self, session):
+        return (
+            session.retirement_generation is not None
+            or session.identity in self._pending_retirements
+        )
+
+    def _require_approved(self, session):
+        if session.identity in self._retired or session.identity in self._pending_retirements:
+            raise self._retired_error()
+        if session.retirement_generation is not None:
+            raise self._retirement_pending_error()
+        if self._sessions.get(session.identity) is not session:
+            raise ClientError("not_found", "Unknown or unapproved session")
+
+    @staticmethod
+    def _member_changed():
+        return ClientError("member_identity_changed", "The approved TeamUp member has changed")
+
+    def _require_binding(self, session, revision=None):
+        self._require_approved(session)
+        if session.inconsistent:
+            raise self._member_changed()
+        if not session.identity_ready.is_set() or (
+            revision is not None and revision != session.revision
+        ):
+            raise unavailable()
+
+    async def verify_account(self):
+        """Resolve the signed-in Console's owner once for this activation."""
+        if not self._signed_in_console:
+            return None
+        async with self._account_verification:
+            if not self._account_verified:
+                try:
+                    capabilities = await self._upstream.request(
+                        "GET", "/auth/capabilities", self._account_token,
+                        query={"include_owner": "true"}, member_auth=False,
+                    )
+                except ClientError as exc:
+                    if exc.code != "not_found":
+                        raise
+                    capabilities = {}
+                owner_id = capabilities.get("owner_id")
+                if "owner_id" in capabilities and not is_string(owner_id, 256):
+                    raise unavailable()
+                self._account_owner = owner_id
+                self._account_verified = True
+        return self._account_owner
+
+    async def verify_console_bindings(self):
+        """Populate the first workspace with bindings checked at sign-in."""
+        if not self._signed_in_console:
+            return
+        await self.verify_account()
+        reads = asyncio.Semaphore(8)
+
+        async def verify(identity):
+            async with reads:
+                await self.confirmed_binding(self._console_id(identity))
+
+        async def verify_archive(record):
+            async with reads:
+                with suppress(ClientError, OSError):
+                    await self._authorize_legacy_archive(record["scope"], record["member_id"])
+
+        archives = [
+            record for record in self._retired.values() if record.get("owner_id") is None
+        ]
+        with suppress(TimeoutError):
+            async with asyncio.timeout(3):
+                await asyncio.gather(
+                    *(verify(identity) for identity in tuple(self._sessions)),
+                    *(verify_archive(record) for record in archives),
+                )
+
+    async def _verify_session_owner(self, session, owner_id):
+        if self._signed_in_console and owner_id is not None and await self.verify_account() != owner_id:
+            self._suspend_binding(session, inconsistent=True)
+            raise self._member_changed()
+
+    async def _confirm_member(self, session, profile, owner_id=None):
+        self._require_approved(session)
+        member_id = profile.get("member_id")
+        if not is_uuid(member_id):
+            if session.member_id is not None:
+                self._suspend_binding(session, inconsistent=session.inconsistent)
+            raise unavailable()
+        member_id = member_id.lower()
+        if session.member_id is not None and session.member_id != member_id:
+            self._suspend_binding(session, inconsistent=True)
+            raise self._member_changed()
+        await self._verify_session_owner(session, owner_id or session.owner_id)
+        self._require_approved(session)
+        if owner_id is not None:
+            if not is_string(owner_id, 256):
+                raise unavailable()
+            if session.owner_id is not None and session.owner_id != owner_id:
+                self._suspend_binding(session, inconsistent=True)
+                raise self._member_changed()
+        if session.member_id is None or (owner_id is not None and session.owner_id is None):
+            association = self._notices.confirm_binding_member(session.scope, member_id, owner_id)
+            session.member_id, session.owner_id, session.retirement_generation = association
+            self._require_approved(session)
+            self._advance_binding(session)
+            if member_id != session.member_id or (owner_id is not None and owner_id != session.owner_id):
+                self._suspend_binding(session, inconsistent=True)
+                raise self._member_changed()
+        if session.inconsistent:
+            # Retry invalidation if the store failed during suspension.
+            self._invalidate_binding(session)
+            session.inconsistent = False
+        if not session.identity_ready.is_set():
+            session.notices_changed.set()
+            session.harness_changed.set()
+        session.identity_ready.set()
+        session.presence_ready.set()
+        return profile
+
+    async def _read_member(self, session):
+        self._require_approved(session)
+        try:
+            profile = await self._upstream.request(
+                "GET", "/members/me", session.binding.member_token,
+                query={"include_owner": "true"},
+            )
+        except ClientError as exc:
+            self._require_approved(session)
+            if exc.code in {"not_registered", "unauthorized"}:
+                if await self._sync_retirement(session):
+                    raise self._retired_error() from None
+                self._require_approved(session)
+                if session.member_id is not None:
+                    self._suspend_binding(session, inconsistent=True)
+                    raise self._member_changed() from None
+            elif session.member_id is not None and not session.inconsistent:
+                self._suspend_binding(session)
+            raise
+        owner_id = profile.get("owner_id")
+        if ("owner_id" in profile or self._account_owner is not None) and not is_string(owner_id, 256):
+            self._suspend_binding(session, inconsistent=session.inconsistent)
+            raise unavailable()
+        profile = dict(profile)
+        profile.pop("owner_id", None)
+        return await self._confirm_member(session, profile, owner_id)
+
+    async def _verify_member(self, session):
+        async with session.verification:
+            return await self._read_member(session)
+
+    def _binding(self, session):
+        self._require_binding(session)
+        return self._binding_snapshot(session)
+
+    def _binding_snapshot(self, session):
+        assert session.member_id is not None
+        # A legacy Server without owner information still identifies the binding
+        # by its scoped member credential.
+        return ConfirmedBinding(
+            self._console_id(session.identity), session.member_id, session.binding.member_token,
+            session.scope, session.revision, self._server_profile, session.owner_id or session.scope,
+        )
+
+    async def confirmed_binding(self, session_id: str) -> ConfirmedBinding | None:
+        """Check the current member for an approved binding without enrolling it."""
+        session = self._console_session(session_id)
+        if session is None:
+            return None
+        try:
+            await self._verify_member(session)
+            return self._binding(session)
+        except (ClientError, OSError, sqlite3.Error):
+            return None
+
+    def binding_current(self, binding: ConfirmedBinding) -> bool:
+        """Check local authorization and revision before using a captured binding."""
+        session = self._console_session(binding.session_id)
+        if session is None or session.member_id is None:
+            return False
+        try:
+            return self._binding(session) == binding
+        except ClientError:
+            return False
+
+    def set_room_commands(self, commands):
+        self._room_commands = commands
+
+    def set_room_invalidator(self, invalidate):
+        self._room_invalidator = invalidate
+
+    def _invalidate_rooms(self, session, room_id=None):
+        if self._room_invalidator is not None and session.member_id is not None:
+            self._room_invalidator(self._binding_snapshot(session), room_id)
+
+    def _invalidate_binding(self, session):
+        if self._room_commands is not None and session.member_id is not None:
+            binding = self._binding_snapshot(session)
+            self._room_commands.invalidate_member(
+                binding.server_profile, binding.account_id, binding.member_id
+            )
+        self._invalidate_rooms(session)
+
+    async def room_command(self, session_id, method, params):
+        if self._room_commands is None or not self._room_commands.supports(method):
+            return None
+        session = self._console_session(session_id)
+        if session is None:
+            raise ClientError("not_found", "Unknown or unapproved session")
+        await self._verify_member(session)
+        return await self._dispatch_room_command(session, method, params)
+
+    def room_archived(self, session_id, room_id):
+        if self._console_session(session_id) is None:
+            return
+        for session in self._sessions.values():
+            self._room_access_ended(session, room_id, archived=True)
+
+    def _room_access_ended(self, session, room_id, *, membership_id=None, archived=False):
+        self._invalidate_rooms(session, room_id)
+        if (self._room_commands is not None and session.member_id is not None
+                and (archived or membership_id is not None)):
+            binding = self._binding_snapshot(session)
+            self._room_commands.invalidate_room(
+                binding.server_profile, binding.account_id, binding.member_id, room_id,
+                membership_id=membership_id,
+            )
+
+    async def _dispatch_room_command(self, session, method, params):
+        binding = self._binding(session)
+        commands = self._room_commands
+        assert commands is not None
+        try:
+            result = await commands.execute(binding, method, params)
+        except ClientError as exc:
+            if exc.code == "member_identity_changed" and self.binding_current(binding):
+                self._suspend_binding(session, inconsistent=True)
+            raise
+        self._require_binding(session, binding.revision)
+        return result
 
     def _identity(self, key, session_ref):
         if identity := self._static.get(key):
@@ -458,8 +749,13 @@ class Coordinator:
         ):
             raise ClientError("invalid_request", "Invalid session attachment")
         identity, _ = self._identity(key, session_ref)
+        session = self._sessions.get(identity)
         if identity in self._retired or identity in self._pending_retirements:
             raise self._retired_error()
+        if session is not None and session.retirement_generation is not None:
+            raise self._retirement_pending_error()
+        if session is not None and session.inconsistent:
+            raise self._member_changed()
         lease = self._set_lease(
             identity, Lease("claude-code", params["address"], params["token"])
         )
@@ -491,7 +787,7 @@ class Coordinator:
             )
         identity, install = self._identity(key, session_ref)
         if retired := self._retired.get(identity):
-            if method == "retire_identity":
+            if method == "retire_identity" and self._visible_retired(retired):
                 return self._retirement_receipt(retired)
             raise self._retired_error()
         if pending := self._pending_retirements.get(identity):
@@ -504,6 +800,19 @@ class Coordinator:
         binding = session.binding
         if method == "retire_identity":
             return await self._retire(session)
+
+        if self._suspended(session):
+            if await self._sync_retirement(session):
+                raise self._retired_error()
+            raise self._retirement_pending_error()
+        if method == "register":
+            return await self._register(session, operation, params)
+
+        durable = self._room_commands is not None and self._room_commands.supports(method)
+        if session.member_id is not None or durable or self._signed_in_console:
+            await self._verify_member(session)
+        self._require_binding(session)
+        revision = session.revision if session.member_id is not None else None
 
         if method == "notifications":
             notices = self._notices.page(
@@ -520,18 +829,6 @@ class Coordinator:
             if room_notices := self._notices.unread_room_notices(session.scope):
                 counts["unread_room_notices"] = room_notices
             return counts
-        if method == "register":
-            try:
-                result = await self._register(binding, operation, params)
-            except ClientError as exc:
-                if exc.code == "member_retired":
-                    await self._sync_retirement(session)
-                raise
-            session.registered.set()
-            session.presence_ready.set()
-            self._remember_members(session.scope, [result])
-            return result
-
         path = operation.route.format(**params)
         fields = {
             name: value
@@ -540,25 +837,47 @@ class Coordinator:
         }
         if method == "list_room_members":
             fields["include_membership"] = "true"
+        if method in {"join_room", "leave_room"}:
+            fields.pop("client_request_id", None)
         try:
-            if operation.verb == "GET":
+            if durable:
+                result = await self._dispatch_room_command(session, method, params)
+            else:
+                result = None
+            self._require_binding(session, revision)
+            if result is None and operation.verb == "GET":
                 result = await self._upstream.request(
                     operation.verb, path, binding.member_token, query=fields
                 )
-            else:
+            elif result is None:
                 result = await self._upstream.request(
                     operation.verb, path, binding.member_token, body=fields or None
                 )
         except ClientError as exc:
-            if exc.code == "not_registered" and await self._sync_retirement(session):
-                raise self._retired_error() from None
+            if exc.code == "not_registered":
+                if await self._sync_retirement(session):
+                    raise self._retired_error() from None
+                if session.member_id is not None:
+                    self._suspend_binding(session, inconsistent=True)
+                    raise self._member_changed() from None
             raise
-        if identity in self._retired or identity in self._pending_retirements:
-            raise self._retired_error()
+        # Legacy work started before the first member read can finish in the
+        # same approved session. Work with a captured actor must match exactly.
+        self._require_binding(session, revision)
         if method == "ack_board":
             session.inbox_changed.set()
         elif method in ("create_room", "create_linked_room", "join_room"):
             self._remember_room(session.scope, result)
+        elif method == "leave_room":
+            self._room_access_ended(session, params["room_id"])
+        elif method == "archive_room":
+            self.room_archived(self._console_id(session.identity), params["room_id"])
+        elif method == "remove_room_member":
+            for target in self._sessions.values():
+                if target.member_id == params["member_id"]:
+                    self._room_access_ended(
+                        target, params["room_id"], membership_id=params["membership_id"]
+                    )
         elif method == "find_members" and isinstance(result.get("members"), list):
             self._remember_members(session.scope, result["members"])
         return result
@@ -571,25 +890,31 @@ class Coordinator:
             return {"sessions": self._session_report()}
         identity = (params["harness_instance_id"], params["session_key"])
         if retired := self._retired.get(identity):
-            if method == "retire_session":
+            if method == "retire_session" and self._visible_retired(retired):
                 return self._retirement_receipt(retired)
             raise self._retired_error()
         if identity in self._pending_retirements and method != "retire_session":
             raise self._retired_error()
+        session = self._sessions.get(identity)
+        if session is not None and self._suspended(session) and method != "retire_session":
+            raise self._retirement_pending_error()
         if method in {"leave_session_room", "retire_session"}:
             return await self._session_action(identity, params.get("room_id"))
         if method == "decide_session":
-            if identity[0] not in self._install_harnesses or not (
-                self._notices.decide_session(*identity, params["state"])
-            ):
+            if identity[0] not in self._install_harnesses:
                 raise ClientError("not_found", "Unknown session")
-            session = self._sessions.get(identity)
-            if params["state"] == "approved" and session is None:
+            state = params["state"]
+            if state == "rejected" and session is not None:
+                # Persist outbox revocation before recording a rejection that can be reversed.
+                self._invalidate_binding(session)
+            if not self._notices.decide_session(*identity, state):
+                raise ClientError("not_found", "Unknown session")
+            if state == "approved" and session is None:
                 row = self._notices.session(*identity)
                 self._add_session(self._session_binding(row))
-            elif params["state"] == "rejected" and session is not None:
+            elif state == "rejected" and session is not None:
                 self._stop(self._sessions.pop(identity))
-            return {"state": params["state"]}
+            return {"state": state}
         if identity not in self._sessions:
             raise ClientError("not_found", "Unknown or unapproved session")
         self._notices.set_wake(*identity, params["rooms"], params["senders"])
@@ -599,6 +924,10 @@ class Coordinator:
     @staticmethod
     def _retired_error():
         return ClientError("member_retired", "This TeamUp identity has been retired")
+
+    @staticmethod
+    def _retirement_pending_error():
+        return ClientError("retirement_pending", "This TeamUp identity is awaiting retirement confirmation")
 
     @staticmethod
     def _retirement_receipt(profile):
@@ -615,13 +944,22 @@ class Coordinator:
             and ROLE(receipt.get("role_description"))
         ):
             raise unavailable()
+        if session.member_id is not None and receipt["member_id"].lower() != session.member_id:
+            self._suspend_binding(session, inconsistent=True)
+            raise self._member_changed()
+        if session.retirement_generation is not None and (
+            receipt.get("server_generation") != session.retirement_generation
+        ):
+            raise unavailable()
         identity = session.identity
         if identity not in self._retired:
             lease = self._leases.get(identity)
             harness = lease.kind if lease else identity[0]
             self._pending_retirements[identity] = session, receipt
+            self._suspend_binding(session)
+            self._invalidate_binding(session)
             self._notices.retire_session(
-                self._server_url, identity, session.scope, harness, receipt
+                self._state_profile, identity, session.scope, harness, receipt
             )
             del self._pending_retirements[identity]
             self._leases.pop(identity, None)
@@ -629,10 +967,36 @@ class Coordinator:
                 **self._retirement_receipt(receipt),
                 "scope": session.scope,
                 "harness": harness,
+                "owner_id": session.owner_id,
             }
             if active := self._sessions.pop(identity, None):
                 self._stop(active)
         return self._retirement_receipt(receipt)
+
+    @staticmethod
+    def _retirement_capture(session):
+        if session.retirement_generation is None:
+            return None
+        return {
+            "expected_member_id": session.member_id,
+            "server_generation": session.retirement_generation,
+        }
+
+    async def _lookup_retirement(self, session):
+        await self._verify_session_owner(session, session.owner_id)
+        receipt = await self._upstream.request(
+            "GET", "/members/me/retirement", session.binding.member_token,
+            **({"query": capture} if (capture := self._retirement_capture(session)) else {}),
+        )
+        await self._authorize_retirement_archive(session, receipt)
+        return receipt
+
+    async def _authorize_retirement_archive(self, session, receipt):
+        if self._signed_in_console and session.owner_id is None:
+            member_id = receipt.get("member_id")
+            if receipt.get("retired") is not True or not is_uuid(member_id):
+                raise unavailable()
+            await self._authorize_legacy_archive(session.scope, member_id)
 
     async def _sync_retirement(self, session):
         if session.identity in self._retired:
@@ -640,9 +1004,7 @@ class Coordinator:
         try:
             pending = self._pending_retirements.get(session.identity)
             if pending is None:
-                receipt = await self._upstream.request(
-                    "GET", "/members/me/retirement", session.binding.member_token
-                )
+                receipt = await self._lookup_retirement(session)
             else:
                 _, receipt = pending
             self._archive_session(session, receipt)
@@ -654,36 +1016,118 @@ class Coordinator:
         return True
 
     async def _retire(self, session):
-        pending = self._pending_retirements.get(session.identity)
-        if pending is None:
-            receipt = await self._upstream.request(
-                "POST", "/members/me/retire", session.binding.member_token
-            )
+        async with session.retirement:
+            try:
+                return await self._retire_session(session)
+            except sqlite3.Error:
+                raise unavailable() from None
+
+    async def _retire_session(self, session):
+        if retired := self._retired.get(session.identity):
+            if not self._visible_retired(retired):
+                raise self._member_changed()
+            return self._retirement_receipt(retired)
+        if pending := self._pending_retirements.get(session.identity):
+            return self._archive_session(session, pending[1])
+        if session.retirement_generation is not None:
+            try:
+                receipt = await self._lookup_retirement(session)
+            except ClientError as exc:
+                if exc.code != "not_found":
+                    raise
+                if await self._read_retirement_generation(session) != session.retirement_generation:
+                    raise ClientError("server_generation_changed", "The TeamUp Server has changed")
+            else:
+                return self._archive_session(session, receipt)
         else:
-            _, receipt = pending
+            await self._prepare_retirement(session)
+        if retired := self._retired.get(session.identity):
+            return self._retirement_receipt(retired)
+        capture = self._retirement_capture(session)
+        receipt = await self._upstream.request(
+            "POST", "/members/me/retire", session.binding.member_token,
+            **({"body": capture} if capture else {}),
+        )
+        await self._authorize_retirement_archive(session, receipt)
+        return self._archive_session(session, receipt)
+
+    async def _prepare_retirement(self, session):
         try:
-            return self._archive_session(session, receipt)
-        except sqlite3.Error:
-            raise unavailable() from None
+            await self._verify_member(session)
+        except ClientError as exc:
+            if exc.code == "member_retired" and session.identity in self._retired:
+                return
+            raise
+        revision = session.revision
+        generation = await self._read_retirement_generation(session)
+        self._require_binding(session, revision)
+        if generation is None:
+            return
+        association = self._notices.begin_retirement(session.scope, session.member_id, generation)
+        if association != (session.member_id, session.owner_id, generation):
+            raise unavailable()
+        session.retirement_generation = generation
+        self._suspend_binding(session)
+        self._invalidate_rooms(session)
+
+    async def _read_retirement_generation(self, session):
+        try:
+            capabilities = await self._upstream.request(
+                "GET", "/sync/capabilities", session.binding.member_token
+            )
+        except ClientError as exc:
+            if exc.code != "not_found":
+                raise
+            return None
+        generation = capabilities.get("server_generation")
+        if type(capabilities.get("version")) is not int or capabilities["version"] != 1 or not (
+            is_string(generation, 256)
+        ):
+            raise unavailable()
+        return generation
 
     async def _session_action(self, identity, room_id, membership_id=None):
         if pending := self._pending_retirements.get(identity):
             if room_id is not None:
                 raise self._retired_error()
-            session, _ = pending
-            return await self._retire(session)
+            return await self._retire(pending[0])
         session = self._sessions.get(identity)
         if session is None:
             raise ClientError("not_found", "Unknown or unapproved session")
         if room_id is None:
             return await self._retire(session)
+        durable = self._room_commands is not None and self._room_commands.supports("leave_room")
+        if session.member_id is not None or durable or self._signed_in_console:
+            await self._verify_member(session)
+        self._require_binding(session)
+        revision = session.revision
+        result = None
+        if durable:
+            params = {"room_id": room_id, "notify": True}
+            if membership_id is not None:
+                params["membership_id"] = membership_id
+            result = await self._dispatch_room_command(session, "leave_room", params)
+            self._require_binding(session, revision)
+        if result is None:
+            result = await self._leave_session(session, room_id, membership_id, revision)
+        self._require_binding(session, revision)
+        self._room_access_ended(session, room_id)
+        event_id = result.get("departure_event_id")
+        if is_integer(event_id, 1, 2**63 - 1):
+            self._record_departure(session.scope, event_id, room_id)
+            job = asyncio.create_task(self._deliver_departure(session, room_id))
+            session.workers.append(job)
+            job.add_done_callback(session.workers.remove)
+        session.inbox_changed.set()
+        return {"room_id": room_id}
+
+    async def _leave_session(self, session, room_id, membership_id, revision):
         if membership_id is None:
             listing = await self._upstream.request(
                 "GET", "/rooms", session.binding.member_token,
                 query={"include_membership": "true"},
             )
-            if self._sessions.get(identity) is not session:
-                raise ClientError("not_found", "Unknown or unapproved session")
+            self._require_binding(session, revision)
             room = next(
                 (room for room in listing["rooms"] if room["room_id"] == room_id), None
             )
@@ -693,22 +1137,34 @@ class Coordinator:
         query = {"notify": "true"}
         if membership_id is not None:
             query["membership_id"] = membership_id
-        result = await self._upstream.request(
+        return await self._upstream.request(
             "POST", f"/rooms/{room_id}/leave", session.binding.member_token, query=query
         )
-        event_id = result.get("departure_event_id")
-        if is_integer(event_id, 1, 2**63 - 1):
-            self._record_departure(session.scope, event_id, room_id)
-            if self._sessions.get(identity) is session:
-                job = asyncio.create_task(self._deliver_departure(session, room_id))
-                session.workers.append(job)
-                job.add_done_callback(session.workers.remove)
-        session.inbox_changed.set()
-        return {"room_id": room_id}
 
     @staticmethod
     def _console_id(identity):
         return hashlib.sha256(json.dumps(identity).encode()).hexdigest()
+
+    def _console_session(self, session_id):
+        return next(
+            (session for identity, session in self._sessions.items()
+             if self._console_id(identity) == session_id),
+            None,
+        )
+
+    def _visible_retired(self, profile):
+        if not self._signed_in_console:
+            return True
+        owner_id = profile.get("owner_id")
+        if owner_id is None:
+            return profile["scope"] in self._authorized_legacy_archives
+        return owner_id == self._account_owner
+
+    async def _authorize_legacy_archive(self, scope, member_id):
+        await self._upstream.request(
+            "GET", f"/members/{member_id}/archive", self._account_token, member_auth=False
+        )
+        self._authorized_legacy_archives.add(scope)
 
     def console_retired_sessions(self) -> list[dict]:
         return [
@@ -720,6 +1176,7 @@ class Coordinator:
                 "role_description": item["role_description"],
             }
             for identity, item in sorted(self._retired.items())
+            if self._visible_retired(item)
         ]
 
     async def console_session_action(
@@ -727,7 +1184,7 @@ class Coordinator:
     ) -> dict:
         if room_id is None:
             for identity, profile in self._retired.items():
-                if self._console_id(identity) == session_id:
+                if self._console_id(identity) == session_id and self._visible_retired(profile):
                     return {"state": "ready", **self._retirement_receipt(profile)}
         for identity in self._sessions.keys() | self._pending_retirements.keys():
             if self._console_id(identity) == session_id:
@@ -749,6 +1206,10 @@ class Coordinator:
             None,
         )
         if record is None:
+            raise ClientError("not_found", "Unknown retired session")
+        if self._signed_in_console and record.get("owner_id") is None:
+            await self._authorize_legacy_archive(record["scope"], record["member_id"])
+        if not self._visible_retired(record):
             raise ClientError("not_found", "Unknown retired session")
         page_size = 30
         if after is not None:
@@ -845,9 +1306,10 @@ class Coordinator:
                 else identity[0],
                 identity[1],
                 session.binding.member_token,
+                session.revision,
             )
             for identity, session in sorted(self._sessions.items())
-            if identity not in self._pending_retirements
+            if session.identity_ready.is_set() and not self._suspended(session)
         )
 
     def _session_report(self):
@@ -859,6 +1321,11 @@ class Coordinator:
         report = []
         identities.update(dict.fromkeys(self._retired, "retired"))
         identities.update(dict.fromkeys(self._pending_retirements, "retired"))
+        for identity, session in self._sessions.items():
+            if session.retirement_generation is not None:
+                identities[identity] = "retirement_pending"
+            elif session.inconsistent:
+                identities[identity] = "inconsistent"
         for identity, state in sorted(identities.items()):
             lease = self._leases.get(identity)
             report.append(
@@ -889,31 +1356,45 @@ class Coordinator:
             ],
         )
 
-    async def _register(self, binding, operation, params):
-        if not self._legacy_enrollment:
+    async def _register(self, session, operation, params):
+        async with session.verification:
             try:
-                return await self._upstream.request(
-                    "GET", "/members/me", binding.member_token
-                )
+                profile = await self._read_member(session)
             except ClientError as exc:
-                if exc.code != "not_registered":
+                if exc.code not in {"not_registered", "unauthorized"}:
                     raise
+                profile = await self._enroll(session, operation, params)
+            session.registered.set()
+            self._remember_members(session.scope, [profile])
+            return profile
+
+    async def _enroll(self, session, operation, params):
+        self._require_approved(session)
         if self._registration_token is None:
             raise ClientError(
                 "unauthorized", "Run teamup-client login to register this binding"
             )
-        return await self._upstream.request(
-            operation.verb,
-            operation.route,
-            self._registration_token,
-            body={
-                **params,
-                "harness_instance_id": binding.harness_instance_id,
-                "session_key": binding.session_key,
-                "member_token": binding.member_token,
-            },
-            member_auth=False,
-        )
+        binding = session.binding
+        owner_id = await self.verify_account()
+        self._require_approved(session)
+        try:
+            profile = await self._upstream.request(
+                operation.verb,
+                operation.route,
+                self._registration_token,
+                body={
+                    **params,
+                    "harness_instance_id": binding.harness_instance_id,
+                    "session_key": binding.session_key,
+                    "member_token": binding.member_token,
+                },
+                member_auth=False,
+            )
+        except ClientError as exc:
+            if exc.code == "member_retired":
+                await self._sync_retirement(session)
+            raise
+        return await self._confirm_member(session, profile, owner_id)
 
     # Workers ----------------------------------------------------------------
 
@@ -955,18 +1436,20 @@ class Coordinator:
         delay = 0.25
         while True:
             try:
-                await self._upstream.request("GET", "/members/me", binding.member_token)
-                session.presence_ready.set()
-                async with self._upstream.events(binding.member_token) as lines:
-                    await self._drain_with_hints(binding, session, lines)
-                delay = 0.25
-            except ClientError as exc:
-                if exc.code == "not_registered":
+                if self._suspended(session):
                     await self._sync_retirement(session)
-                    if session.identity in self._retired:
-                        return
+                else:
+                    await self._verify_member(session)
+                    async with self._upstream.events(binding.member_token) as lines:
+                        await self._watch_stream(binding, session, lines)
+                    delay = 0.25
+            except ClientError as exc:
+                if exc.code == "not_registered" and session.member_id is not None:
+                    self._suspend_binding(session, inconsistent=session.inconsistent)
             except (OSError, OverflowError, sqlite3.Error):
                 pass
+            if session.identity in self._retired:
+                return
             try:
                 async with asyncio.timeout(delay):
                     await session.registered.wait()
@@ -975,11 +1458,24 @@ class Coordinator:
                 delay = min(delay * 2, 5)
             session.registered.clear()
 
+    async def _watch_stream(self, binding, session, lines):
+        request = partial(self._bound_request, session, session.revision)
+        if self._room_commands is None:
+            await self._drain_with_hints(binding, session, lines, request)
+            return
+        recovery = asyncio.create_task(self._room_commands.retry_pending(self._binding(session)))
+        try:
+            await self._drain_with_hints(binding, session, lines, request)
+        finally:
+            recovery.cancel()
+            await asyncio.gather(recovery, return_exceptions=True)
+
     async def _publish_presence(self, binding, session):
         ready = session.presence_ready
         loop = asyncio.get_running_loop()
         await ready.wait()
         while True:
+            await session.identity_ready.wait()
             ready.clear()
             renew_at = loop.time() + PRESENCE_INTERVAL
             try:
@@ -988,26 +1484,34 @@ class Coordinator:
                 )
             except ClientError as exc:
                 if exc.code in ("not_registered", "unauthorized"):
-                    # A new successful member check or registration must rearm it.
-                    await ready.wait()
+                    # Closing this drain forces the watcher to recheck the member.
+                    self._suspend_binding(session, inconsistent=session.inconsistent)
                     continue
             except OSError:
                 pass
             await asyncio.sleep(max(0, renew_at - loop.time()))
 
-    async def _drain_with_hints(self, binding, session, lines):
+    async def _bound_request(self, session, revision, method, path, token, **kwargs):
+        self._require_binding(session, revision)
+        result = await self._upstream.request(method, path, token, **kwargs)
+        self._require_binding(session, revision)
+        return result
+
+    async def _drain_with_hints(self, binding, session, lines, request):
         wake = session.inbox_changed
         reminder_wake = asyncio.Event()
         room_wake = asyncio.Event()
         reader = asyncio.create_task(self._read_hints(lines, wake, reminder_wake, room_wake))
         reminders = asyncio.create_task(
-            self._watch_task_reminders(binding, reminder_wake)
+            self._watch_task_reminders(binding, reminder_wake, request)
         )
-        room_notices = asyncio.create_task(self._watch_room_notices(binding, session, room_wake))
+        room_notices = asyncio.create_task(
+            self._watch_room_notices(binding, session, room_wake, request)
+        )
         try:
             while True:
                 wake.clear()
-                await self._drain(binding.member_token, session)
+                await self._drain(binding.member_token, session, request)
                 if reader.done():
                     await reader
                     return
@@ -1018,7 +1522,7 @@ class Coordinator:
             room_notices.cancel()
             await asyncio.gather(reader, reminders, room_notices, return_exceptions=True)
 
-    async def _watch_room_notices(self, binding, session, wake):
+    async def _watch_room_notices(self, binding, session, wake, request):
         def record(notice):
             if self._notices.record_room_notice(session.scope, notice):
                 self._notice_output.emit({key: val for key, val in notice.items() if key != "text"})
@@ -1028,7 +1532,7 @@ class Coordinator:
             wake.clear()
             try:
                 if not await drain_room_notices(
-                    self._upstream.request, binding.member_token, record
+                    request, binding.member_token, record
                 ):
                     return
             except (ClientError, OSError, OverflowError, sqlite3.Error):
@@ -1038,12 +1542,12 @@ class Coordinator:
             with suppress(TimeoutError):
                 await asyncio.wait_for(wake.wait(), timeout=retry_delay)
 
-    async def _watch_task_reminders(self, binding, wake):
+    async def _watch_task_reminders(self, binding, wake, request):
         while True:
             wake.clear()
             try:
                 if not await drain_task_reminders(
-                    self._upstream.request, binding.member_token, self._notifier.show
+                    request, binding.member_token, self._notifier.show
                 ):
                     return
             except (ClientError, OSError, OverflowError):
@@ -1071,14 +1575,14 @@ class Coordinator:
             for wake in wakes:
                 wake.set()
 
-    async def _drain(self, token, session):
+    async def _drain(self, token, session, request):
         scope = session.scope
         after = 0
         limit = 100
         kinds = "message,mention,dm,room_left"
         while True:
             try:
-                page = await self._upstream.request(
+                page = await request(
                     "GET", "/inbox", token, query={"after": after, "limit": limit, "kinds": kinds}
                 )
             except ClientError as exc:
@@ -1102,7 +1606,8 @@ class Coordinator:
                     room_id = event.get("room_id")
                     if not is_uuid(room_id):
                         raise unavailable()
-                    self._record_departure(scope, event_id, room_id)
+                    if self._record_departure(scope, event_id, room_id):
+                        self._invalidate_rooms(session, room_id)
                 elif event["kind"] == "dm":
                     # A DM notice is typed and body-free: no desktop or wake
                     # pipeline, and no session authorization change.
@@ -1118,7 +1623,7 @@ class Coordinator:
                         session.notices_changed.set()
                         session.harness_changed.set()
                 try:
-                    await self._upstream.request(
+                    await request(
                         "POST", f"/inbox/{event_id}/ack", token
                     )
                 except ClientError as exc:
@@ -1130,12 +1635,16 @@ class Coordinator:
                 return
 
     def _record_departure(self, scope, event_id, room_id):
-        if self._notices.record_departure(scope, event_id, room_id):
-            self._notice_output.emit(
-                {"kind": "room_left", "event_id": event_id, "room_id": room_id}
-            )
+        if not self._notices.record_departure(scope, event_id, room_id):
+            return False
+        self._notice_output.emit(
+            {"kind": "room_left", "event_id": event_id, "room_id": room_id}
+        )
+        return True
 
     async def _deliver_departure(self, session, room_id):
+        if not session.identity_ready.is_set() or self._suspended(session):
+            return
         lease = self._leases.get(session.identity)
         if lease is None:
             return
@@ -1151,19 +1660,24 @@ class Coordinator:
         scope = session.scope
         while True:
             try:
+                await session.identity_ready.wait()
                 self._notices.abandon_unsettled(scope)
-                while True:
+                while session.identity_ready.is_set():
                     session.notices_changed.clear()
                     while notice := self._notices.next_pending(scope):
+                        if session.member_id is not None:
+                            await self._verify_member(session)
+                        revision = session.revision
                         title, subtitle, body = await self._describe(
                             binding, scope, notice
                         )
+                        self._require_binding(session, revision)
                         # Persist the attempt first so a crash never repeats it.
                         self._notices.begin_attempt(scope, notice["event_id"])
                         shown = await self._notifier.show(title, subtitle, body)
                         self._notices.settle(scope, notice["event_id"], shown)
                     await session.notices_changed.wait()
-            except sqlite3.Error:
+            except (ClientError, OSError, sqlite3.Error):
                 await asyncio.sleep(1)
 
     async def _describe(self, binding, scope, notice):
@@ -1193,12 +1707,14 @@ class Coordinator:
         scope = session.scope
         while True:
             try:
+                await session.identity_ready.wait()
                 self._notices.abandon_submitting(scope)
-                while True:
+                while session.identity_ready.is_set():
                     session.harness_changed.clear()
                     pending = self._notices.undecided(scope)
                     blocked = False
                     for notice in pending:
+                        self._require_binding(session)
                         if not self._wake_allowed(session, notice):
                             state = "not_allowed"
                         elif blocked or self._leases.get(session.identity) is None:
@@ -1218,10 +1734,11 @@ class Coordinator:
                         continue
                     if blocked or not pending:
                         await session.harness_changed.wait()
-            except sqlite3.Error:
+            except (ClientError, OSError, sqlite3.Error):
                 await asyncio.sleep(1)
 
     async def _deliver_room_notices(self, binding, session):
+        self._require_binding(session)
         scope = session.scope
         lease = self._leases.get(session.identity)
         for notice in self._notices.pending_room_notices(scope):
@@ -1241,6 +1758,9 @@ class Coordinator:
                 self._notices.mark_room_notice_attempted(scope, event_id)
                 continue
             try:
+                if session.member_id is not None:
+                    await self._verify_member(session)
+                revision = session.revision
                 room = await self._upstream.request("GET", f"/rooms/{room_id}", binding.member_token)
             except ClientError as exc:
                 if exc.code not in ("not_found", "not_registered", "unauthorized"):
@@ -1261,6 +1781,7 @@ class Coordinator:
                         return True
                 except OSError:
                     return True
+            self._require_binding(session, revision)
             if self._leases.get(session.identity) is not lease:
                 return True
             self._notices.mark_room_notice_attempted(scope, event_id)
@@ -1273,9 +1794,10 @@ class Coordinator:
             await driver(lease.address, lease.token, wake_text(notice, ranking))
         return False
 
-    def _wake_allowed(self, session, notice):
+    def _wake_allowed(self, session: Session, notice):
         identity = session.identity
-        if self._sessions.get(identity) is not session or identity in self._pending_retirements:
+        if (self._sessions.get(identity) is not session or self._suspended(session)
+                or not session.identity_ready.is_set()):
             return False
         allowed = self._notices.wake(*identity)
         if allowed is None:
@@ -1286,9 +1808,14 @@ class Coordinator:
 
     async def _hand_off(self, binding, session, notice):
         lease = self._leases.get(session.identity)
+        if lease is None:
+            return "waiting"
         driver = self._drivers.get(lease.kind)
         if driver is None:
             return "failed"
+        if session.member_id is not None:
+            await self._verify_member(session)
+        revision = session.revision
         room = notice["room_id"]
         role, room_name = await self._names(binding, session.scope, notice)
         try:
@@ -1307,6 +1834,7 @@ class Coordinator:
                 )
         except (ClientError, OSError, OverflowError):
             return "failed"
+        self._require_binding(session, revision)
         messages = page.get("messages") if isinstance(page, dict) else None
         message = next(
             (

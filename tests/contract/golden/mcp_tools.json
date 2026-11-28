@@ -380,10 +380,15 @@
       }
     },
     "teamup_join_room": {
-      "description": "Join a team-visible room.",
+      "description": "Join a team-visible room. Use a fresh client_request_id for a new intent and keep it on retry.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
+          "client_request_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
           "room_id": {
             "format": "uuid",
             "type": "string"
@@ -417,10 +422,15 @@
       }
     },
     "teamup_leave_room": {
-      "description": "Leave this room and allow TeamUp to rank successors if you lead it. Use the leadership handoff tool to choose a successor or defer the choice.",
+      "description": "Leave this room and allow TeamUp to rank successors if you lead it. Use the leadership handoff tool to choose a successor or defer the choice. Use a fresh client_request_id for a new intent and keep it on retry.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
+          "client_request_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
           "room_id": {
             "format": "uuid",
             "type": "string"

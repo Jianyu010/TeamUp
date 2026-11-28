@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {openTaskLanes} from "../../../../../../client/shared/src/teamup_client/console/console-tasks.js";
+import {openTaskLanes, roomCommandError} from "../../../../../../client/shared/src/teamup_client/console/console-tasks.js";
 
 const first = {id: "first-session", member_id: "first"};
 const second = {id: "second-session", member_id: "second"};
@@ -26,6 +26,14 @@ test("Available includes unjoined tasks visible only through their creator", () 
     Taken: [],
     Ongoing: [],
   });
+});
+
+test("durable command feedback distinguishes dispatch, commitment, and uncertainty", () => {
+  assert.match(roomCommandError("command_blocked"), /before sending/);
+  assert.match(roomCommandError("command_outcome_unknown"), /could not determine whether/);
+  assert.match(roomCommandError("command_result_unavailable"), /operation committed/);
+  assert.match(roomCommandError("command_pending"), /earlier operation/);
+  assert.equal(roomCommandError("conflict"), undefined);
 });
 
 test("first join moves a task from Available to Ongoing and Taken", () => {

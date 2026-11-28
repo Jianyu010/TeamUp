@@ -1,7 +1,7 @@
 import {messageRow, readTranscript, sameBoard} from "/console-history.mjs";
 import {roomBoard} from "/console-board.js";
 import {memberNames, roomMembers, renderSessionChoices, renderTeam} from "/console-members.js";
-import {taskPanel} from "/console-tasks.js";
+import {roomCommandError, taskPanel} from "/console-tasks.js";
 import {sessionControls} from "/console-sessions.js";
 import {sessionPage} from "/console-sessions.mjs";
 import {focusedRoomPanel, isRoomLeader, leadershipDialog} from "/console-focused-rooms.mjs";
@@ -113,7 +113,7 @@ function roomLeader(room) {
     isRoomLeader(room, sessionFor(item.session), item))) ?? null;
 }
 
-const boardPanel = roomBoard({get, request: read});
+const boardPanel = roomBoard({get, request: read, roomCommandError});
 
 const tasks = taskPanel({
   request: read,
@@ -148,7 +148,7 @@ function membershipEnded(session, room, result, membershipId) {
   return refresh();
 }
 
-const lifecycle = sessionControls({request: read, changed: membershipEnded});
+const lifecycle = sessionControls({request: read, changed: membershipEnded, roomCommandError});
 
 const leadership = leadershipDialog({
   get, node, request: read, departed: membershipEnded, refresh,
@@ -207,9 +207,9 @@ async function removeRoomMember(room, session, member) {
         members.refresh();
       }
     } else {
-      status.textContent = result.state === "membership_changed"
+      status.textContent = roomCommandError(result.state) ?? (result.state === "membership_changed"
         ? "The member rejoined. Check the roster before trying again."
-        : "TeamUp could not remove this member.";
+        : "TeamUp could not remove this member.");
     }
   } catch {
     status.textContent = "TeamUp could not confirm the removal.";

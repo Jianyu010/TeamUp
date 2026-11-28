@@ -15,6 +15,9 @@ MEMBERS = [
 
 
 class Notices:
+    def binding_member(self, _scope):
+        return None
+
     def retired_sessions(self, _server_url):
         return {}
 

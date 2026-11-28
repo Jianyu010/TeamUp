@@ -1,5 +1,7 @@
 # Session retirement and room departure (#47, #58)
 
+The [room synchronization extension](room-sync.md#command-and-session-contract) defines expected actor and Server generation checks for durable commands.
+
 Collaboration owns member availability, room membership, retained history and the departure event. Gateway exposes those operations to Client. The Client coordinator owns the local binding, its retired entry and delivery to the bound harness. MCP derives the actor from the current binding. The loopback console uses the existing launch credential and exact origin for writes.
 
 ## Room departure

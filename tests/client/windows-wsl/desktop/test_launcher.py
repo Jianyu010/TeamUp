@@ -109,6 +109,10 @@ class LoginServer(BaseHTTPRequestHandler):
     def log_message(self, *_args):
         pass
 
+    def do_GET(self):
+        assert urlsplit(self.path).path == "/v1/auth/capabilities"
+        self.reply(200, {"admin": False})
+
     def do_POST(self):
         credentials = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         assert self.path == "/v1/auth/login"
@@ -121,8 +125,11 @@ class LoginServer(BaseHTTPRequestHandler):
             if valid
             else {"error": {"code": "unauthorized"}}
         )
+        self.reply(200 if valid else 401, data)
+
+    def reply(self, status, data):
         payload = json.dumps(data).encode()
-        self.send_response(200 if valid else 401)
+        self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()

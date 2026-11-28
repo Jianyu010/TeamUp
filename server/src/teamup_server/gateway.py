@@ -46,7 +46,10 @@ _ERRORS = {
     "member_retired": (409, "This member's binding has been retired."),
     "room_archived": (409, "This room is archived."),
     "room_has_live_children": (409, "Close the active child rooms first."),
+    "server_generation_changed": (409, "The Server data generation has changed."),
     "membership_changed": (409, "The current room membership has changed."),
+    "member_identity_changed": (409, "The authenticated member has changed."),
+    "sync_reset_required": (409, "Request a fresh room synchronization baseline."),
     "invalid_mention": (422, "Mention another member of this room."),
     "invalid_peer": (422, "The DM peer must be another available member of this team."),
     "rate_limited": (429, "Too many login attempts. Try again later."),
@@ -287,6 +290,100 @@ class _TaskProgress(_Body):
     note: _LongText
 
 
+_MembershipValue = Annotated[str, StringConstraints(strict=True, pattern=_MEMBERSHIP_PATTERN)]
+_PositiveVersion = Annotated[int, Field(strict=True, gt=0)]
+
+
+class _SyncGeneration(_Body):
+    server_generation: _ShortText
+
+
+class _SyncRetirement(_SyncGeneration):
+    expected_member_id: _Identifier
+
+
+class _CommandMembership(_Body):
+    membership_id: _MembershipValue
+
+
+class _CommandJoin(_Body):
+    membership_revision: Annotated[int, Field(strict=True, ge=0)]
+
+
+class _CommandLeave(_CommandMembership):
+    notify: Annotated[bool, Field(strict=True)] = False
+
+
+class _CommandRemove(_CommandMembership):
+    target_member_id: _Identifier
+    target_membership_id: _MembershipValue
+    expected_leadership_epoch: _PositiveVersion
+
+
+class _CommandPublish(_CommandMembership, _PublishBoard):
+    expected_leadership_epoch: _PositiveVersion
+
+
+class _CommandAck(_CommandMembership, _ConfirmBoard):
+    pass
+
+
+class _CommandWithBoard(_CommandMembership):
+    expected_board_version: _PositiveVersion
+
+
+class _CommandSend(_CommandWithBoard, _Message):
+    pass
+
+
+class _CommandCreateTask(_CommandWithBoard, _TaskCreate):
+    pass
+
+
+class _CommandTask(_CommandWithBoard):
+    task_id: _Identifier
+
+
+class _CommandTaskProgress(_CommandTask, _TaskProgress):
+    pass
+
+
+_ROOM_COMMAND_PARAMETERS: dict[str, type[_Body]] = {
+    "create_room": _Room,
+    "join_room": _CommandJoin,
+    "leave_room": _CommandLeave,
+    "remove_member": _CommandRemove,
+    "publish_board": _CommandPublish,
+    "acknowledge_board": _CommandAck,
+    "send_message": _CommandSend,
+    "create_task": _CommandCreateTask,
+    "join_task": _CommandTask,
+    "record_task_progress": _CommandTaskProgress,
+    "finish_task": _CommandTask,
+}
+
+
+class _RoomCommand(_SyncRetirement):
+    operation_id: _Identifier
+    kind: Literal[
+        "create_room", "join_room", "leave_room", "remove_member", "publish_board",
+        "acknowledge_board", "send_message", "create_task", "join_task",
+        "record_task_progress", "finish_task",
+    ]
+    room_id: _Identifier | None = None
+    parameters: dict
+
+    @model_validator(mode="after")
+    def validate_parameters(self) -> "_RoomCommand":
+        if (self.room_id is None) != (self.kind == "create_room"):
+            raise ValueError("Only room creation omits the room ID")
+        validated = _ROOM_COMMAND_PARAMETERS[self.kind].model_validate(self.parameters)
+        self.parameters = validated.model_dump()
+        if self.kind == "send_message" and "mention_member_ids" not in validated.model_fields_set:
+            self.parameters.pop("mention_member_ids")
+        return self
+
+
 class _OpenDM(_Body):
     member_id: _Identifier
 
@@ -326,6 +423,13 @@ async def _require_utf8(request: Request) -> None:
     except UnicodeDecodeError:
         raise CollaborationError("invalid_request") from None
     if "\x00" in body:
+        raise CollaborationError("invalid_request")
+
+
+async def _optional_object(request: Request) -> None:
+    await _require_utf8(request)
+    body = await request.body()
+    if body and not body.lstrip().startswith(b"{"):
         raise CollaborationError("invalid_request")
 
 
@@ -469,9 +573,11 @@ class Gateway:
             return collaboration.issue_console_session(token)
 
         @app.get("/v1/auth/capabilities", dependencies=[Depends(_reject_body)])
-        def account_capabilities(token: _Bearer, response: Response) -> dict:
+        def account_capabilities(
+            token: _Bearer, response: Response, include_owner: bool = False
+        ) -> dict:
             _no_store(response)
-            return collaboration.account_capabilities(token)
+            return collaboration.account_capabilities(token, include_owner=include_owner)
 
         @app.get("/v1/console/capabilities", dependencies=[Depends(_reject_body)])
         def console_capabilities(token: _Bearer, response: Response) -> dict:
@@ -631,21 +737,41 @@ class Gateway:
             return collaboration.enroll(token, **body.model_dump())
 
         @app.get("/v1/members/me")
-        def get_member(token: _Bearer) -> dict:
-            return collaboration.get_member(token)
+        def get_member(token: _Bearer, include_owner: bool = False) -> dict:
+            return collaboration.get_member(token, include_owner=include_owner)
 
         @app.get("/v1/members", dependencies=[Depends(_require_query_utf8)])
         def search_members(token: _Bearer, q: str = "") -> dict:
             return {"members": collaboration.search_members(token, q)}
 
         @app.get("/v1/members/me/retirement")
-        def member_retirement(token: _Bearer, response: Response) -> dict:
+        def member_retirement(
+            token: _Bearer, response: Response,
+            expected_member_id: _Identifier | None = None,
+            server_generation: _ShortText | None = None,
+        ) -> dict:
             _no_store(response)
-            return collaboration.member_retirement(token)
+            if (expected_member_id is None) != (server_generation is None):
+                raise CollaborationError("invalid_request")
+            return collaboration.member_retirement(
+                token, expected_member_id=expected_member_id, server_generation=server_generation
+            )
 
-        @app.post("/v1/members/me/retire", dependencies=[Depends(_reject_body)])
-        def retire_self(token: _Bearer) -> dict:
-            return collaboration.retire_self(token)
+        @app.post("/v1/members/me/retire", dependencies=[Depends(_optional_object)])
+        def retire_self(token: _Bearer, body: _SyncRetirement | None = None) -> dict:
+            return collaboration.retire_self(token, **(body.model_dump() if body else {}))
+
+        @app.post("/v1/room-commands", dependencies=[Depends(_require_utf8)])
+        def submit_room_command(token: _Bearer, response: Response, body: _RoomCommand) -> dict:
+            _no_store(response)
+            return collaboration.submit_room_command(token, **body.model_dump())
+
+        @app.get("/v1/rooms/{room_id}/membership-state")
+        def room_membership_state(
+            token: _Bearer, room_id: _Identifier, expected_member_id: _Identifier, response: Response
+        ) -> dict:
+            _no_store(response)
+            return collaboration.room_membership_state(token, room_id, expected_member_id)
 
         @app.get("/v1/members/{member_id}/archive")
         def list_retired_conversations(
@@ -676,10 +802,12 @@ class Gateway:
             return collaboration.rename_member(token, member_id, body.role_description)
 
         @app.post(
-            "/v1/members/{member_id}/retire", dependencies=[Depends(_reject_body)]
+            "/v1/members/{member_id}/retire", dependencies=[Depends(_optional_object)]
         )
-        def retire_member(token: _Bearer, member_id: _Identifier) -> dict:
-            return collaboration.retire_member(token, member_id)
+        def retire_member(
+            token: _Bearer, member_id: _Identifier, body: _SyncGeneration | None = None
+        ) -> dict:
+            return collaboration.retire_member(token, member_id, **(body.model_dump() if body else {}))
 
         @app.post("/v1/presence/heartbeat", dependencies=[Depends(_reject_body)])
         def heartbeat(token: _Bearer) -> dict:
@@ -690,6 +818,11 @@ class Gateway:
         def read_presence(token: _Bearer, response: Response) -> dict:
             _no_store(response)
             return presence.snapshot(token)
+
+        @app.get("/v1/sync/capabilities", dependencies=[Depends(_reject_body)])
+        def sync_capabilities(token: _Bearer, response: Response) -> dict:
+            _no_store(response)
+            return collaboration.sync_capabilities(token)
 
         @app.post("/v1/rooms", dependencies=[Depends(_require_utf8)])
         def create_room(token: _Bearer, body: _Room) -> dict:
@@ -736,6 +869,18 @@ class Gateway:
         ) -> dict:
             _no_store(response)
             return collaboration.room_detail(token, room_id)
+
+        @app.get("/v1/rooms/{room_id}/sync", dependencies=[Depends(_reject_body)])
+        def sync_room(
+            token: _Bearer,
+            room_id: _Identifier,
+            expected_member_id: _Identifier,
+            membership_id: _MembershipID,
+            response: Response,
+            cursor: str | None = None,
+        ) -> dict:
+            _no_store(response)
+            return collaboration.sync_room(token, room_id, expected_member_id, membership_id, cursor)
 
         @app.post(
             "/v1/rooms/{room_id}/invitations", dependencies=[Depends(_require_utf8)]

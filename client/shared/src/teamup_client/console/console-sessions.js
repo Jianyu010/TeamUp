@@ -25,7 +25,7 @@ function historyError(state) {
   return "TeamUp could not load the history.";
 }
 
-export function sessionControls({request, changed}) {
+export function sessionControls({request, changed, roomCommandError}) {
   const get = (id) => document.getElementById(id);
   const panel = get("retired-sessions");
   const retire = get("retire-identity");
@@ -53,7 +53,7 @@ export function sessionControls({request, changed}) {
         session: session.id, room: room?.id, membership_id: membershipId,
       }, {});
       if (result.state !== "ready") {
-        status.textContent = actionError(result.state);
+        status.textContent = roomCommandError(result.state) ?? actionError(result.state);
         return;
       }
       status.textContent = room

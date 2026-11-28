@@ -25,6 +25,8 @@ python3 scripts/ops/snapshot_sqlite.py \
 2. 创建一份可丢弃的工作副本，在隔离的运行配置下启动匹配版本的 TeamUp Server，只监听回环地址。使用获得授权的恢复身份，通过 TeamUp API 核对有代表性的房间和任务历史。
 3. 记录恢复点和恢复耗时。保留原始备份，以便再次尝试。恢复后的服务重新向 Client 开放前，检查凭证、数据保留策略和待投递状态。
 
+如果恢复操作发布了新的数据库文件，TeamUp 会在启动时检测文件变化并更新房间同步代次。如果在原文件上恢复数据，且文件身份保持不变，请在 Server 停止期间运行 `teamup-server rotate-sync-generation --db /path/to/teamup.sqlite3`，然后再让 Client 重新连接。上一代次的游标和持久化命令随后需要按房间同步契约进行恢复。
+
 异地存储、每小时调度和告警的跟进记录见 [issue #88](https://github.com/Jianyu010/TeamUp/issues/88)。
 
 ## 定时异地备份

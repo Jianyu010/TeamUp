@@ -154,6 +154,10 @@ class TeamupGateway:
                 )
             elif path == "/v1/members/me":
                 await self.json_response(writer, self.registered[token])
+            elif path == "/v1/sync/capabilities":
+                await self.json_response(
+                    writer, {"error": {"code": "not_found", "message": "Not found"}}, 404
+                )
             elif path == "/v1/members":
                 await self.json_response(
                     writer, {"members": list(self.registered.values())}
@@ -1346,7 +1350,9 @@ def test_presence_heartbeats_are_isolated_and_require_approved_registered_bindin
                             await until(lambda: counts[token_b] >= 2)
                             assert request_a not in upstream.calls
                             await decide("approved")
-                            member_check = ("GET", "/v1/members/me", {}, token_a, None)
+                            member_check = (
+                                "GET", "/v1/members/me", {"include_owner": ["true"]}, token_a, None
+                            )
                             await until(lambda: member_check in upstream.calls)
                             assert request_a not in upstream.calls
 
@@ -1361,7 +1367,7 @@ def test_presence_heartbeats_are_isolated_and_require_approved_registered_bindin
 
                             release_a.set()
                             await until(lambda: counts[token_a] >= 2)
-                            del upstream.registered[token_a]
+                            member_a = upstream.registered.pop(token_a)
                             start_a = upstream.calls.count(request_a)
                             await until(
                                 lambda: upstream.calls.count(request_a) > start_a
@@ -1370,6 +1376,10 @@ def test_presence_heartbeats_are_isolated_and_require_approved_registered_bindin
                             await until(lambda: counts[token_b] >= start_b + 2)
                             assert upstream.calls.count(request_a) == start_a + 1
 
+                            with pytest.raises(ClientError) as error:
+                                await register()
+                            assert error.value.code == "member_identity_changed"
+                            upstream.registered[token_a] = member_a
                             start_a = counts[token_a]
                             await register()
                             await until(lambda: counts[token_a] > start_a)

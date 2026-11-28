@@ -9,6 +9,18 @@ const errors = {
   invalid_request: "Check the progress note and try again.",
   unavailable: "TeamUp could not confirm the operation. You can retry.",
 };
+const commandErrors = {
+  command_outcome_unknown: "TeamUp could not determine whether the operation committed. Check the room before submitting a new operation.",
+  command_pending: "An earlier operation is still pending for this room.",
+  command_blocked: "TeamUp blocked the operation before sending it.",
+  command_result_unavailable: "The operation committed, but its result is unavailable.",
+  member_identity_changed: "The selected session no longer matches its registered TeamUp member.",
+  retirement_pending: "TeamUp has yet to confirm this session’s retirement.",
+};
+
+export function roomCommandError(state) {
+  return Object.hasOwn(commandErrors, state) ? commandErrors[state] : undefined;
+}
 
 function element(tag, text, css) {
   const item = document.createElement(tag);
@@ -351,7 +363,7 @@ export function taskPanel(context) {
       } else {
         if (result.state === "conflict") await refresh({force: true});
         if (!current()) return;
-        status.textContent = errors[result.state] || errors.unavailable;
+        status.textContent = roomCommandError(result.state) ?? errors[result.state] ?? errors.unavailable;
       }
     } catch {
       if (current()) status.textContent = errors.unavailable;

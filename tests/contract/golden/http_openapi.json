@@ -94,6 +94,16 @@
       "get": {
         "parameters": [
           {
+            "in": "query",
+            "name": "include_owner",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Owner",
+              "type": "boolean"
+            }
+          },
+          {
             "in": "header",
             "name": "authorization",
             "required": false,
@@ -1248,6 +1258,16 @@
       "get": {
         "parameters": [
           {
+            "in": "query",
+            "name": "include_owner",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Owner",
+              "type": "boolean"
+            }
+          },
+          {
             "in": "header",
             "name": "authorization",
             "required": false,
@@ -1301,6 +1321,23 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/_SyncRetirement"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "content": {
@@ -1321,6 +1358,39 @@
     "/v1/members/me/retirement": {
       "get": {
         "parameters": [
+          {
+            "in": "query",
+            "name": "expected_member_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Expected Member Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "server_generation",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Server Generation"
+            }
+          },
           {
             "in": "header",
             "name": "authorization",
@@ -1583,6 +1653,23 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/_SyncGeneration"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "content": {
@@ -1672,6 +1759,53 @@
           }
         },
         "summary": "Heartbeat"
+      }
+    },
+    "/v1/room-commands": {
+      "post": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/_RoomCommand"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Submit Room Command V1 Room Commands Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Submit Room Command"
       }
     },
     "/v1/room-directory": {
@@ -3000,6 +3134,61 @@
         "summary": "Set Room Responsibility"
       }
     },
+    "/v1/rooms/{room_id}/membership-state": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "room_id",
+            "required": true,
+            "schema": {
+              "title": "Room Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "expected_member_id",
+            "required": true,
+            "schema": {
+              "title": "Expected Member Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Room Membership State V1 Rooms  Room Id  Membership State Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Room Membership State"
+      }
+    },
     "/v1/rooms/{room_id}/messages": {
       "get": {
         "parameters": [
@@ -3245,6 +3434,87 @@
           }
         },
         "summary": "Search Room"
+      }
+    },
+    "/v1/rooms/{room_id}/sync": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "room_id",
+            "required": true,
+            "schema": {
+              "title": "Room Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "expected_member_id",
+            "required": true,
+            "schema": {
+              "title": "Expected Member Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "membership_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{32}$",
+              "title": "Membership Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Sync Room V1 Rooms  Room Id  Sync Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Sync Room"
       }
     },
     "/v1/rooms/{room_id}/tasks": {
@@ -3696,6 +3966,43 @@
           }
         },
         "summary": "Report Progress"
+      }
+    },
+    "/v1/sync/capabilities": {
+      "get": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Sync Capabilities V1 Sync Capabilities Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Sync Capabilities"
       }
     },
     "/v1/task-reminders": {
@@ -4320,6 +4627,66 @@
       "title": "_Room",
       "type": "object"
     },
+    "_RoomCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "expected_member_id": {
+          "title": "Expected Member Id",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "create_room",
+            "join_room",
+            "leave_room",
+            "remove_member",
+            "publish_board",
+            "acknowledge_board",
+            "send_message",
+            "create_task",
+            "join_task",
+            "record_task_progress",
+            "finish_task"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "operation_id": {
+          "title": "Operation Id",
+          "type": "string"
+        },
+        "parameters": {
+          "additionalProperties": true,
+          "title": "Parameters",
+          "type": "object"
+        },
+        "room_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Room Id"
+        },
+        "server_generation": {
+          "maxLength": 128,
+          "title": "Server Generation",
+          "type": "string"
+        }
+      },
+      "required": [
+        "server_generation",
+        "expected_member_id",
+        "operation_id",
+        "kind",
+        "parameters"
+      ],
+      "title": "_RoomCommand",
+      "type": "object"
+    },
     "_RoomInvitation": {
       "additionalProperties": false,
       "properties": {
@@ -4367,6 +4734,41 @@
         "description"
       ],
       "title": "_RoomResponsibility",
+      "type": "object"
+    },
+    "_SyncGeneration": {
+      "additionalProperties": false,
+      "properties": {
+        "server_generation": {
+          "maxLength": 128,
+          "title": "Server Generation",
+          "type": "string"
+        }
+      },
+      "required": [
+        "server_generation"
+      ],
+      "title": "_SyncGeneration",
+      "type": "object"
+    },
+    "_SyncRetirement": {
+      "additionalProperties": false,
+      "properties": {
+        "expected_member_id": {
+          "title": "Expected Member Id",
+          "type": "string"
+        },
+        "server_generation": {
+          "maxLength": 128,
+          "title": "Server Generation",
+          "type": "string"
+        }
+      },
+      "required": [
+        "server_generation",
+        "expected_member_id"
+      ],
+      "title": "_SyncRetirement",
       "type": "object"
     },
     "_TaskAssignment": {

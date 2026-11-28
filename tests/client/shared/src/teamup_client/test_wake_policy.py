@@ -13,6 +13,7 @@ IDENTITY = (BINDING.harness_instance_id, BINDING.session_key)
 ROOM = "00000000-0000-4000-8000-000000000001"
 SENDER = "00000000-0000-4000-8000-000000000002"
 OTHER = "00000000-0000-4000-8000-000000000003"
+PROFILE = {"member_id": OTHER, "role_description": "Agent"}
 NOTICE = {
     "event_id": 1,
     "message_id": 1,
@@ -44,13 +45,25 @@ async def set_wake(coordinator, rooms, senders):
     )
 
 
+async def member_profile(method, path, token, *, query):
+    assert (method, path, token) == ("GET", "/members/me", BINDING.member_token)
+    assert query == {"include_owner": "true"}
+    return PROFILE
+
+
+async def confirm(console):
+    assert await console.confirmed_binding(console._console_id(IDENTITY)) is not None
+
+
 def test_signed_in_console_defaults_to_wake_and_persists_owner_override(tmp_path):
     async def scenario():
         socket = tmp_path / "teamup.sock"
         with open_store(socket) as notices:
             console = Coordinator(
-                config(), None, notices, None, None, {}, signed_in_console=True
+                config(), SimpleNamespace(request=member_profile),
+                notices, None, None, {}, signed_in_console=True,
             )
+            await confirm(console)
             session = console._sessions[IDENTITY]
             assert await console.console_wake_settings() == {
                 "state": "ready",
@@ -68,8 +81,10 @@ def test_signed_in_console_defaults_to_wake_and_persists_owner_override(tmp_path
             assert console._wake_allowed(session, NOTICE)
         with open_store(socket) as notices:
             console = Coordinator(
-                config(), None, notices, None, None, {}, signed_in_console=True
+                config(), SimpleNamespace(request=member_profile),
+                notices, None, None, {}, signed_in_console=True,
             )
+            await confirm(console)
             assert await console.console_wake_settings() == {
                 "state": "ready",
                 "enabled": False,
@@ -84,8 +99,10 @@ def test_signed_in_console_defaults_to_wake_and_persists_owner_override(tmp_path
             await set_wake(console, [], [])
         with open_store(socket) as notices:
             console = Coordinator(
-                config(), None, notices, None, None, {}, signed_in_console=True
+                config(), SimpleNamespace(request=member_profile),
+                notices, None, None, {}, signed_in_console=True,
             )
+            await confirm(console)
             assert await console.console_wake_settings() == {
                 "state": "ready",
                 "enabled": True,
@@ -132,6 +149,8 @@ def test_handoff_rechecks_changed_wake_permission_after_server_read(tmp_path):
 
         class Server:
             async def request(self, method, path, token, *, query):
+                if path == "/members/me":
+                    return await member_profile(method, path, token, query=query)
                 assert (method, path, token) == (
                     "GET",
                     f"/rooms/{ROOM}/messages",
@@ -159,6 +178,7 @@ def test_handoff_rechecks_changed_wake_permission_after_server_read(tmp_path):
                 {"codex": driver},
                 signed_in_console=True,
             )
+            await confirm(console)
             session = console._sessions[IDENTITY]
             notices.remember_members(
                 session.scope, [{"member_id": SENDER, "role_description": "Teammate"}]
@@ -186,6 +206,8 @@ def test_wake_drains_all_pending_mention_batches_after_attachment(tmp_path):
 
         class Server:
             async def request(self, method, path, token, *, query):
+                if path == "/members/me":
+                    return await member_profile(method, path, token, query=query)
                 message_id = query["after"] + 1
                 return {
                     "messages": [
@@ -210,6 +232,7 @@ def test_wake_drains_all_pending_mention_batches_after_attachment(tmp_path):
                 {"codex": driver},
                 signed_in_console=True,
             )
+            await confirm(console)
             session = console._sessions[IDENTITY]
             notices.remember_members(
                 session.scope, [{"member_id": SENDER, "role_description": "Teammate"}]

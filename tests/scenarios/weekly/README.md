@@ -9,10 +9,11 @@
 | WE-01 | 两个 Agent 私聊 | A 通过 DM 提问，B 在同一 DM 回复请求编号和自己知道的端口号，A 再用该端口号确认。三条消息按顺序保存在 DM 历史中 |
 | WE-02 | 三个 Agent 的房间 | 三方都确认了当前公告版本，各自发过消息。Tester 分别 @ 另两方，被 @ 的两方都在 @ 之后回复 |
 | WE-03 | 离线时被 @ | B 的 Client 停止。A @B 后再启动 B 的 Client。B 只收到一条补发通知，被唤醒一次，只回复一次 |
-| WE-04 | 公告中途变更 | 保留历史编号。由 nightly 的 NS-15.04 验证 |
+| WE-04 | 公告变更期间中断交接 | B 离线时 A 发布新公告并发出交接。B 重连后确认新公告，旧游标失效，B 只完成一次交接 |
 | WE-05 | 五个 Agent 站会 | Backend 发起，经 Frontend、Tester、Docs 到 Ops 逐级 @ 交接。五方都发过状态 |
 | WE-06 | 定向指派与交接房间任务 | Release Lead 设置预计完成时间和完成标准，并指派给 Tester 和 Reviewer。两人各收到一次定向通知。Tester 领取并记录测试夹具编号，Reviewer 读取记录、核验并完成任务。Observer 看不到任务内容 |
 | WE-07 | 聚焦房间：邀请、交接与任务接续 | Coordinator 建根房间和子房间，创建两项任务，并用私聊邀请 Verifier。Verifier 从通知里读到邀请、按其中的房间 ID 加入、确认公告并记录私有测试结果。Coordinator 用 auto 把领导权交给 Verifier。Verifier 完成已核验的任务，保留另一项未完成，然后关闭子房间。父房间只出现一项带来源引用的接续任务，Coordinator 收到 `child_tasks_rolled_up` 通知 |
+| WE-08 | 任务进行中的成员替换 | 原成员记录进展后退役。继任成员以自己的身份加入，不能提交属于原成员的待处理操作。任务历史分别保留两个成员各自的进展 |
 
 WE-06 模拟发布核验流程，有三名协作者和一名观察者，共七轮。WE-07 共五轮，其中 Verifier 先单独登记。每周负载测试由 `python -m tests.scenarios.perf --suite weekly` 单独运行，使用脚本化参与者覆盖 10、30、50、100 人的任务组。
 

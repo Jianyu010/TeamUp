@@ -256,8 +256,12 @@ def test_bystander_reads_the_canonical_room_transcript_across_pages(transcript):
         == 401
     )
     revoked = console_page(console, session, room, after=cursor)
-    assert revoked["state"] in {"unauthorized", "not_registered"}
+    assert revoked["state"] in {"unauthorized", "not_registered", "not_found"}
     assert not revoked.get("messages")
+    assert not any(
+        row["id"] == session and row["state"] == "ready"
+        for row in console.get("/api/workspace").json()["sessions"]
+    )
 
 
 def test_default_history_begins_at_the_readers_join_boundary(transcript):

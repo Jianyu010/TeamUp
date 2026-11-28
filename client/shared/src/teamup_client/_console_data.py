@@ -3,13 +3,15 @@
 import asyncio
 import re
 from collections import Counter
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from importlib.metadata import PackageNotFoundError, version
 from typing import Protocol
 
 from ._protocol import is_integer, is_string, is_uuid
-from ._upstream import unavailable
+from ._room_sync import RoomAccess, RoomSync
+from ._upstream import Request, unavailable
 from .ipc import ClientError
 
 PAGE = 30
@@ -144,18 +146,7 @@ class ConsoleSession:
     harness: str
     label: str
     token: str = field(repr=False)
-
-
-class Request(Protocol):
-    def __call__(
-        self,
-        method: str,
-        path: str,
-        token: str | None,
-        *,
-        query: dict | None = None,
-        body: dict | None = None,
-    ) -> Awaitable[dict]: ...
+    revision: int = 0
 
 
 class SessionLifecycle(Protocol):
@@ -166,6 +157,12 @@ class SessionLifecycle(Protocol):
     async def console_wake_settings(self, enabled: bool | None = None) -> dict: ...
 
     def console_retired_sessions(self) -> list[dict]: ...
+
+    async def room_command(
+        self, session_id: str, method: str, params: dict
+    ) -> dict | None: ...
+
+    def room_archived(self, session_id: str, room_id: str) -> None: ...
 
     async def console_session_action(
         self, session_id: str, room_id: str | None, membership_id: str | None
@@ -188,10 +185,13 @@ class ConsoleReader:
         sessions: Callable[[], tuple[ConsoleSession, ...]],
         request: Request,
         lifecycle: SessionLifecycle | None = None,
+        *,
+        room_sync: RoomSync | None = None,
     ):
         self._sessions = sessions
         self._request = request
         self._lifecycle = lifecycle
+        self._room_sync = room_sync
         self._reads = asyncio.Semaphore(8)
         try:
             installed_version = version("teamup-client")
@@ -250,11 +250,24 @@ class ConsoleReader:
                 raise ClientError("not_found", "Local session is unavailable")
             return response
 
-    async def _write(self, identity: str, path: str, body: dict | None) -> dict:
+    async def _write(
+        self, identity: str, path: str, body: dict | None,
+        *, command: tuple[str, dict] | None = None,
+    ) -> dict:
         async with self._reads:
             session = self._current(identity)
             if session is None:
                 raise ClientError("not_found", "Local session is unavailable")
+            if command is not None and self._lifecycle is not None:
+                method, target = command
+                response = await self._lifecycle.room_command(
+                    identity, method, {**(body or {}), **target}
+                )
+                if response is not None:
+                    return response
+                session = self._current(identity)
+                if session is None:
+                    raise ClientError("not_found", "Local session is unavailable")
             result = await self._request("POST", path, session.token, body=body)
             if self._current(identity) != session:
                 raise ClientError("not_found", "Local session is unavailable")
@@ -600,7 +613,9 @@ class ConsoleReader:
                     return {"state": "not_found"}
                 board = await self._read(session, path + "/view")
             else:
-                board = await self._write(identity, path, draft)
+                board = await self._write(
+                    identity, path, draft, command=("publish_board", {"room_id": room_id})
+                )
         except ClientError as exc:
             return {"state": exc.code}
         return {"state": "ready", "board": board}
@@ -631,6 +646,8 @@ class ConsoleReader:
             result = await self._write(identity, f"/rooms/{room_id}/archive", None)
         except ClientError as exc:
             return {"state": exc.code}
+        if self._lifecycle is not None:
+            self._lifecycle.room_archived(identity, room_id)
         return {"state": "ready", **result}
 
     async def archived_rooms(self, identity: str, after: str | None = None) -> dict:
@@ -682,6 +699,7 @@ class ConsoleReader:
             result = await self._write(
                 identity, f"/rooms/{room_id}/members/{member_id}/remove",
                 {"membership_id": membership_id},
+                command=("remove_room_member", {"room_id": room_id, "member_id": member_id}),
             )
         except ClientError as exc:
             return {"state": exc.code}
@@ -733,13 +751,46 @@ class ConsoleReader:
         session = self._current(identity)
         if session is None:
             return {"state": "not_found"}
+        context = (
+            self._room_sync.open(identity, session.token, room_id)
+            if self._room_sync is not None else nullcontext()
+        )
         try:
-            listing = await self._read(session, "/rooms", {"include_membership": "true"})
+            async with context as access:
+                return await self._room(session, room_id, before, after, access)
+        except ClientError as exc:
+            return {"state": exc.code}
+
+    async def _room(
+        self, session: ConsoleSession, room_id: str, before: int | None, after: int | None,
+        access: RoomAccess | None,
+    ) -> dict:
+        sync = self._room_sync if access is not None else None
+
+        async def read(path: str, query: dict | None = None) -> dict:
+            if access is not None:
+                access.check()
+            try:
+                response = await self._read(session, path, query)
+            except ClientError:
+                if access is not None:
+                    access.check()
+                raise
+            if access is not None:
+                access.check()
+            return response
+
+        try:
+            listing = await read("/rooms", {"include_membership": "true"})
             rooms = listing["rooms"]
         except ClientError as exc:
+            if sync is not None and access is not None:
+                sync.access_error(access, exc)
             return {"state": exc.code}
         selected = next((room for room in rooms if room["room_id"] == room_id), None)
         if selected is None:
+            if sync is not None and access is not None:
+                sync.room_missing(access)
             return {"state": "not_found"}
 
         board = {
@@ -760,25 +811,44 @@ class ConsoleReader:
         if membership_id := selected.get("membership_id"):
             board["membership_id"] = membership_id
             query["membership_id"] = membership_id
+        path = f"/rooms/{room_id}/messages"
         try:
-            history = await self._read(session, f"/rooms/{room_id}/messages", query)
+            view = await sync.refresh(access, selected, read) if sync is not None and access is not None else None
+            history = view.page(query) if view is not None else None
+            legacy = history is None
+            if history is None:
+                history = await read(path, query)
+            members: dict[str, _MessageMember] = {}
+            if history["messages"]:
+                try:
+                    directory = await read("/members")
+                except ClientError as exc:
+                    if self._current(session.id) != session or exc.code in {"not_found", "not_registered", "unauthorized"}:
+                        raise
+                else:
+                    members = _message_members(directory["members"])
+            if view is not None and not legacy and any(
+                item.get("sender_retired") is not True and item["sender_member_id"] not in members
+                for item in history["messages"]
+            ):
+                # The active directory omits retired members. An authorized history read
+                # distinguishes a retirement from a sender beyond the directory's limit.
+                history = await read(path, query)
+                legacy = True
+            if sync is not None and access is not None:
+                if view is None:
+                    await sync.revalidate_legacy_binding(access)
+                elif legacy:
+                    await sync.revalidate_history(access, view, read)
+                sync.check_view(access, view)
         except ClientError as exc:
-            if exc.code in {"not_found", "not_registered", "unauthorized"}:
+            if sync is not None and access is not None:
+                sync.access_error(access, exc, membership_id=membership_id)
+            if exc.code in {"not_found", "not_registered", "unauthorized", "member_identity_changed"}:
                 return {"state": exc.code}
             return {"state": exc.code, "board": board, "messages": [], "older": None}
 
         messages = history["messages"]
-        members: dict[str, _MessageMember] = {}
-        if messages:
-            try:
-                directory = await self._read(session, "/members")
-            except ClientError as exc:
-                if self._current(identity) != session:
-                    return {"state": "not_found"}
-                if exc.code in {"not_found", "not_registered", "unauthorized"}:
-                    return {"state": exc.code}
-            else:
-                members = _message_members(directory["members"])
         result = {
             "state": "ready",
             "board": board,
@@ -879,9 +949,12 @@ class ConsoleReader:
     async def task_action(
         self, identity: str, room_id: str, task_id: str, action: str, body: dict | None
     ) -> dict:
+        method = {"join": "join_task", "progress": "report_progress", "finish": "finish_task"}.get(action)
+        command = (method, {"room_id": room_id, "task_id": task_id}) if method else None
         try:
             result = await self._write(
-                identity, f"/rooms/{room_id}/tasks/{task_id}/{action}", body
+                identity, f"/rooms/{room_id}/tasks/{task_id}/{action}", body,
+                command=command,
             )
         except ClientError as exc:
             return {"state": exc.code}

@@ -1,11 +1,26 @@
 import re
+from collections.abc import Awaitable
 from contextlib import asynccontextmanager
+from typing import Protocol
 
 import httpx
 
 from ._local import LocalError, private_forward_socket
 from ._protocol import decode_json, is_integer, is_secret
 from .ipc import ClientError
+
+
+class Request(Protocol):
+    def __call__(
+        self,
+        method: str,
+        path: str,
+        token: str | None,
+        *,
+        query: dict | None = None,
+        body: dict | None = None,
+    ) -> Awaitable[dict]: ...
+
 
 ERROR_MESSAGES = {
     "invalid_request": "Server rejected the request parameters",

@@ -9,11 +9,13 @@ from base64 import urlsafe_b64decode, urlsafe_b64encode
 from collections import deque
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import AbstractContextManager, closing, contextmanager, suppress
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from hashlib import sha256
 from hmac import compare_digest
+from hmac import digest as hmac_digest
 from pathlib import Path
 from secrets import token_bytes
 from threading import BoundedSemaphore, Lock
@@ -24,11 +26,50 @@ from uuid import UUID, uuid4
 from argon2 import PasswordHasher, Type
 from argon2.exceptions import VerifyMismatchError
 
+from ._room_changes import (
+    begin_room_change_group,
+    cursor_key,
+    decode_cursor,
+    encode_cursor,
+    end_room_change_group,
+    initialize_room_changes,
+    room_change_head,
+    room_change_page,
+    rotate_generation,
+)
+from ._room_changes import (
+    membership_revision as _membership_revision,
+)
+from ._room_changes import (
+    server_generation as _server_generation,
+)
 from .ops_metrics import ObservationSource, SourceSnapshot
 
 _LOGGER = logging.getLogger(__name__)
 _SQLITE_MAX_ID = (1 << 63) - 1
 _EXPIRE_BATCH = 500
+_SYNC_WINDOW = 100
+ROOM_COMMAND_KINDS = (
+    "create_room",
+    "join_room",
+    "leave_room",
+    "remove_member",
+    "publish_board",
+    "acknowledge_board",
+    "send_message",
+    "create_task",
+    "join_task",
+    "record_task_progress",
+    "finish_task",
+)
+_BOARD_COMMANDS = {
+    "send_message", "create_task", "join_task", "record_task_progress", "finish_task"
+}
+_LEADER_COMMANDS = {"remove_member", "publish_board"}
+_COMMAND_RECEIPT_FIELDS = {
+    "room_id", "membership_id", "member_id", "version", "message_id",
+    "task_id", "departure_event_id",
+}
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _DM_DUE_MESSAGES = """
     SELECT message_id, dm_id FROM messages
@@ -48,6 +89,10 @@ _DEFAULT_PROTOCOL = (
     "Coordinate work in the room and direct mentions to the intended teammate."
 )
 _CREDENTIAL = re.compile(r"[A-Za-z0-9_-]{43}")
+_ASSIGNMENT_MESSAGE_KEY = re.compile(
+    r"task-assignment-([0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12})"
+    r"(?:-[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12})?"
+)
 _USERNAME = re.compile(r"[a-z][a-z0-9_-]{2,63}")
 _SESSION_SECONDS = 8 * 3600
 _DM_EXPIRY_BATCH = 500
@@ -1099,6 +1144,36 @@ def _retired_sender(row: sqlite3.Row) -> dict:
     return {"sender_retired": True} if row["sender_retired"] else {}
 
 
+def _history_message(row: sqlite3.Row) -> dict:
+    return {**_room_message(row), **_retired_sender(row)}
+
+
+def _assignment_message_text(task_number: int, eta: str | None) -> str:
+    text = f"Task #{task_number} assigned. Read the task and join to accept."
+    if eta is None:
+        text += " Record your ETA as task progress or reply privately."
+    return text
+
+
+def _sync_history_message(connection: sqlite3.Connection, row: sqlite3.Row) -> dict:
+    message = _history_message(row)
+    # Generated assignment keys encode an ID that the room transcript may not
+    # disclose through another collection. Keep the retry key private to the
+    # established writer and project a stable message-scoped key in the feed.
+    key = _ASSIGNMENT_MESSAGE_KEY.fullmatch(row["client_message_id"])
+    if key is not None:
+        assignment = connection.execute(
+            """
+            SELECT t.task_number, a.eta FROM tasks AS t JOIN task_assignments AS a USING (task_id)
+            WHERE t.task_id = ? AND t.room_id = ? AND t.creator_member_id = ?
+            """,
+            (key[1], row["room_id"], row["sender_member_id"]),
+        ).fetchone()
+        if assignment is not None and row["text"] == _assignment_message_text(*assignment):
+            message["client_message_id"] = f"task-assignment-message-{row['message_id']}"
+    return message
+
+
 def _room_transcript(
     connection: sqlite3.Connection,
     room_id: str,
@@ -1108,6 +1183,7 @@ def _room_transcript(
     through: int | None = None,
     limit: int = 50,
     newest_first: bool = False,
+    entity_ids: list[str] | None = None,
 ) -> list[sqlite3.Row]:
     """One ascending page of the canonical room transcript owned by Collaboration.
 
@@ -1124,6 +1200,9 @@ def _room_transcript(
     if through is not None:
         bounds += " AND message_id <= ?"
         bound_values.append(through)
+    if entity_ids is not None:
+        bounds += " AND message_id IN (SELECT value FROM json_each(?))"
+        bound_values.append(json.dumps(entity_ids))
     rows = connection.execute(
         f"""
         SELECT {_MESSAGE}, {_ADDITIONAL_MENTIONS}, sender.retired AS sender_retired
@@ -1345,17 +1424,17 @@ def _task_members(
     }
     if not task_ids:
         return members
-    placeholders = ", ".join("?" for _ in task_ids)
     for task_id, member_id, kind in connection.execute(
-        f"""
+        """
+        WITH selected AS (SELECT value AS task_id FROM json_each(?))
         SELECT task_id, member_id, 0 FROM task_addressees
-        WHERE task_id IN ({placeholders})
+        WHERE task_id IN (SELECT task_id FROM selected)
         UNION ALL
         SELECT task_id, member_id, 1 FROM task_participants
-        WHERE task_id IN ({placeholders})
+        WHERE task_id IN (SELECT task_id FROM selected)
         ORDER BY member_id
         """,
-        (*task_ids, *task_ids),
+        (json.dumps(task_ids),),
     ):
         members[task_id][kind].append(member_id)
     return members
@@ -1445,6 +1524,12 @@ def _add_task_event(
     )
 
 
+@dataclass
+class _CommandTransaction:
+    connection: sqlite3.Connection
+    recipients: set[str]
+
+
 class Collaboration:
     """Public operations and post-commit inbox subscriptions."""
 
@@ -1472,6 +1557,9 @@ class Collaboration:
         self._clock = clock or (lambda: datetime.now(UTC))
         self._scan_cursor = ""
         self._db_path = Path(db_path).resolve()
+        self._command_transaction: ContextVar[_CommandTransaction | None] = ContextVar(
+            "room_command_transaction", default=None
+        )
         self._enrollment_keys = _enrollment_digests(enrollment_keys)
         self._listeners: dict[str, set[ChangeListener]] = {}
         self._listeners_lock = Lock()
@@ -1497,8 +1585,29 @@ class Collaboration:
             )
         with closing(self._connect()) as connection:
             connection.execute("PRAGMA journal_mode = WAL")
+        self._room_changes_ready = False
         with self._transaction(write=True) as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
+            connection.execute("""
+                CREATE TABLE IF NOT EXISTS room_command_secret (
+                    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                    secret BLOB NOT NULL
+                )
+            """)
+            connection.execute(
+                "INSERT OR IGNORE INTO room_command_secret VALUES (1, ?)",
+                (token_bytes(32),),
+            )
+            connection.execute("""
+                CREATE TABLE IF NOT EXISTS room_command_receipts (
+                    server_generation TEXT NOT NULL,
+                    actor_member_id TEXT NOT NULL,
+                    operation_id TEXT NOT NULL,
+                    fingerprint BLOB NOT NULL,
+                    receipt TEXT NOT NULL,
+                    PRIMARY KEY (server_generation, actor_member_id, operation_id)
+                ) WITHOUT ROWID
+            """)
             if not 0 <= version <= 12:
                 raise ValueError("Unsupported TeamUp database schema version")
             if version == 0:
@@ -1654,6 +1763,12 @@ class Collaboration:
 
             if not _has_table(connection, "room_leadership"):
                 self._migrate_room_leadership(connection)
+            initialize_room_changes(connection, self._db_path.stat())
+            connection.execute(
+                "DELETE FROM room_command_receipts WHERE server_generation <> ?",
+                (_server_generation(connection),),
+            )
+        self._room_changes_ready = True
 
     def _migrate_room_leadership(self, connection: sqlite3.Connection) -> None:
         connection.execute(
@@ -1767,13 +1882,21 @@ class Collaboration:
 
     @contextmanager
     def _transaction(self, *, write: bool = False) -> Iterator[sqlite3.Connection]:
+        if command := self._command_transaction.get():
+            yield command.connection
+            return
         started = monotonic()
         with self._metrics_lock:
             self._transactions_total += 1
         try:
             with closing(self._connect()) as connection, connection:
                 connection.execute("BEGIN IMMEDIATE" if write else "BEGIN")
+                grouped = write and self._room_changes_ready
+                if grouped:
+                    begin_room_change_group(connection)
                 yield connection
+                if grouped:
+                    end_room_change_group(connection)
         except sqlite3.Error as error:
             self._record_sqlite_busy(error)
             raise
@@ -1804,26 +1927,33 @@ class Collaboration:
         return self._projections(connection, [task], member_id)[0]
 
     def _projections(
-        self, connection: sqlite3.Connection, tasks: list[sqlite3.Row], member_id: str
+        self,
+        connection: sqlite3.Connection,
+        tasks: list[sqlite3.Row],
+        member_id: str,
+        *,
+        include_origin: bool = True,
     ) -> list[dict]:
         if not tasks:
             return []
         ids = [task["task_id"] for task in tasks]
         marks = ", ".join("?" for _ in ids)
-        origins = {
-            row["successor_task_id"]: {"room_id": row["room_id"], "task_id": row["task_id"]}
-            for row in connection.execute(
-                f"""
-                SELECT o.successor_task_id, t.room_id, t.task_id
-                FROM task_origins AS o JOIN tasks AS t ON t.task_id = o.source_task_id
-                JOIN rooms AS r ON r.room_id = t.room_id
-                JOIN room_members AS rm ON rm.room_id = r.room_id
-                WHERE o.successor_task_id IN ({marks}) AND rm.member_id = ?
-                    AND rm.acked_board_version = r.version AND {_VISIBLE_TASK}
-                """,
-                (*ids, member_id, member_id, member_id),
-            )
-        }
+        origins = {}
+        if include_origin:
+            origins = {
+                row["successor_task_id"]: {"room_id": row["room_id"], "task_id": row["task_id"]}
+                for row in connection.execute(
+                    f"""
+                    SELECT o.successor_task_id, t.room_id, t.task_id
+                    FROM task_origins AS o JOIN tasks AS t ON t.task_id = o.source_task_id
+                    JOIN rooms AS r ON r.room_id = t.room_id
+                    JOIN room_members AS rm ON rm.room_id = r.room_id
+                    WHERE o.successor_task_id IN ({marks}) AND rm.member_id = ?
+                        AND rm.acked_board_version = r.version AND {_VISIBLE_TASK}
+                    """,
+                    (*ids, member_id, member_id, member_id),
+                )
+            }
         members = _task_members(connection, ids)
         now = self._now_datetime()
         projections = [
@@ -1985,14 +2115,17 @@ class Collaboration:
                 )
             return {"accounts": accounts}
 
-    def account_capabilities(self, token: str) -> dict:
+    def account_capabilities(self, token: str, *, include_owner: bool = False) -> dict:
         with self._transaction() as connection:
             owner_id = self._enrollment_owner(connection, token, allow_legacy=False)
             console_read = connection.execute(
                 "SELECT 1 FROM operator_grants WHERE owner_id = ? AND scope = 'console_read'",
                 (owner_id,),
             ).fetchone()
-            return {"admin": console_read is not None}
+            return {
+                "admin": console_read is not None,
+                **({"owner_id": owner_id} if include_owner else {}),
+            }
 
     def console_capabilities(self, token: str) -> dict:
         with self._transaction() as connection:
@@ -2416,6 +2549,9 @@ class Collaboration:
         )
         connection.execute("DELETE FROM room_members WHERE member_id = ?", (member_id,))
         connection.execute(
+            "DELETE FROM room_command_receipts WHERE actor_member_id = ?", (member_id,)
+        )
+        connection.execute(
             "DELETE FROM inbox_events WHERE member_id = ? AND acknowledged = 0",
             (member_id,),
         )
@@ -2428,13 +2564,19 @@ class Collaboration:
             (member_id,),
         )
 
-    def retire_member(self, token: str, member_id: str) -> dict:
+    def retire_member(
+        self, token: str, member_id: str, *, server_generation: str | None = None
+    ) -> dict:
         notified = {member_id}
         with self._transaction(write=True) as connection:
-            if not self._owned_member(connection, token, member_id)["retired"]:
+            member = self._owned_member(connection, token, member_id)
+            self._guard_sync_actor(connection, member_id, None, server_generation)
+            if not member["retired"]:
                 self._retire(connection, member_id, notified)
         self._notify(notified)
-        return {"member_id": member_id, "retired": True}
+        return self._with_sync_generation(
+            {"member_id": member_id, "retired": True}, server_generation
+        )
 
     @staticmethod
     def _retirement_receipt(member: sqlite3.Row) -> dict:
@@ -2444,21 +2586,43 @@ class Collaboration:
             "retired": True,
         }
 
-    def retire_self(self, token: str) -> dict:
+    @staticmethod
+    def _with_sync_generation(receipt: dict, server_generation: str | None) -> dict:
+        if server_generation is not None:
+            return {**receipt, "server_generation": server_generation}
+        return receipt
+
+    def retire_self(
+        self, token: str, *, expected_member_id: str | None = None,
+        server_generation: str | None = None,
+    ) -> dict:
+        if (expected_member_id is None) != (server_generation is None):
+            raise CollaborationError("invalid_request")
         with self._transaction(write=True) as connection:
             member = _member(connection, token, include_retired=True)
+            self._guard_sync_actor(
+                connection, member["member_id"], expected_member_id, server_generation
+            )
             notified = {member["member_id"]}
             if not member["retired"]:
                 self._retire(connection, member["member_id"], notified)
         self._notify(notified)
-        return self._retirement_receipt(member)
+        return self._with_sync_generation(self._retirement_receipt(member), server_generation)
 
-    def member_retirement(self, token: str) -> dict:
+    def member_retirement(
+        self, token: str, *, expected_member_id: str | None = None,
+        server_generation: str | None = None,
+    ) -> dict:
+        if (expected_member_id is None) != (server_generation is None):
+            raise CollaborationError("invalid_request")
         with self._transaction() as connection:
             member = _member(connection, token, include_retired=True)
+            self._guard_sync_actor(
+                connection, member["member_id"], expected_member_id, server_generation
+            )
             if not member["retired"]:
                 raise CollaborationError("not_found")
-        return self._retirement_receipt(member)
+        return self._with_sync_generation(self._retirement_receipt(member), server_generation)
 
     def _authorize_archive(
         self, connection: sqlite3.Connection, token: str, member_id: str
@@ -2544,11 +2708,13 @@ class Collaboration:
                 ]
             }
 
-    def get_member(self, token: str) -> dict:
+    def get_member(self, token: str, *, include_owner: bool = False) -> dict:
         with self._transaction() as connection:
-            return _read_member_profile(
-                connection, _member(connection, token)["member_id"]
-            )
+            member = _member(connection, token)
+            profile = _read_member_profile(connection, member["member_id"])
+            if include_owner:
+                profile["owner_id"] = member["owner_id"]
+            return profile
 
     def authorized_presence_members(self, token: str) -> list[str]:
         with self._transaction() as connection:
@@ -2996,6 +3162,231 @@ class Collaboration:
         ).fetchone()
         if granted is None:
             self._deny_console("forbidden", "missing_grant")
+
+    @staticmethod
+    def _guard_sync_actor(
+        connection: sqlite3.Connection,
+        member_id: str,
+        expected_member_id: str | None,
+        server_generation: str | None,
+    ) -> str | None:
+        if expected_member_id is not None and member_id != expected_member_id:
+            raise CollaborationError("member_identity_changed")
+        if server_generation is not None and _server_generation(connection) != server_generation:
+            raise CollaborationError("server_generation_changed")
+        return server_generation
+
+    @staticmethod
+    def _joinable_room(
+        connection: sqlite3.Connection, room_id: str, member_id: str
+    ) -> None:
+        room = connection.execute(
+            """
+            SELECT r.archived_at, c.expires_us <= teamup_now_us() AS lease_expired
+            FROM rooms AS r LEFT JOIN child_rooms AS c USING (room_id)
+            WHERE r.room_id = ?
+            """,
+            (room_id,),
+        ).fetchone()
+        if room is None:
+            raise CollaborationError("not_found")
+        if room["archived_at"] is not None or room["lease_expired"]:
+            _room_member(connection, room_id, member_id, active=True)
+
+    def room_membership_state(
+        self, token: str, room_id: str, expected_member_id: str
+    ) -> dict:
+        with self._transaction() as connection:
+            member_id = _member(connection, token)["member_id"]
+            self._guard_sync_actor(connection, member_id, expected_member_id, None)
+            self._joinable_room(connection, room_id, member_id)
+            row = connection.execute(
+                "SELECT membership_id FROM room_members WHERE room_id = ? AND member_id = ?",
+                (room_id, member_id),
+            ).fetchone()
+            return {
+                "room_id": room_id,
+                "member_id": member_id,
+                "server_generation": _server_generation(connection),
+                "membership_id": row["membership_id"] if row is not None else None,
+                "membership_revision": _membership_revision(connection, room_id, member_id),
+            }
+
+    def submit_room_command(
+        self,
+        token: str,
+        operation_id: str,
+        expected_member_id: str,
+        server_generation: str,
+        kind: str,
+        room_id: str | None,
+        parameters: dict,
+    ) -> dict:
+        with self._transaction(write=True) as connection:
+            member_id = _member(connection, token)["member_id"]
+            if not isinstance(expected_member_id, str) or not isinstance(server_generation, str):
+                raise CollaborationError("invalid_request")
+            self._guard_sync_actor(connection, member_id, expected_member_id, server_generation)
+            receipt_key = (server_generation, member_id, operation_id)
+            existing = connection.execute(
+                """
+                SELECT fingerprint, receipt FROM room_command_receipts
+                WHERE server_generation = ? AND actor_member_id = ? AND operation_id = ?
+                """,
+                receipt_key,
+            ).fetchone()
+            secret = connection.execute(
+                "SELECT secret FROM room_command_secret WHERE singleton = 1"
+            ).fetchone()["secret"]
+            canonical = json.dumps(
+                [kind, room_id, self._normalized_command_fields(kind, parameters)],
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("ascii")
+            fingerprint = hmac_digest(secret, canonical, "sha256")
+            recovered = (
+                json.loads(existing["receipt"])
+                if existing is not None and compare_digest(existing["fingerprint"], fingerprint)
+                else None
+            )
+            room = self._authorize_room_command(
+                connection, token, member_id, kind, room_id, parameters, recovered
+            )
+            if existing is not None:
+                if recovered is None:
+                    raise CollaborationError("conflict")
+                return recovered
+            self._check_room_command_preconditions(
+                connection, member_id, kind, room_id, room, parameters
+            )
+            command = _CommandTransaction(connection, set())
+            context = self._command_transaction.set(command)
+            try:
+                result = self._execute_room_command(token, kind, room_id, parameters)
+            finally:
+                self._command_transaction.reset(context)
+            receipt = {
+                "operation_id": operation_id,
+                "server_generation": server_generation,
+                "receipt": {
+                    "kind": kind,
+                    **{key: value for key, value in result.items() if key in _COMMAND_RECEIPT_FIELDS},
+                },
+            }
+            connection.execute(
+                "INSERT INTO room_command_receipts VALUES (?, ?, ?, ?, ?)",
+                (*receipt_key, fingerprint, json.dumps(receipt)),
+            )
+        self._notify(command.recipients)
+        return receipt
+
+    @staticmethod
+    def _normalized_command_fields(kind: str, parameters: dict) -> dict:
+        fields = dict(parameters)
+        if kind == "send_message":
+            primary = fields.pop("mention_member_id", None)
+            targets = fields.get("mention_member_ids")
+            if primary is not None and targets is not None:
+                raise CollaborationError("invalid_request")
+            fields["mention_member_ids"] = targets or ([primary] if primary else [])
+        if kind == "create_task":
+            fields["addressed_member_ids"] = sorted(fields.get("addressed_member_ids") or ())
+        return fields
+
+    def _authorize_room_command(
+        self, connection: sqlite3.Connection, token: str, member_id: str,
+        kind: str, room_id: str | None, parameters: dict, recovered: dict | None,
+    ) -> sqlite3.Row | None:
+        if kind not in ROOM_COMMAND_KINDS or (room_id is None) != (kind == "create_room"):
+            raise CollaborationError("invalid_request")
+        if recovered is not None and kind in {"create_room", "join_room"}:
+            receipt = recovered["receipt"]
+            current = _room_member(connection, receipt["room_id"], member_id, active=True)
+            if current["membership_id"] != receipt["membership_id"]:
+                raise CollaborationError("membership_changed")
+            return current
+        if room_id is None:
+            return None
+        if kind == "join_room":
+            self._joinable_room(connection, room_id, member_id)
+            return None
+        if kind == "leave_room" and recovered is not None:
+            return None
+        room = _room_member(connection, room_id, member_id, active=True)
+        if room["membership_id"] != parameters["membership_id"]:
+            raise CollaborationError("membership_changed")
+        if kind in _LEADER_COMMANDS and not _has_room_leadership(connection, room_id, member_id):
+            raise CollaborationError("forbidden")
+        if "task_id" in parameters:
+            _authorized_task(connection, token, room_id, parameters["task_id"], active=True)
+        elif kind == "create_task" and recovered is not None:
+            _authorized_task(
+                connection, token, room_id, recovered["receipt"]["task_id"], active=True
+            )
+        elif kind in _BOARD_COMMANDS:
+            _require_current_board(room)
+        return room
+
+    @staticmethod
+    def _check_room_command_preconditions(
+        connection: sqlite3.Connection, member_id: str, kind: str,
+        room_id: str | None, room: sqlite3.Row | None, parameters: dict,
+    ) -> None:
+        if room_id is None:
+            return
+        if kind == "join_room":
+            if _membership_revision(connection, room_id, member_id) != parameters["membership_revision"]:
+                raise CollaborationError("membership_changed")
+            return
+        if kind in _LEADER_COMMANDS:
+            leader = _room_leader(connection, room_id)
+            if leader is None or leader["leadership_epoch"] != parameters["expected_leadership_epoch"]:
+                raise CollaborationError("conflict")
+        if (
+            kind in _BOARD_COMMANDS
+            and room is not None
+            and room["version"] != parameters["expected_board_version"]
+        ):
+            raise CollaborationError("conflict")
+
+    def _execute_room_command(
+        self, token: str, kind: str, room_id: str | None, parameters: dict
+    ) -> dict:
+        fields = dict(parameters)
+        if room_id is None:
+            result = self.create_room(token, **fields)
+            room_id = result["room_id"]
+            return {**result, "membership_id": self._new_command_membership(token, room_id)}
+        if kind == "join_room":
+            result = self.join_room(token, room_id)
+            return {**result, "membership_id": self._new_command_membership(token, room_id)}
+        membership_id = fields.pop("membership_id")
+        if kind == "leave_room":
+            return self.leave_room(token, room_id, membership_id=membership_id, **fields)
+        if kind == "remove_member":
+            return self.remove_room_member(
+                token, room_id, fields["target_member_id"], fields["target_membership_id"]
+            )
+        if kind == "publish_board":
+            fields.pop("expected_leadership_epoch")
+            return self.publish_board(token, room_id, **fields)
+        if kind == "acknowledge_board":
+            self.confirm_board(token, room_id, **fields)
+            return {"room_id": room_id, "version": fields["version"]}
+        fields.pop("expected_board_version")
+        operations: dict[str, Callable[..., dict]] = {
+            "send_message": self.send_message,
+            "create_task": self.create_task,
+            "join_task": self.join_task,
+            "record_task_progress": self.report_progress,
+            "finish_task": self.finish_task,
+        }
+        return operations[kind](token, room_id, **fields)
+
+    def _new_command_membership(self, token: str, room_id: str) -> str:
+        with self._transaction() as connection:
+            member_id = _member(connection, token)["member_id"]
+            return str(_room_member(connection, room_id, member_id)["membership_id"])
 
     def create_room(
         self,
@@ -3666,22 +4057,194 @@ class Collaboration:
         with self._transaction() as connection:
             member_id = _member(connection, token)["member_id"]
             room = _room_member(connection, room_id, member_id)
-            count = (
-                len(json.loads(room["archive_roster"]))
-                if room["archived_at"] is not None
-                else connection.execute(
-                    "SELECT COUNT(*) FROM room_members WHERE room_id = ?", (room_id,)
-                ).fetchone()[0]
-            )
+            return self._room_detail_projection(connection, room_id, room)
+
+    @staticmethod
+    def _room_detail_projection(
+        connection: sqlite3.Connection, room_id: str, room: sqlite3.Row
+    ) -> dict:
+        count = (
+            len(json.loads(room["archive_roster"]))
+            if room["archived_at"] is not None
+            else connection.execute(
+                "SELECT COUNT(*) FROM room_members WHERE room_id = ?", (room_id,)
+            ).fetchone()[0]
+        )
+        return {
+            "room_id": room_id,
+            "name": room["name"],
+            "history_policy": room["history_policy"],
+            "current_board_version": room["version"],
+            "member_count": count,
+            **_archive_metadata(room),
+            **_child_metadata(room),
+        }
+
+    def sync_capabilities(self, token: str) -> dict:
+        with self._transaction() as connection:
+            _member(connection, token)
             return {
-                "room_id": room_id,
-                "name": room["name"],
-                "history_policy": room["history_policy"],
-                "current_board_version": room["version"],
-                "member_count": count,
-                **_archive_metadata(room),
-                **_child_metadata(room),
+                "version": 1,
+                "server_generation": _server_generation(connection),
+                "commands": list(ROOM_COMMAND_KINDS),
             }
+
+    def rotate_server_generation(self) -> None:
+        """Invalidate pre-recovery cursors and command preconditions while offline."""
+        with self._transaction(write=True) as connection:
+            rotate_generation(connection)
+            connection.execute("DELETE FROM room_command_receipts")
+
+    def sync_room(
+        self,
+        token: str,
+        room_id: str,
+        expected_member_id: str,
+        membership_id: str,
+        cursor: str | None,
+    ) -> dict:
+        with self._transaction() as connection:
+            member_id = _member(connection, token)["member_id"]
+            if member_id != expected_member_id:
+                raise CollaborationError("member_identity_changed")
+            room = _room_member(connection, room_id, member_id)
+            if room["membership_id"] != membership_id:
+                raise CollaborationError("membership_changed")
+            if room["archived_at"] is not None or room["lease_expired"]:
+                raise CollaborationError("room_archived")
+            _require_current_board(room)
+            generation = _server_generation(connection)
+            version = room["version"]
+            key = cursor_key(connection, generation, member_id, room_id, membership_id, str(version))
+            head, last_reset = room_change_head(connection, room_id)
+            floor = _transcript_floor(room)
+            result = {
+                "server_generation": generation,
+                "member_id": member_id,
+                "room_id": room_id,
+                "membership_id": membership_id,
+                "board_version": version,
+                **_expiry_metadata(room["expired_through_message_id"], floor, None),
+            }
+            if cursor is None:
+                changes, coverage = self._sync_baseline(connection, room_id, member_id, room)
+                return {
+                    **result,
+                    "next_cursor": encode_cursor(key, head),
+                    "has_more": False,
+                    "changes": changes,
+                    "coverage": coverage,
+                }
+            position = decode_cursor(key, cursor, head, last_reset)
+            if position is None:
+                raise CollaborationError("sync_reset_required")
+            through, touched = room_change_page(connection, room_id, position, head)
+            changes = self._sync_delta(connection, room_id, member_id, room, touched)
+            return {
+                **result,
+                "next_cursor": encode_cursor(key, through),
+                "has_more": through < head,
+                "changes": changes,
+            }
+
+    @staticmethod
+    def _sync_change(collection: str, entity_id: str, record: dict | None) -> dict:
+        return {"collection": collection, "entity_id": entity_id, "record": record}
+
+    def _sync_baseline(
+        self, connection: sqlite3.Connection, room_id: str, member_id: str, room: sqlite3.Row
+    ) -> tuple[list[dict], dict]:
+        messages = _room_transcript(
+            connection, room_id, after=_transcript_floor(room), newest_first=True, limit=_SYNC_WINDOW + 1
+        )
+        roster = self._room_roster(connection, room_id, True, limit=_SYNC_WINDOW + 1)
+        tasks = self._sync_tasks(connection, room_id, member_id)
+        changes = [
+            self._sync_change("room", room_id, self._room_detail_projection(connection, room_id, room)),
+            self._sync_change("board", room_id, self._view_board_projection(connection, room_id, member_id, room)),
+            *(self._sync_change("roster", row["member_id"], row) for row in roster[:_SYNC_WINDOW]),
+            *(self._sync_change("messages", str(row["message_id"]), _sync_history_message(connection, row))
+              for row in messages[-_SYNC_WINDOW:]),
+            *(self._sync_change("tasks", row["task_id"], row) for row in reversed(tasks[:_SYNC_WINDOW])),
+        ]
+        coverage = {
+            "room": {"has_more": False},
+            "board": {"has_more": False},
+            "roster": {"has_more": len(roster) > _SYNC_WINDOW},
+            "messages": {"has_older": len(messages) > _SYNC_WINDOW},
+            "tasks": {"has_more": len(tasks) > _SYNC_WINDOW},
+        }
+        return changes, coverage
+
+    def _sync_delta(
+        self,
+        connection: sqlite3.Connection,
+        room_id: str,
+        member_id: str,
+        room: sqlite3.Row,
+        touched: list[sqlite3.Row],
+    ) -> list[dict]:
+        entities: dict[str, list[str]] = {}
+        for collection, entity_id in touched:
+            entities.setdefault(collection, []).append(entity_id)
+
+        floor = _transcript_floor(room)
+        messages = entities.get("messages", [])
+        records = {
+            "messages": {
+                str(row["message_id"]): _sync_history_message(connection, row)
+                for row in _room_transcript(
+                    connection, room_id, after=floor, limit=len(messages), entity_ids=messages
+                )
+            },
+            "roster": {
+                row["member_id"]: row for row in self._room_roster(
+                    connection, room_id, True, entity_ids=entities.get("roster", [])
+                )
+            },
+            "tasks": {
+                row["task_id"]: row for row in self._sync_tasks(
+                    connection, room_id, member_id, entities.get("tasks", [])
+                )
+            },
+        }
+        if "room" in entities:
+            records["room"] = {room_id: self._room_detail_projection(connection, room_id, room)}
+        if "board" in entities:
+            records["board"] = {room_id: self._view_board_projection(connection, room_id, member_id, room)}
+
+        return [
+            self._sync_change(collection, entity_id, records[collection].get(entity_id))
+            for collection, entity_id in touched
+            if (collection != "messages" or int(entity_id) > floor)
+            and (collection != "tasks" or entity_id in records["tasks"])
+        ]
+
+    def _sync_tasks(
+        self,
+        connection: sqlite3.Connection,
+        room_id: str,
+        member_id: str,
+        entity_ids: list[str] | None = None,
+    ) -> list[dict]:
+        if entity_ids == []:
+            return []
+        query = f"""
+            SELECT {_TASK} FROM tasks AS t
+            LEFT JOIN task_assignments AS a USING (task_id)
+            WHERE t.room_id = ? AND {_VISIBLE_TASK}
+        """
+        if entity_ids is None:
+            rows = connection.execute(
+                f"{query} ORDER BY t.task_number DESC LIMIT ?",
+                (room_id, member_id, member_id, _SYNC_WINDOW + 1),
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                f"{query} AND t.task_id IN (SELECT value FROM json_each(?))",
+                (room_id, member_id, member_id, json.dumps(entity_ids)),
+            ).fetchall()
+        return self._projections(connection, rows, member_id, include_origin=False)
 
     def room_members(
         self, token: str, room_id: str, *, include_membership: bool = False
@@ -3695,15 +4258,24 @@ class Collaboration:
 
     @staticmethod
     def _room_roster(
-        connection: sqlite3.Connection, room_id: str, include_membership: bool = False
+        connection: sqlite3.Connection,
+        room_id: str,
+        include_membership: bool = False,
+        *,
+        limit: int = -1,
+        entity_ids: list[str] | None = None,
     ) -> list[dict]:
+        if entity_ids == []:
+            return []
+        scope = "" if entity_ids is None else "AND m.member_id IN (SELECT value FROM json_each(?))"
+        values = (room_id, limit) if entity_ids is None else (room_id, json.dumps(entity_ids), limit)
         rows = connection.execute(
             f"""
             SELECT {_MEMBER_PROFILE}, rm.acked_board_version, rm.membership_id, rm.responsibility
             FROM {_PROFILE_TABLES} JOIN room_members AS rm ON m.member_id = rm.member_id
-            WHERE rm.room_id = ? ORDER BY m.member_id
+            WHERE rm.room_id = ? {scope} ORDER BY m.member_id LIMIT ?
             """,
-            (room_id,),
+            values,
         )
         members = []
         for row in rows:
@@ -3933,16 +4505,21 @@ class Collaboration:
 
     def view_board(self, token: str, room_id: str) -> dict:
         with self._transaction() as connection:
-            member = _member(connection, token)
-            board = _room_member(connection, room_id, member["member_id"])
-            return {
-                "room_id": room_id,
-                **{key: board[key] for key in ("version", "rules", "protocol")},
-                "can_edit": (
-                    board["archived_at"] is None
-                    and _has_room_leadership(connection, room_id, member["member_id"])
-                ),
-            }
+            member_id = _member(connection, token)["member_id"]
+            board = _room_member(connection, room_id, member_id)
+            return self._view_board_projection(connection, room_id, member_id, board)
+
+    @staticmethod
+    def _view_board_projection(
+        connection: sqlite3.Connection, room_id: str, member_id: str, board: sqlite3.Row
+    ) -> dict:
+        return {
+            "room_id": room_id,
+            **{key: board[key] for key in ("version", "rules", "protocol")},
+            "can_edit": (
+                board["archived_at"] is None and _has_room_leadership(connection, room_id, member_id)
+            ),
+        }
 
     def publish_board(
         self, token: str, room_id: str, version: int, rules: str, protocol: str
@@ -4431,10 +5008,7 @@ class Collaboration:
                 newest_first=before is not None,
             )
             result = {
-                "messages": [
-                    {**_room_message(record), **_retired_sender(record)}
-                    for record in rows
-                ],
+                "messages": [_history_message(record) for record in rows],
                 **_expiry_metadata(
                     membership["expired_through_message_id"], cursor, upper
                 ),
@@ -4574,12 +5148,10 @@ class Collaboration:
                     "INSERT INTO task_assignments (task_id, closing_criteria, eta) VALUES (?, ?, ?)",
                     (task_id, closing_criteria, eta),
                 )
-                text = f"Task #{task_number} assigned. Read the task and join to accept."
-                if eta is None:
-                    text += " Record your ETA as task progress or reply privately."
                 client_message_id = self._assignment_message_key(connection, member_id, task_id)
                 _, visible_recipients = self._write_room_message(
-                    connection, room_id, membership, member_id, client_message_id, text,
+                    connection, room_id, membership, member_id, client_message_id,
+                    _assignment_message_text(task_number, eta),
                     targets, now_datetime,
                 )
             _add_task_event(connection, task_id, member_id, "created", now)
@@ -5351,6 +5923,9 @@ class Collaboration:
                     del self._listeners[member_id]
 
     def _notify(self, members: Iterable[str]) -> None:
+        if command := self._command_transaction.get():
+            command.recipients.update(members)
+            return
         with self._listeners_lock:
             listeners = [
                 listener
